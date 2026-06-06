@@ -39,8 +39,8 @@ use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_theme::{ColorToken, ThemeState};
 use std::sync::Arc;
 
-use blinc_layout::stateful::{stateful, ButtonState};
 use blinc_layout::InstanceKey;
+use blinc_layout::stateful::{ButtonState, stateful};
 
 /// SVG checkmark path - simple checkmark that fits in a 16x16 viewBox
 const CHECKMARK_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -146,8 +146,19 @@ impl Checkbox {
                 let is_checked = checked_state.get();
                 let is_hovered = matches!(state, ButtonState::Hovered | ButtonState::Pressed);
 
-                let bg = if is_checked { checked_bg } else { unchecked_bg };
-                let current_border = if is_hovered && !disabled {
+                // Disabled uses the shared disabled-surface palette
+                // (InputBgDisabled / BorderSecondary). Matches button / select
+                // / switch so all inert controls read as the same UI tier.
+                let bg = if disabled {
+                    theme.color(ColorToken::InputBgDisabled)
+                } else if is_checked {
+                    checked_bg
+                } else {
+                    unchecked_bg
+                };
+                let current_border = if disabled {
+                    theme.color(ColorToken::BorderSecondary)
+                } else if is_hovered {
                     hover_border
                 } else {
                     border
@@ -158,6 +169,11 @@ impl Checkbox {
                     .class("cn-checkbox")
                     .w(box_size)
                     .h(box_size)
+                    // Pin box to its explicit dimensions — without this a
+                    // narrow flex-row parent (e.g. a settings list) would let
+                    // taffy compress the checkbox while the label keeps its
+                    // natural width.
+                    .flex_shrink_0()
                     .rounded(radius)
                     .cursor_pointer()
                     .items_center()
@@ -171,7 +187,10 @@ impl Checkbox {
                 }
 
                 if disabled {
-                    visual = visual.class("cn-checkbox--disabled").opacity(0.5);
+                    // No opacity dim — the InputBgDisabled / BorderSecondary
+                    // palette above already conveys the inert state without
+                    // washing out the silhouette.
+                    visual = visual.class("cn-checkbox--disabled");
                 }
 
                 // Add checkmark if checked using SVG
@@ -219,7 +238,11 @@ impl Checkbox {
                 .items_center()
                 .cursor_pointer()
                 .child(checkbox)
-                .child(text(label_text).size(14.0).color(label_color))
+                .child(
+                    text(label_text)
+                        .size(theme.typography().text_sm)
+                        .color(label_color),
+                )
                 .on_click(move |_| {
                     if disabled {
                         return;

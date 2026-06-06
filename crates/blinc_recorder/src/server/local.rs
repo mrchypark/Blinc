@@ -4,18 +4,13 @@
 //! and streams recording data in real-time.
 
 use crate::{RecordingExport, SharedRecordingSession};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-
-const ACCEPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
-const CLIENT_IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
-const CLIENT_WRITE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Configuration for the debug server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,45 +57,6 @@ impl DebugServerConfig {
         {
             PathBuf::from(format!(r"\\.\pipe\blinc\{}", self.app_name))
         }
-
-        #[cfg(not(any(unix, windows)))]
-        {
-            PathBuf::from(format!("blinc-debug://{}", self.app_name))
-        }
-    }
-}
-
-#[cfg(unix)]
-fn secure_socket_parent_dir(socket_path: &PathBuf) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn remove_stale_socket(socket_path: &PathBuf) -> io::Result<()> {
-    use std::os::unix::fs::FileTypeExt;
-
-    match std::fs::symlink_metadata(socket_path) {
-        Ok(meta) => {
-            if meta.file_type().is_socket() {
-                std::fs::remove_file(socket_path)
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!(
-                        "refusing to remove non-socket path at {}",
-                        socket_path.display()
-                    ),
-                ))
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
     }
 }
 
@@ -153,12 +109,24 @@ impl Drop for ServerHandle {
 pub struct DebugServer {
     config: DebugServerConfig,
     session: Arc<SharedRecordingSession>,
+    clients: Arc<Mutex<Vec<ClientConnection>>>,
+}
+
+struct ClientConnection {
+    #[cfg(unix)]
+    stream: std::os::unix::net::UnixStream,
+    #[cfg(windows)]
+    stream: std::net::TcpStream, // Fallback for Windows (TODO: named pipes)
 }
 
 impl DebugServer {
     /// Create a new debug server with the given config and recording session.
     pub fn new(config: DebugServerConfig, session: Arc<SharedRecordingSession>) -> Self {
-        Self { config, session }
+        Self {
+            config,
+            session,
+            clients: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     /// Start the server in a background thread.
@@ -167,46 +135,26 @@ impl DebugServer {
     pub fn start(self) -> io::Result<ServerHandle> {
         let socket_path = self.config.socket_path();
 
-        #[cfg(unix)]
-        {
-            secure_socket_parent_dir(&socket_path)?;
-            remove_stale_socket(&socket_path)?;
+        // Ensure parent directory exists
+        if let Some(parent) = socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
-        #[cfg(not(unix))]
+        // Remove existing socket file
+        #[cfg(unix)]
         {
-            if let Some(parent) = socket_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            let _ = std::fs::remove_file(&socket_path);
         }
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
         let socket_path_clone = socket_path.clone();
-        let (ready_tx, ready_rx) = mpsc::channel();
 
         let thread = thread::spawn(move || {
-            if let Err(e) = self.run_server(&socket_path_clone, shutdown_clone, ready_tx) {
+            if let Err(e) = self.run_server(&socket_path_clone, shutdown_clone) {
                 tracing::error!("Debug server error: {}", e);
             }
         });
-
-        match ready_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                shutdown.store(true, Ordering::SeqCst);
-                let _ = thread.join();
-                return Err(e);
-            }
-            Err(_) => {
-                shutdown.store(true, Ordering::SeqCst);
-                let _ = thread.join();
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "debug server failed before signaling readiness",
-                ));
-            }
-        }
 
         Ok(ServerHandle {
             shutdown,
@@ -216,34 +164,12 @@ impl DebugServer {
     }
 
     #[cfg(unix)]
-    fn run_server(
-        &self,
-        socket_path: &PathBuf,
-        shutdown: Arc<AtomicBool>,
-        ready_tx: mpsc::Sender<io::Result<()>>,
-    ) -> io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
+    fn run_server(&self, socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
         use std::os::unix::net::UnixListener;
         use std::time::Duration;
 
-        let listener = match UnixListener::bind(socket_path) {
-            Ok(listener) => listener,
-            Err(e) => {
-                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-                return Err(e);
-            }
-        };
-        if let Err(e) =
-            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-        {
-            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-            return Err(e);
-        }
-        if let Err(e) = listener.set_nonblocking(true) {
-            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-            return Err(e);
-        }
-        let _ = ready_tx.send(Ok(()));
+        let listener = UnixListener::bind(socket_path)?;
+        listener.set_nonblocking(true)?;
 
         tracing::info!("Debug server listening on {}", socket_path.display());
 
@@ -258,16 +184,15 @@ impl DebugServer {
 
                     // Handle client in a new thread
                     let session = self.session.clone();
-                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client(stream, session, app_name) {
+                        if let Err(e) = handle_client(stream, session) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // No pending connection, sleep briefly
-                    thread::sleep(ACCEPT_POLL_INTERVAL);
+                    thread::sleep(Duration::from_millis(100));
                 }
                 Err(e) => {
                     tracing::error!("Accept error: {}", e);
@@ -280,35 +205,14 @@ impl DebugServer {
     }
 
     #[cfg(windows)]
-    fn run_server(
-        &self,
-        _socket_path: &PathBuf,
-        shutdown: Arc<AtomicBool>,
-        ready_tx: mpsc::Sender<io::Result<()>>,
-    ) -> io::Result<()> {
+    fn run_server(&self, _socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
         use std::net::TcpListener;
         use std::time::Duration;
 
         // Fallback to TCP on Windows (TODO: implement named pipes)
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(e) => {
-                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-                return Err(e);
-            }
-        };
-        let local_addr = match listener.local_addr() {
-            Ok(addr) => addr,
-            Err(e) => {
-                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-                return Err(e);
-            }
-        };
-        if let Err(e) = listener.set_nonblocking(true) {
-            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
-            return Err(e);
-        }
-        let _ = ready_tx.send(Ok(()));
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let local_addr = listener.local_addr()?;
+        listener.set_nonblocking(true)?;
 
         tracing::info!("Debug server listening on {} (TCP fallback)", local_addr);
 
@@ -322,15 +226,14 @@ impl DebugServer {
                     }
 
                     let session = self.session.clone();
-                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client_tcp(stream, session, app_name) {
+                        if let Err(e) = handle_client_tcp(stream, session) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(ACCEPT_POLL_INTERVAL);
+                    thread::sleep(Duration::from_millis(100));
                 }
                 Err(e) => {
                     tracing::error!("Accept error: {}", e);
@@ -340,21 +243,6 @@ impl DebugServer {
         }
 
         Ok(())
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn run_server(
-        &self,
-        _socket_path: &PathBuf,
-        _shutdown: Arc<AtomicBool>,
-        ready_tx: mpsc::Sender<io::Result<()>>,
-    ) -> io::Result<()> {
-        let err = io::Error::new(
-            io::ErrorKind::Unsupported,
-            "local debug server is not available on this target",
-        );
-        let _ = ready_tx.send(Err(io::Error::new(err.kind(), err.to_string())));
-        Err(err)
     }
 }
 
@@ -394,64 +282,30 @@ impl ClientCommand {
             data
         };
 
-        let value: serde_json::Value = serde_json::from_slice(json_data).ok()?;
-        let raw = value
-            .get("type")
-            .or_else(|| value.get("command"))
-            .and_then(|v| v.as_str())?;
-        match normalize_command(raw).as_str() {
-            "start" => Some(ClientCommand::Start),
-            "pause" => Some(ClientCommand::Pause),
-            "resume" => Some(ClientCommand::Resume),
-            "stop" => Some(ClientCommand::Stop),
-            "reset" => Some(ClientCommand::Reset),
-            "requestexport" => Some(ClientCommand::RequestExport),
-            "requeststats" => Some(ClientCommand::RequestStats),
-            "ping" => Some(ClientCommand::Ping),
-            _ => None,
+        // Try to parse as JSON
+        let s = std::str::from_utf8(json_data).ok()?;
+
+        // Simple JSON parsing for command type
+        if s.contains("\"start\"") || s.contains("\"Start\"") {
+            Some(ClientCommand::Start)
+        } else if s.contains("\"pause\"") || s.contains("\"Pause\"") {
+            Some(ClientCommand::Pause)
+        } else if s.contains("\"resume\"") || s.contains("\"Resume\"") {
+            Some(ClientCommand::Resume)
+        } else if s.contains("\"stop\"") || s.contains("\"Stop\"") {
+            Some(ClientCommand::Stop)
+        } else if s.contains("\"reset\"") || s.contains("\"Reset\"") {
+            Some(ClientCommand::Reset)
+        } else if s.contains("\"request_export\"") || s.contains("\"RequestExport\"") {
+            Some(ClientCommand::RequestExport)
+        } else if s.contains("\"request_stats\"") || s.contains("\"RequestStats\"") {
+            Some(ClientCommand::RequestStats)
+        } else if s.contains("\"ping\"") || s.contains("\"Ping\"") {
+            Some(ClientCommand::Ping)
+        } else {
+            None
         }
     }
-}
-
-const MAX_COMMAND_FRAME_SIZE: usize = 1024 * 1024;
-
-enum StreamCommand {
-    Ready(ClientCommand),
-    Invalid,
-    Incomplete,
-}
-
-fn decode_next_stream_command(buffer: &mut Vec<u8>) -> StreamCommand {
-    if buffer.len() < 4 {
-        return StreamCommand::Incomplete;
-    }
-
-    let payload_len = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
-    if payload_len == 0 || payload_len > MAX_COMMAND_FRAME_SIZE {
-        buffer.clear();
-        return StreamCommand::Invalid;
-    }
-
-    let frame_len = 4 + payload_len;
-    if buffer.len() < frame_len {
-        return StreamCommand::Incomplete;
-    }
-
-    let payload = buffer[4..frame_len].to_vec();
-    buffer.drain(..frame_len);
-
-    match ClientCommand::from_bytes(&payload) {
-        Some(command) => StreamCommand::Ready(command),
-        None => StreamCommand::Invalid,
-    }
-}
-
-fn normalize_command(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| *c != '_' && *c != '-')
-        .collect::<String>()
-        .to_ascii_lowercase()
 }
 
 /// Message types sent to clients.
@@ -484,49 +338,57 @@ pub enum ServerMessage {
 impl ServerMessage {
     /// Serialize message to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        // 4-byte length prefix + JSON payload.
-        let payload = match self {
+        // Simple format: 4-byte length prefix + JSON payload
+        let json = match self {
             ServerMessage::Hello {
                 app_name,
                 protocol_version,
             } => {
-                json!({ "type": "hello", "app_name": app_name, "protocol_version": protocol_version })
+                format!(
+                    r#"{{"type":"hello","app_name":"{}","protocol_version":{}}}"#,
+                    app_name, protocol_version
+                )
             }
-            ServerMessage::Export(export) => json!({ "type": "export", "export": export }),
+            ServerMessage::Export(export) => {
+                format!(
+                    r#"{{"type":"export","total_events":{},"total_snapshots":{}}}"#,
+                    export.stats.total_events, export.stats.total_snapshots
+                )
+            }
             ServerMessage::StateChange {
                 is_recording,
                 is_paused,
             } => {
-                json!({ "type": "state_change", "is_recording": is_recording, "is_paused": is_paused })
+                format!(
+                    r#"{{"type":"state_change","is_recording":{},"is_paused":{}}}"#,
+                    is_recording, is_paused
+                )
             }
             ServerMessage::Stats {
                 total_events,
                 total_snapshots,
                 events_dropped,
                 snapshots_dropped,
-            } => json!({
-                "type": "stats",
-                "total_events": total_events,
-                "total_snapshots": total_snapshots,
-                "events_dropped": events_dropped,
-                "snapshots_dropped": snapshots_dropped
-            }),
-            ServerMessage::Ack { command } => json!({ "type": "ack", "command": command }),
-            ServerMessage::Error { message } => json!({ "type": "error", "message": message }),
-            ServerMessage::Pong => json!({ "type": "pong" }),
+            } => {
+                format!(
+                    r#"{{"type":"stats","total_events":{},"total_snapshots":{},"events_dropped":{},"snapshots_dropped":{}}}"#,
+                    total_events, total_snapshots, events_dropped, snapshots_dropped
+                )
+            }
+            ServerMessage::Ack { command } => {
+                format!(r#"{{"type":"ack","command":"{}"}}"#, command)
+            }
+            ServerMessage::Error { message } => {
+                format!(r#"{{"type":"error","message":"{}"}}"#, message)
+            }
+            ServerMessage::Pong => r#"{"type":"pong"}"#.to_string(),
         };
 
-        let bytes = match serde_json::to_vec(&payload) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!("failed to serialize ServerMessage payload: {}", e);
-                b"{\"type\":\"error\",\"message\":\"serialization failure\"}".to_vec()
-            }
-        };
+        let bytes = json.as_bytes();
         let len = bytes.len() as u32;
         let mut result = Vec::with_capacity(4 + bytes.len());
         result.extend_from_slice(&len.to_le_bytes());
-        result.extend_from_slice(&bytes);
+        result.extend_from_slice(bytes);
         result
     }
 }
@@ -575,63 +437,10 @@ fn handle_command(cmd: ClientCommand, session: &Arc<SharedRecordingSession>) -> 
     }
 }
 
-fn write_server_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
-    let deadline = std::time::Instant::now() + CLIENT_WRITE_RETRY_TIMEOUT;
-    let mut written = 0usize;
-
-    while written < payload.len() {
-        match writer.write(&payload[written..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "failed to write full server frame",
-                ));
-            }
-            Ok(n) => written += n,
-            Err(ref e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if std::time::Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        e.kind(),
-                        format!("timed out writing server frame after {} bytes", written),
-                    ));
-                }
-                thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-
-    loop {
-        match writer.flush() {
-            Ok(()) => return Ok(()),
-            Err(ref e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if std::time::Instant::now() >= deadline {
-                    return Err(io::Error::new(e.kind(), "timed out flushing server frame"));
-                }
-                thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-}
-
 #[cfg(unix)]
 fn handle_client(
     mut stream: std::os::unix::net::UnixStream,
     session: Arc<SharedRecordingSession>,
-    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -640,11 +449,10 @@ fn handle_client(
 
     // Send hello message
     let hello = ServerMessage::Hello {
-        app_name,
+        app_name: "blinc_app".to_string(),
         protocol_version: 1,
     };
-    let hello_bytes = hello.to_bytes();
-    write_server_frame(&mut stream, &hello_bytes)?;
+    stream.write_all(&hello.to_bytes())?;
 
     // Track last state to avoid sending redundant updates
     let mut last_recording = session.is_recording();
@@ -652,7 +460,6 @@ fn handle_client(
 
     // Main loop: respond to commands and send state updates
     let mut buf = [0u8; 1024];
-    let mut pending = Vec::new();
     loop {
         // Check for incoming commands
         match stream.read(&mut buf) {
@@ -661,23 +468,10 @@ fn handle_client(
                 return Ok(());
             }
             Ok(n) => {
-                pending.extend_from_slice(&buf[..n]);
-                loop {
-                    match decode_next_stream_command(&mut pending) {
-                        StreamCommand::Ready(cmd) => {
-                            let response = handle_command(cmd, &session);
-                            let response_bytes = response.to_bytes();
-                            write_server_frame(&mut stream, &response_bytes)?;
-                        }
-                        StreamCommand::Invalid => {
-                            let error = ServerMessage::Error {
-                                message: "invalid command frame".to_string(),
-                            };
-                            let error_bytes = error.to_bytes();
-                            write_server_frame(&mut stream, &error_bytes)?;
-                        }
-                        StreamCommand::Incomplete => break,
-                    }
+                // Parse and handle command
+                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
+                    let response = handle_command(cmd, &session);
+                    stream.write_all(&response.to_bytes())?;
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -696,13 +490,12 @@ fn handle_client(
                 is_recording,
                 is_paused,
             };
-            let state_bytes = state.to_bytes();
-            write_server_frame(&mut stream, &state_bytes)?;
+            stream.write_all(&state.to_bytes())?;
             last_recording = is_recording;
             last_paused = is_paused;
         }
 
-        thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -710,7 +503,6 @@ fn handle_client(
 fn handle_client_tcp(
     mut stream: std::net::TcpStream,
     session: Arc<SharedRecordingSession>,
-    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -718,39 +510,24 @@ fn handle_client_tcp(
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let hello = ServerMessage::Hello {
-        app_name,
+        app_name: "blinc_app".to_string(),
         protocol_version: 1,
     };
-    let hello_bytes = hello.to_bytes();
-    write_server_frame(&mut stream, &hello_bytes)?;
+    stream.write_all(&hello.to_bytes())?;
 
     // Track last state to avoid sending redundant updates
     let mut last_recording = session.is_recording();
     let mut last_paused = session.is_paused();
 
     let mut buf = [0u8; 1024];
-    let mut pending = Vec::new();
     loop {
         match stream.read(&mut buf) {
             Ok(0) => return Ok(()),
             Ok(n) => {
-                pending.extend_from_slice(&buf[..n]);
-                loop {
-                    match decode_next_stream_command(&mut pending) {
-                        StreamCommand::Ready(cmd) => {
-                            let response = handle_command(cmd, &session);
-                            let response_bytes = response.to_bytes();
-                            write_server_frame(&mut stream, &response_bytes)?;
-                        }
-                        StreamCommand::Invalid => {
-                            let error = ServerMessage::Error {
-                                message: "invalid command frame".to_string(),
-                            };
-                            let error_bytes = error.to_bytes();
-                            write_server_frame(&mut stream, &error_bytes)?;
-                        }
-                        StreamCommand::Incomplete => break,
-                    }
+                // Parse and handle command
+                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
+                    let response = handle_command(cmd, &session);
+                    stream.write_all(&response.to_bytes())?;
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -765,13 +542,12 @@ fn handle_client_tcp(
                 is_recording,
                 is_paused,
             };
-            let state_bytes = state.to_bytes();
-            write_server_frame(&mut stream, &state_bytes)?;
+            stream.write_all(&state.to_bytes())?;
             last_recording = is_recording;
             last_paused = is_paused;
         }
 
-        thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -795,7 +571,6 @@ pub fn start_local_server_named(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
 
     #[test]
     fn test_socket_path_unix() {
@@ -819,37 +594,6 @@ mod tests {
         // Check length prefix
         let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         assert_eq!(len + 4, bytes.len());
-    }
-
-    #[test]
-    fn test_export_message_contains_full_payload() {
-        use crate::{RecordedEvent, RecordingConfig, Timestamp, TimestampedEvent};
-
-        let export = RecordingExport {
-            schema_version: crate::session::RECORDING_EXPORT_VERSION,
-            config: RecordingConfig::minimal(),
-            events: vec![TimestampedEvent::new(
-                Timestamp::from_micros(1),
-                RecordedEvent::WindowFocus(true),
-            )],
-            snapshots: vec![],
-            trace_entries: vec![],
-            stats: Default::default(),
-        };
-
-        let msg = ServerMessage::Export(export);
-        let bytes = msg.to_bytes();
-        let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let payload = std::str::from_utf8(&bytes[4..4 + len]).unwrap();
-
-        assert!(
-            payload.contains("\"events\""),
-            "export payload should include events field, got: {payload}"
-        );
-        assert!(
-            payload.contains("\"config\""),
-            "export payload should include config field, got: {payload}"
-        );
     }
 
     #[test]
@@ -903,140 +647,5 @@ mod tests {
             ClientCommand::from_bytes(&prefixed),
             Some(ClientCommand::Start)
         ));
-    }
-
-    #[test]
-    fn test_stream_partial_read_still_yields_command() {
-        let json = br#"{"type":"start"}"#;
-        let len = json.len() as u32;
-        let mut framed = Vec::new();
-        framed.extend_from_slice(&len.to_le_bytes());
-        framed.extend_from_slice(json);
-
-        let chunks = [&framed[..3], &framed[3..]];
-        let mut parsed = Vec::new();
-        let mut pending = Vec::new();
-        for chunk in chunks {
-            pending.extend_from_slice(chunk);
-            loop {
-                match decode_next_stream_command(&mut pending) {
-                    StreamCommand::Ready(cmd) => parsed.push(cmd),
-                    StreamCommand::Invalid => break,
-                    StreamCommand::Incomplete => break,
-                }
-            }
-        }
-
-        assert_eq!(
-            parsed.len(),
-            1,
-            "streamed command split across reads should still be parsed once"
-        );
-        assert!(matches!(parsed[0], ClientCommand::Start));
-    }
-
-    #[test]
-    fn test_stream_single_read_with_multiple_frames_parses_all_commands() {
-        let frame = |json: &[u8]| {
-            let mut out = Vec::new();
-            out.extend_from_slice(&(json.len() as u32).to_le_bytes());
-            out.extend_from_slice(json);
-            out
-        };
-
-        let merged = [frame(br#"{"type":"start"}"#), frame(br#"{"type":"ping"}"#)].concat();
-        let mut parsed = Vec::new();
-        let mut pending = merged;
-        loop {
-            match decode_next_stream_command(&mut pending) {
-                StreamCommand::Ready(cmd) => parsed.push(cmd),
-                StreamCommand::Invalid => break,
-                StreamCommand::Incomplete => break,
-            }
-        }
-
-        assert_eq!(
-            parsed.len(),
-            2,
-            "multiple framed commands in one read should parse both commands"
-        );
-        assert!(matches!(parsed[0], ClientCommand::Start));
-        assert!(matches!(parsed[1], ClientCommand::Ping));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_remove_stale_socket_rejects_non_socket_path() {
-        let path = std::env::temp_dir().join(format!(
-            "blinc-stale-socket-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, b"not-a-socket").unwrap();
-
-        let result = remove_stale_socket(&path);
-        assert!(result.is_err(), "non-socket path should be rejected");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    struct FlakyWriter {
-        writes: VecDeque<io::Result<usize>>,
-        flushes: VecDeque<io::Result<()>>,
-        data: Vec<u8>,
-    }
-
-    impl FlakyWriter {
-        fn new(
-            writes: impl IntoIterator<Item = io::Result<usize>>,
-            flushes: impl IntoIterator<Item = io::Result<()>>,
-        ) -> Self {
-            Self {
-                writes: writes.into_iter().collect(),
-                flushes: flushes.into_iter().collect(),
-                data: Vec::new(),
-            }
-        }
-    }
-
-    impl Write for FlakyWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            match self.writes.pop_front().unwrap_or(Ok(buf.len()))? {
-                len if len <= buf.len() => {
-                    self.data.extend_from_slice(&buf[..len]);
-                    Ok(len)
-                }
-                len => panic!("scripted write length {len} exceeded input {}", buf.len()),
-            }
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.flushes.pop_front().unwrap_or(Ok(()))
-        }
-    }
-
-    #[test]
-    fn write_server_frame_retries_would_block_until_payload_is_complete() {
-        let payload = b"abcdefghijklmnopqrstuvwxyz";
-        let mut writer = FlakyWriter::new(
-            [
-                Ok(8),
-                Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full")),
-                Ok(10),
-                Ok(payload.len() - 18),
-            ],
-            [
-                Err(io::Error::new(io::ErrorKind::TimedOut, "flush timeout")),
-                Ok(()),
-            ],
-        );
-
-        write_server_frame(&mut writer, payload)
-            .expect("frame write should recover from temporary backpressure");
-
-        assert_eq!(writer.data, payload);
     }
 }

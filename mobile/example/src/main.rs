@@ -3,130 +3,25 @@
 //! A Blinc UI application with desktop, Android, iOS, and HarmonyOS support.
 //! Demonstrates counter interactions and keyframe canvas animations.
 
-mod sensor_inspector;
-
 use blinc_app::prelude::*;
-use blinc_app::windowed::WindowedContext;
+use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_core::reactive::State;
 use blinc_core::{Brush, DrawContext, Gradient};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ExampleTheme {
-    pub(crate) page_bg: Color,
-    pub(crate) section_bg: Color,
-    pub(crate) card_bg: Color,
-    pub(crate) panel_bg: Color,
-    pub(crate) text_primary: Color,
-    pub(crate) text_secondary: Color,
-    pub(crate) text_muted: Color,
-    pub(crate) button_idle: Color,
-    pub(crate) button_hovered: Color,
-    pub(crate) button_pressed: Color,
-    pub(crate) button_disabled: Color,
-    pub(crate) accent: Color,
-    pub(crate) sensor_idle: Color,
-    pub(crate) sensor_hovered: Color,
-    pub(crate) sensor_pressed: Color,
-    pub(crate) sensor_active_idle: Color,
-    pub(crate) sensor_active_hovered: Color,
-    pub(crate) sensor_active_pressed: Color,
-}
-
-impl ExampleTheme {
-    pub(crate) fn for_appearance(is_dark: bool) -> Self {
-        if is_dark {
-            Self {
-                page_bg: Color::rgba(0.08, 0.08, 0.12, 1.0),
-                section_bg: Color::rgba(0.12, 0.12, 0.17, 1.0),
-                card_bg: Color::rgba(0.18, 0.18, 0.23, 1.0),
-                panel_bg: Color::rgba(0.22, 0.22, 0.28, 1.0),
-                text_primary: Color::WHITE,
-                text_secondary: Color::rgba(0.84, 0.88, 0.96, 1.0),
-                text_muted: Color::rgba(0.58, 0.60, 0.68, 1.0),
-                button_idle: Color::rgba(0.30, 0.30, 0.40, 1.0),
-                button_hovered: Color::rgba(0.38, 0.38, 0.50, 1.0),
-                button_pressed: Color::rgba(0.22, 0.22, 0.30, 1.0),
-                button_disabled: Color::rgba(0.20, 0.20, 0.20, 0.5),
-                accent: Color::rgba(0.40, 0.80, 1.0, 1.0),
-                sensor_idle: Color::rgba(0.30, 0.30, 0.40, 1.0),
-                sensor_hovered: Color::rgba(0.40, 0.40, 0.50, 1.0),
-                sensor_pressed: Color::rgba(0.20, 0.20, 0.30, 1.0),
-                sensor_active_idle: Color::rgba(0.18, 0.38, 0.26, 1.0),
-                sensor_active_hovered: Color::rgba(0.22, 0.46, 0.31, 1.0),
-                sensor_active_pressed: Color::rgba(0.12, 0.28, 0.19, 1.0),
-            }
-        } else {
-            Self {
-                page_bg: Color::rgba(0.95, 0.97, 1.0, 1.0),
-                section_bg: Color::rgba(1.0, 1.0, 1.0, 1.0),
-                card_bg: Color::rgba(0.92, 0.95, 1.0, 1.0),
-                panel_bg: Color::rgba(0.96, 0.97, 1.0, 1.0),
-                text_primary: Color::rgba(0.12, 0.16, 0.25, 1.0),
-                text_secondary: Color::rgba(0.24, 0.30, 0.40, 1.0),
-                text_muted: Color::rgba(0.42, 0.48, 0.58, 1.0),
-                button_idle: Color::rgba(0.78, 0.84, 0.94, 1.0),
-                button_hovered: Color::rgba(0.70, 0.78, 0.90, 1.0),
-                button_pressed: Color::rgba(0.62, 0.70, 0.84, 1.0),
-                button_disabled: Color::rgba(0.80, 0.82, 0.86, 0.7),
-                accent: Color::rgba(0.18, 0.50, 0.88, 1.0),
-                sensor_idle: Color::rgba(0.78, 0.84, 0.94, 1.0),
-                sensor_hovered: Color::rgba(0.70, 0.78, 0.90, 1.0),
-                sensor_pressed: Color::rgba(0.62, 0.70, 0.84, 1.0),
-                sensor_active_idle: Color::rgba(0.52, 0.78, 0.62, 1.0),
-                sensor_active_hovered: Color::rgba(0.46, 0.72, 0.57, 1.0),
-                sensor_active_pressed: Color::rgba(0.38, 0.64, 0.50, 1.0),
-            }
-        }
-    }
-}
-
-pub(crate) fn content_padding_for_safe_area(_insets: (f32, f32, f32, f32)) -> (f32, f32) {
-    (16.0, 20.0)
-}
-
-fn current_theme() -> ExampleTheme {
-    ExampleTheme::for_appearance(current_is_dark_mode())
-}
-
-#[cfg(target_os = "ios")]
-fn current_is_dark_mode() -> bool {
-    blinc_platform_ios::is_dark_mode()
-}
-
-#[cfg(not(target_os = "ios"))]
-fn current_is_dark_mode() -> bool {
-    true
-}
-
-#[cfg(target_os = "ios")]
-fn current_safe_area_insets() -> (f32, f32, f32, f32) {
-    blinc_platform_ios::get_safe_area_insets()
-}
-
-#[cfg(not(target_os = "ios"))]
-fn current_safe_area_insets() -> (f32, f32, f32, f32) {
-    (0.0, 0.0, 0.0, 0.0)
-}
-
 /// Counter button with stateful hover/press states
-fn counter_button(
-    label: &str,
-    count: State<i32>,
-    delta: i32,
-    theme: ExampleTheme,
-) -> impl ElementBuilder {
+fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {
     let label = label.to_string();
 
     let count = count.clone();
     stateful::<ButtonState>()
         .on_state(move |ctx| {
             let bg = match ctx.state() {
-                ButtonState::Idle => theme.button_idle,
-                ButtonState::Hovered => theme.button_hovered,
-                ButtonState::Pressed => theme.button_pressed,
-                ButtonState::Disabled => theme.button_disabled,
+                ButtonState::Idle => Color::rgba(0.3, 0.3, 0.4, 1.0),
+                ButtonState::Hovered => Color::rgba(0.4, 0.4, 0.5, 1.0),
+                ButtonState::Pressed => Color::rgba(0.2, 0.2, 0.3, 1.0),
+                ButtonState::Disabled => Color::rgba(0.2, 0.2, 0.2, 0.5),
             };
 
             div()
@@ -137,7 +32,7 @@ fn counter_button(
                 .items_center()
                 .justify_center()
                 .cursor(CursorStyle::Pointer)
-                .child(text(&label).size(24.0).color(theme.text_primary))
+                .child(text(&label).size(24.0).color(Color::WHITE))
         })
         .on_click(move |_| {
             count.set(count.get() + delta);
@@ -145,31 +40,31 @@ fn counter_button(
 }
 
 /// Counter display that reacts to count changes
-fn counter_display(count: State<i32>, theme: ExampleTheme) -> impl ElementBuilder {
+fn counter_display(count: State<i32>) -> impl ElementBuilder {
     stateful::<NoState>()
         .deps([count.signal_id()])
         .on_state(move |_ctx| {
             div().child(
                 text(format!("Count: {}", count.get()))
                     .size(48.0)
-                    .color(theme.accent)
+                    .color(Color::rgba(0.4, 0.8, 1.0, 1.0))
                     .align(TextAlign::Center),
             )
         })
 }
 
 /// Counter demo section
-fn counter_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn counter_section(ctx: &WindowedContext) -> Div {
     let count = ctx.use_state_keyed("count", || 0i32);
 
-    section_card("Counter Demo", theme)
-        .child(counter_display(count.clone(), theme))
+    section_card("Counter Demo")
+        .child(counter_display(count.clone()))
         .child(
             div()
                 .flex_row()
                 .gap(16.0)
-                .child(counter_button("-", count.clone(), -1, theme))
-                .child(counter_button("+", count.clone(), 1, theme)),
+                .child(counter_button("-", count.clone(), -1))
+                .child(counter_button("+", count.clone(), 1)),
         )
 }
 
@@ -190,7 +85,7 @@ fn counter_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 /// the model level (cursor moves, characters insert via hardware
 /// keyboard / Bluetooth keyboard) but the soft keyboard won't pop
 /// up.
-fn keyboard_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn keyboard_section(ctx: &WindowedContext) -> Div {
     // Persistent text-input state, keyed so it survives rebuilds.
     // `text_input_state_with_placeholder` returns a
     // `SharedTextInputState` (Arc<Mutex<TextInputData>>) which is
@@ -209,7 +104,7 @@ fn keyboard_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
     let input_bg = Color::rgba(0.20, 0.20, 0.27, 1.0);
     let input_focus_bg = Color::rgba(0.24, 0.24, 0.32, 1.0);
 
-    section_card("Soft Keyboard Test", theme)
+    section_card("Soft Keyboard Test")
         .child(
             text("Tap the field — the OS soft keyboard should pop up on mobile.")
                 .size(13.0)
@@ -232,7 +127,7 @@ fn keyboard_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 }
 
 /// Demo 1: Spinning loader using rotation keyframes
-fn spinning_loader_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn spinning_loader_demo(ctx: &WindowedContext) -> Div {
     let timeline = ctx.use_animated_timeline();
 
     let entry_id = timeline.lock().unwrap().configure(|t| {
@@ -244,7 +139,7 @@ fn spinning_loader_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 
     let render_timeline = Arc::clone(&timeline);
 
-    demo_card("Spinning Loader", theme).child(
+    demo_card("Spinning Loader").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
             let timeline = render_timeline.lock().unwrap();
             let angle_deg = timeline.get(entry_id).unwrap_or(0.0);
@@ -294,7 +189,7 @@ fn spinning_loader_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 }
 
 /// Demo 2: Pulsing dots with staggered keyframes
-fn pulsing_dots_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn pulsing_dots_demo(ctx: &WindowedContext) -> Div {
     let timelines: Vec<SharedAnimatedTimeline> = (0..3)
         .map(|i| ctx.use_animated_timeline_for(format!("pulsing_dot_{}", i)))
         .collect();
@@ -319,7 +214,7 @@ fn pulsing_dots_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 
     let timelines_clone: Vec<_> = timelines.iter().map(Arc::clone).collect();
 
-    demo_card("Pulsing Dots", theme).child(
+    demo_card("Pulsing Dots").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
             let cx = bounds.width / 2.0;
             let cy = bounds.height / 2.0;
@@ -349,7 +244,7 @@ fn pulsing_dots_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 }
 
 /// Demo 3: Progress bar with eased fill animation
-fn progress_bar_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn progress_bar_demo(ctx: &WindowedContext) -> Div {
     let timeline = ctx.use_animated_timeline();
 
     let entry_id = timeline.lock().unwrap().configure(|t| {
@@ -365,7 +260,7 @@ fn progress_bar_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
         ready_timeline.lock().unwrap().start();
     });
 
-    demo_card("Progress Bar", theme)
+    demo_card("Progress Bar")
         .id("progress-bar-demo")
         .child(
             canvas(move |ctx: &mut dyn DrawContext, bounds| {
@@ -381,7 +276,7 @@ fn progress_bar_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
                 ctx.fill_rect(
                     Rect::new(bar_x, bar_y, bar_width, bar_height),
                     blinc_core::CornerRadius::uniform(6.0),
-                    Brush::Solid(theme.panel_bg),
+                    Brush::Solid(Color::rgba(0.2, 0.2, 0.25, 1.0)),
                 );
 
                 // Filled portion
@@ -405,7 +300,7 @@ fn progress_bar_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
         .child(
             text("Tap to restart")
                 .size(12.0)
-                .color(theme.text_muted),
+                .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
         )
         .on_click(move |_| {
             click_timeline.lock().unwrap().restart();
@@ -413,7 +308,7 @@ fn progress_bar_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 }
 
 /// Demo 4: Bouncing ball with squash and stretch
-fn bouncing_ball_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+fn bouncing_ball_demo(ctx: &WindowedContext) -> Div {
     let timeline = ctx.use_animated_timeline();
 
     let entry_id = timeline.lock().unwrap().configure(|t| {
@@ -425,7 +320,7 @@ fn bouncing_ball_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 
     let render_timeline = Arc::clone(&timeline);
 
-    demo_card("Bouncing Ball", theme).child(
+    demo_card("Bouncing Ball").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
             let timeline = render_timeline.lock().unwrap();
             let t = timeline.get(entry_id).unwrap_or(0.0);
@@ -492,12 +387,12 @@ fn bouncing_ball_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 }
 
 /// Animation demos section
-fn animation_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
-    section_card("Keyframe Animations", theme)
+fn animation_section(ctx: &WindowedContext) -> Div {
+    section_card("Keyframe Animations")
         .child(
             text("Canvas elements with multi-property keyframe animations")
                 .size(16.0)
-                .color(theme.text_muted)
+                .color(Color::rgba(0.6, 0.6, 0.7, 1.0))
                 .align(TextAlign::Center),
         )
         .child(
@@ -506,8 +401,8 @@ fn animation_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
                 .gap(10.0)
                 .flex_wrap()
                 .justify_center()
-                .child(spinning_loader_demo(ctx, theme))
-                .child(pulsing_dots_demo(ctx, theme)),
+                .child(spinning_loader_demo(ctx))
+                .child(pulsing_dots_demo(ctx)),
         )
         .child(
             div()
@@ -515,20 +410,20 @@ fn animation_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
                 .gap(10.0)
                 .flex_wrap()
                 .justify_center()
-                .child(progress_bar_demo(ctx, theme))
-                .child(bouncing_ball_demo(ctx, theme)),
+                .child(progress_bar_demo(ctx))
+                .child(bouncing_ball_demo(ctx)),
         )
 }
 
 /// Helper to create a section card
-fn section_card(title: &str, theme: ExampleTheme) -> Div {
+fn section_card(title: &str) -> Div {
     div()
         .w_full()
         .flex_col()
         .gap(6.0)
         .py(5.0)
         .px(8.0)
-        .bg(theme.section_bg)
+        .bg(Color::rgba(0.12, 0.12, 0.17, 1.0))
         .rounded(16.0)
         .items_center()
         .child(
@@ -537,73 +432,67 @@ fn section_card(title: &str, theme: ExampleTheme) -> Div {
                     .size(24.0)
                     .align(TextAlign::Center)
                     .weight(FontWeight::Bold)
-                    .color(theme.text_primary)
+                    .color(Color::WHITE)
                     .no_wrap(),
             ),
         )
 }
 
 /// Helper to create a demo card
-fn demo_card(title: &str, theme: ExampleTheme) -> Div {
+fn demo_card(title: &str) -> Div {
     div()
         .w(170.0)
         .flex_col()
         .gap(5.0)
         .py(8.0)
         .px(4.0)
-        .bg(theme.card_bg)
+        .bg(Color::rgba(0.18, 0.18, 0.23, 1.0))
         .rounded(12.0)
         .items_center()
         .child(
             text(title)
                 .size(14.0)
                 .weight(FontWeight::SemiBold)
-                .color(theme.text_primary),
+                .color(Color::WHITE),
         )
 }
 
 /// Main application UI with scroll container
 fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
-    let theme = current_theme();
-    let insets = current_safe_area_insets();
-    let (top_padding, bottom_padding) = content_padding_for_safe_area(insets);
-
     div()
-        .id("example.root")
         .w(ctx.width)
         .h(ctx.height)
-        .bg(theme.page_bg)
+        .bg(Color::rgba(0.08, 0.08, 0.12, 1.0))
         .child(
-            scroll().id("example.scroll").w(ctx.width).h(ctx.height).child(
+            scroll().w(ctx.width).h(ctx.height).child(
                 div()
-                    .id("example.content")
                     .w_full()
                     .flex_col()
                     .items_center()
                     .gap(4.0)
                     .px(8.0)
-                    .pt(top_padding)
-                    .pb(bottom_padding)
+                    .py(15.0)
                     // Header
                     .child(
                         text("Blinc Mobile Example")
-                            .id("example.header.title")
                             .align(TextAlign::Center)
                             .size(28.0)
                             .weight(FontWeight::Bold)
-                            .color(theme.text_primary),
+                            .color(Color::WHITE),
                     )
                     .child(
                         text("Scroll down for more demos")
                             .size(14.0)
-                            .color(theme.text_muted),
+                            .color(Color::rgba(0.5, 0.5, 0.6, 1.0)),
                     )
                     // Counter section
-                    .child(counter_section(ctx, theme))
+                    .child(counter_section(ctx))
                     // Soft-keyboard test section
-                    .child(keyboard_section(ctx, theme))
+                    .child(keyboard_section(ctx))
                     // Animation section
-                    .child(animation_section(ctx, theme)),
+                    .child(animation_section(ctx))
+                    // Footer spacer
+                    .child(div().h(20.0)),
             ),
         )
 }
@@ -625,7 +514,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    blinc_app::windowed::WindowedApp::run(config, |ctx| app_ui(ctx))
+    WindowedApp::run(config, |ctx| app_ui(ctx))
 }
 
 // =============================================================================
@@ -729,80 +618,4 @@ pub extern "C" fn napi_register_module() {
 
     // TODO: Register N-API functions for XComponent callbacks
     // blinc_platform_harmony::napi_bridge::register_module()
-}
-
-#[cfg(test)]
-mod tests {
-    use blinc_app::RenderTree;
-    use blinc_app::windowed::WindowedContext;
-    use super::{content_padding_for_safe_area, ExampleTheme};
-
-    #[test]
-    fn light_and_dark_theme_palettes_are_distinct() {
-        let dark = ExampleTheme::for_appearance(true);
-        let light = ExampleTheme::for_appearance(false);
-
-        assert_ne!(dark.page_bg, light.page_bg);
-        assert_ne!(dark.card_bg, light.card_bg);
-        assert_ne!(dark.text_primary, light.text_primary);
-    }
-
-    #[test]
-    fn content_padding_uses_tighter_top_spacing_than_before() {
-        let (top, bottom) = content_padding_for_safe_area((24.0, 0.0, 34.0, 0.0));
-
-        assert_eq!(top, 16.0, "expected default top spacing to stay stable");
-        assert_eq!(bottom, 20.0, "expected default bottom spacing to stay stable");
-    }
-
-    #[test]
-    fn content_padding_keeps_legacy_top_spacing_without_safe_area() {
-        let (top, bottom) = content_padding_for_safe_area((0.0, 0.0, 0.0, 0.0));
-
-        assert_eq!(top, 16.0, "expected zero-inset layouts to keep the old top spacing");
-        assert_eq!(bottom, 20.0, "expected zero-inset layouts to keep the old bottom spacing");
-    }
-
-    #[test]
-    fn header_title_stays_near_top_in_headless_layout() {
-        let mut ctx = WindowedContext::new_headless(393.0, 852.0);
-        let ui = super::app_ui(&mut ctx);
-        let mut tree = RenderTree::from_element_with_registry(&ui, ctx.element_registry().clone());
-        tree.compute_layout(ctx.width, ctx.height);
-
-        let title = tree
-            .query_by_id("example.header.title")
-            .expect("header title should exist");
-        let bounds = tree
-            .get_bounds(title)
-            .expect("header title should have layout bounds");
-
-        assert!(
-            bounds.y < 120.0,
-            "header title should start near the top, got y={}",
-            bounds.y
-        );
-    }
-
-    #[test]
-    fn scroll_content_fills_at_least_the_viewport_height() {
-        let mut ctx = WindowedContext::new_headless(393.0, 852.0);
-        let ui = super::app_ui(&mut ctx);
-        let mut tree = RenderTree::from_element_with_registry(&ui, ctx.element_registry().clone());
-        tree.compute_layout(ctx.width, ctx.height);
-
-        let content = tree
-            .query_by_id("example.content")
-            .expect("content root should exist");
-        let bounds = tree
-            .get_bounds(content)
-            .expect("content root should have layout bounds");
-
-        assert!(
-            bounds.height >= ctx.height,
-            "expected content to fill the viewport height, got height={} viewport={}",
-            bounds.height,
-            ctx.height
-        );
-    }
 }

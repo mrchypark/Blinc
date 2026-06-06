@@ -476,6 +476,45 @@ stateful::<NoState>()
     })
 ```
 
+### Persistent Stateful Handles (`SharedState<S>`)
+
+`ctx.use_signal` / `ctx.use_spring` cover state *inside* an
+`on_state` closure. The matching pair for state owned *outside* the
+closure — used when several call sites need to share or drive a
+Stateful's FSM, or when you build the `Stateful` from a factory and
+need its handle for external dispatch — is the `use_fsm`
+family.
+
+```rust
+use blinc_layout::stateful::{ButtonState, use_fsm, use_fsm_keyed};
+
+// Bare — keyed by source location of the caller via `#[track_caller]`.
+let modal_btn = use_fsm(ButtonState::Idle);
+stateful_from_handle(modal_btn.clone())
+    .on_state(/* … */)
+
+// Later, the same handle can be queried / dispatched against:
+let snapshot = modal_btn.lock().unwrap().state;
+
+// Explicit-key variant for loops or reusable factories called
+// multiple times from one line.
+for entry in items.iter() {
+    let h = use_fsm_keyed(entry.id, ButtonState::Idle);
+    /* … */
+}
+```
+
+The slot lives in the process-wide `BlincContextState` hooks +
+reactive graph. Keys come from `#[track_caller]` (`use_fsm`)
+or from any `Hash` value the caller supplies (`use_fsm_keyed`).
+Combined with the `StableNodeId` infrastructure that survives
+subtree rebuilds, both Stateful FSM state and the handles that
+reference it stay valid across every rebuild.
+
+See [State Management → Persistent Stateful Handles](../core/state.md#persistent-stateful-handles-sharedstates)
+for the full breakdown of the call-site-key forwarding semantics
+and the widget-wrapper / loop pitfall to watch for.
+
 ---
 
 ## Custom State Machines

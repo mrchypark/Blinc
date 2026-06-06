@@ -1,0 +1,107 @@
+// cn.* + DSL signal-binding showcase — no `@stateful`, no `@fsm`.
+//
+// FSM context drives two live-bound surfaces:
+//
+//   * `cn.Progress(value = pct)` — cn-side `IntoReactive<f32>`
+//     bridge. The bar fills smoothly as `pct` increments; no
+//     subtree rebuild. cn::Progress expects `0..=100` so the
+//     FSM action steps pct by 10.0.
+//
+//   * `Div(bg = hue, opacity = opac, corner_radius = radius)` —
+//     the built-in overlay binding registers with
+//     `PropertyBindingRegistry`, so signal mutation patches GPU
+//     primitives in place. Same compositor fast path the
+//     `reactive_dsl` canary in `blinc_dsl_core/examples` exercises.
+//
+// `cn.Button(on_click = …)` wires its click handler through the
+// cn-side Stateful chain; the wrapper's `ElementBuilder` impl
+// forwards `event_handlers` / `element_classes` / `element_id` /
+// `element_type_id` to the inner cn::ButtonBuilder so the renderer
+// finds the click surface, the cn-button CSS classes, and the
+// semantic type. Plain-Div Step / Reset still work the same way —
+// kept here as a visual contrast with the cn-styled variants.
+
+fsm Ticker {
+    context {
+        pct: f64 = 0.0
+        opac: f64 = 0.0
+        hue: i32 = 0
+        radius: f64 = 0.0
+    }
+    state Idle
+    initial Idle
+    on Idle.Step -> Idle {
+        ctx.pct += 10.0             // 0..=100 for cn.Progress
+        ctx.opac += 0.1             // 0..=1 for Div(opacity)
+        ctx.hue += 2236962          // ~0x222222 step through hex
+        ctx.radius += 4.0
+    }
+    on Idle.Reset -> Idle {
+        ctx.pct = 0.0
+        ctx.opac = 0.0
+        ctx.hue = 0
+        ctx.radius = 0.0
+    }
+}
+
+component CnLive {
+    style {
+        .panel {
+            background: #0f172a;
+            padding: 32px;
+            gap: 24px;
+            border-radius: 22px;
+            color: #f8fafc;
+            width: 540px;
+            flex-direction: column;
+        }
+        .row {
+            gap: 16px;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        .swatch {
+            width: 96px;
+            height: 96px;
+            border-radius: 18px;
+            background: #38bdf8;
+        }
+        .btn-row {
+            gap: 12px;
+            flex-direction: row;
+            justify-content: center;
+        }
+        .btn {
+            background: #3b82f6;
+            padding: 12px 18px;
+            border-radius: 10px;
+            color: #f8fafc;
+        }
+        .btn-reset {
+            background: #ef4444;
+            padding: 12px 18px;
+            border-radius: 10px;
+            color: #f8fafc;
+        }
+        .btn *, .btn-reset * { pointer-events: none }
+    }
+
+    view {
+        Div(class = "panel") {
+            cn.Progress(value = Ticker.pct, size = "medium")
+
+            Div(class = "row") {
+                Div(class = "swatch", bg = Ticker.hue, opacity = Ticker.opac)
+                Div(class = "swatch", corner_radius = Ticker.radius)
+            }
+
+            Div(class = "btn-row") {
+                cn.Button("Step", on_click = || { Ticker.trigger("Step") })
+                cn.Button("Reset", variant = "destructive", on_click = || { Ticker.trigger("Reset") })
+            }
+        }
+    }
+}
+
+view { CnLive() }

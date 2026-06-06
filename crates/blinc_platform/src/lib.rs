@@ -42,97 +42,43 @@
 //! }
 //! ```
 
-pub mod accessibility;
-pub mod app;
 pub mod assets;
-pub mod ble;
-pub mod clipboard;
 pub mod deep_link;
-pub mod environment;
 mod error;
 mod event;
-pub mod haptics;
-mod ime;
 mod input;
-pub mod microphone;
-pub mod permissions;
 mod platform;
-pub mod sensors;
 mod window;
 
 // Re-export all public types
-pub use environment::{
-    LifecycleState, PlatformEnvironmentChanged, PlatformEnvironmentSnapshot, ViewportInsets,
-    WindowMetrics,
-};
 pub use error::{PlatformError, Result};
 pub use event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
-pub use ime::{
-    current_ime_state, set_ime_state, ImeCursorArea, ImeRequest, ImeState, ImeVisibility,
-    SelectionRange, TextInputSessionId,
-};
 pub use input::{
-    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key, KeyState,
-    KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
+    InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
+    TouchEvent,
 };
 pub use platform::Platform;
-pub use window::{AnimationThreadMode, Cursor, Window, WindowConfig, WindowId};
+pub use window::{
+    AnimationFps, AnimationThreadMode, Cursor, Window, WindowConfig, WindowId, WindowLevel,
+};
 
 // Re-export commonly used asset types
-pub use accessibility::{
-    current_accessibility_sync_status, current_platform_accessibility_snapshot,
-    mark_accessibility_unsupported, reset_accessibility_runtime_state,
-    update_platform_accessibility_snapshot, AccessibilityAction, AccessibilityActionRequest,
-    AccessibilityBounds, AccessibilityNode, AccessibilityNodeId, AccessibilityRole,
-    AccessibilitySyncStatus, AccessibilityTreeSnapshot,
-};
 pub use assets::{AssetLoader, AssetPath, FilesystemAssetLoader};
-pub use ble::{
-    BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
-    BleScanResult, BleScanStatus,
-};
-pub use permissions::{PermissionKind, PermissionStatus};
-pub use sensors::{
-    NativeBridgePermissionBackend, SensorAccuracy, SensorBackend, SensorBatchSummary, SensorClient,
-    SensorConfig, SensorError, SensorFrame, SensorKind, SensorPermissionBackend,
-    SensorPermissionService, SensorPermissionState, SensorProbeState, SensorRuntimeController,
-    SensorStatus,
-};
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::accessibility::{
-        current_accessibility_sync_status, current_platform_accessibility_snapshot,
-        mark_accessibility_unsupported, reset_accessibility_runtime_state,
-        update_platform_accessibility_snapshot, AccessibilityAction, AccessibilityActionRequest,
-        AccessibilityBounds, AccessibilityNode, AccessibilityNodeId, AccessibilityRole,
-        AccessibilitySyncStatus, AccessibilityTreeSnapshot,
-    };
-    pub use crate::app;
     pub use crate::assets::{
-        asset_exists, asset_url, load_asset, load_asset_string, preload_settled, AssetLoader,
-        AssetPath, FilesystemAssetLoader,
-    };
-    pub use crate::ble::{
-        BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
-        BleScanResult, BleScanStatus,
-    };
-    pub use crate::environment::{
-        LifecycleState, PlatformEnvironmentChanged, PlatformEnvironmentSnapshot, ViewportInsets,
-        WindowMetrics,
+        AssetLoader, AssetPath, FilesystemAssetLoader, asset_exists, asset_url, load_asset,
+        load_asset_string, preload_settled,
     };
     pub use crate::error::{PlatformError, Result};
     pub use crate::event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
-    pub use crate::haptics;
-    pub use crate::ime::{
-        current_ime_state, set_ime_state, ImeCursorArea, ImeRequest, ImeState, ImeVisibility,
-        SelectionRange, TextInputSessionId,
-    };
     pub use crate::input::{
-        FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
-        KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
+        InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
+        TouchEvent,
     };
-    pub use crate::permissions::{PermissionKind, PermissionStatus};
     pub use crate::platform::Platform;
-    pub use crate::window::{AnimationThreadMode, Cursor, Window, WindowConfig, WindowId};
+    pub use crate::window::{
+        AnimationFps, AnimationThreadMode, Cursor, Window, WindowConfig, WindowId, WindowLevel,
+    };
 }

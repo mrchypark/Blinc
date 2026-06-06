@@ -8,8 +8,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        BlincNativeBridge.shared.registerDefaults()
-        BlincNativeBridge.shared.connectToRust()
         window = UIWindow(frame: UIScreen.main.bounds)
         window?.rootViewController = BlincViewController()
         window?.makeKeyAndVisible()

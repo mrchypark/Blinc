@@ -23,7 +23,7 @@ default = []
 
 # Canvas + GPU primitives (canvas_kit_demo, mesh_3d_demo, and the
 # 3D-pipeline base used by every glTF demo).
-canvas = ["dep:blinc_canvas_kit"]
+canvas = ["dep:blinc_canvas_kit", "dep:blinc_input"]
 
 # Audio + video playback. Enables the `media` widgets in
 # `blinc_layout` (which themselves pull `blinc_media`).
@@ -47,6 +47,11 @@ gltf = ["canvas", "dep:blinc_gltf", "dep:blinc_skeleton", "dep:blinc_input"]
 # `docs/book/src/advanced/hot-reload.md`).
 hot-reload = ["blinc_app/hot-reload"]
 
+# EXPERIMENTAL — hand-rolled Wayland frame-callback gate. Linux-only.
+# Forwards to `blinc_app/wayland-frame-gate`. See the module docs in
+# `crates/blinc_app/src/wayland_frame_gate.rs`.
+wayland-frame-gate = ["blinc_app/wayland-frame-gate"]
+
 [dependencies]
 # Always-on — every demo touches at least these.
 blinc_app = { path = "../../crates/blinc_app", features = ["windowed"] }
@@ -59,7 +64,7 @@ blinc_text = { path = "../../crates/blinc_text" }
 blinc_animation = { path = "../../crates/blinc_animation" }
 blinc_paint = { path = "../../crates/blinc_paint" }
 blinc_router = { path = "../../crates/blinc_router" }
-blinc_image = { path = "../../crates/blinc_image" }
+blinc_image = { path = "../../crates/blinc_image", features = ["webp"] }
 blinc_platform = { path = "../../crates/blinc_platform" }
 blinc_platform_desktop = { path = "../../extensions/blinc_platform_desktop" }
 
@@ -92,6 +97,11 @@ blinc_input = { git = "https://github.com/project-blinc/blinc_input.git", rev = 
 image.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Direct wgpu + bytemuck for the gpu_pass_demo example. Other demos
+# go through DrawContext / blinc_canvas_kit and never name these
+# crates directly.
+wgpu.workspace = true
+bytemuck.workspace = true
 # Cross-target monotonic clock. `std::time::Instant` panics on
 # `wasm32-unknown-unknown`; `web_time::Instant` is the same API
 # backed by `performance.now()` on web, `Instant::now()` elsewhere.
@@ -150,6 +160,18 @@ required-features = ["media"]
 
 [[example]]
 name = "cn_demo"
+required-features = ["cn"]
+
+[[example]]
+name = "spinner_test"
+required-features = ["cn"]
+
+[[example]]
+name = "stateful_demo"
+required-features = ["cn"]
+
+[[example]]
+name = "router_navigation"
 required-features = ["cn"]
 
 [[example]]

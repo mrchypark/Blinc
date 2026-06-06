@@ -14,7 +14,7 @@ crate-type = ["lib"]
 [features]
 default = []
 # Enable recorder integration for debugging/testing. Disable for production builds.
-recorder = ["dep:blinc_recorder"]
+recorder = []
 # Enable the audio / video / waveform widgets and pull in the
 # `blinc_media` crate's audio decoder stack (rodio + claxon + hound +
 # lewton + cpal + alsa/coreaudio). Off by default so apps that don't
@@ -31,8 +31,6 @@ clipboard_image = ["arboard/image-data"]
 blinc_core = { path = "../blinc_core", version = "0.5.1" }
 blinc_animation = { path = "../blinc_animation", version = "0.5.1" }
 blinc_theme = { path = "../blinc_theme", version = "0.5.1" }
-blinc_platform = { path = "../blinc_platform", version = "0.5.1" }
-blinc_recorder = { path = "../blinc_recorder", version = "0.5.1", optional = true }
 
 # Layout
 taffy.workspace = true
@@ -40,6 +38,11 @@ taffy.workspace = true
 # Data structures
 slotmap.workspace = true
 indexmap.workspace = true
+
+# Fast non-cryptographic hash used by `StableNodeId::derive_child` —
+# called for every node every build, so the FxHasher's speed matters.
+# Workspace pin (also used by blinc_router and ElementRegistry).
+rustc-hash.workspace = true
 
 # Logging
 tracing.workspace = true

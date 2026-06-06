@@ -29,40 +29,13 @@
 //! counter.set_rebuild(value + 1);
 //! ```
 
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
-fn debug_signal_value_summary(value: &(dyn Any + Send)) -> Option<String> {
-    macro_rules! summarize_copy {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                if let Some(inner) = value.downcast_ref::<$ty>() {
-                    return Some(inner.to_string());
-                }
-            )*
-        };
-    }
-
-    summarize_copy!(
-        bool, char, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
-    );
-
-    if let Some(inner) = value.downcast_ref::<String>() {
-        let truncated = if inner.chars().count() > 96 {
-            format!("{}...", inner.chars().take(96).collect::<String>())
-        } else {
-            inner.clone()
-        };
-        return Some(format!("{truncated:?}"));
-    }
-
-    None
-}
+use std::sync::{Arc, LazyLock, Mutex};
 
 new_key_type! {
     /// Unique identifier for a signal
@@ -101,6 +74,13 @@ impl<T> Signal<T> {
         self.id
     }
 
+    /// Alias for [`Self::id`] — matches `State<T>::signal_id` so
+    /// `signal.signal_id()` and `state.signal_id()` both work in
+    /// `.deps([…])` declarations.
+    pub fn signal_id(&self) -> SignalId {
+        self.id
+    }
+
     /// Reconstruct a Signal from a raw SignalId
     ///
     /// # Safety
@@ -114,6 +94,243 @@ impl<T> Signal<T> {
     }
 }
 
+// =========================================================================
+// Re-entrancy infrastructure — TLS in-flight graph + deferred writes.
+//
+// The process-global graph is protected by a `Mutex`. Inside
+// `flush_effects` (called while the mutex is held), user effect
+// closures may want to read or write signals. Re-acquiring the
+// global mutex from inside such a closure deadlocks — same thread,
+// non-reentrant mutex.
+//
+// Two-piece fix that keeps the public `Signal<T>::get / set / update`
+// API unchanged:
+//
+// 1. **In-flight graph pointer** — `run_effect` stashes
+//    `self as *const ReactiveGraph` in TLS for the duration of the
+//    closure call. Reads (`Signal::try_get`) check the TLS first; if
+//    set, they borrow the graph directly without locking.
+//
+// 2. **Deferred-write queue** — writes attempted while the in-flight
+//    pointer is set get pushed onto a TLS queue of boxed closures.
+//    After the outer write returns (notifications fired, lock long
+//    released), [`drain_deferred_writes`] re-invokes each one. This
+//    matches the "write semantics defer to next tick" pattern
+//    SolidJS / Leptos use to keep effect bodies' read values stable
+//    within a single fire.
+// =========================================================================
+
+thread_local! {
+    /// Pointer to the `ReactiveGraph` currently executing inside
+    /// `run_effect`. `null` when no effect is in flight. Reads
+    /// inside effect closures use this to bypass the global mutex.
+    static IN_FLIGHT_GRAPH: std::cell::Cell<*const ReactiveGraph> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+
+    /// Writes deferred while [`IN_FLIGHT_GRAPH`] was non-null.
+    /// Drained by [`drain_deferred_writes`] from the outer
+    /// `Signal<T>::set` after notifications complete.
+    static DEFERRED_WRITES: std::cell::RefCell<Vec<Box<dyn FnOnce() + Send>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Returns `true` if a `flush_effects` callback is currently running
+/// on this thread — i.e. re-entrant signal access would deadlock if
+/// it took the mutex.
+fn is_in_flush() -> bool {
+    IN_FLIGHT_GRAPH.with(|c| !c.get().is_null())
+}
+
+/// Run `f` against the in-flight graph if one is set; otherwise
+/// returns `None` and the caller takes the global-mutex path.
+fn with_in_flight_graph<R>(f: impl FnOnce(&ReactiveGraph) -> R) -> Option<R> {
+    let p = IN_FLIGHT_GRAPH.with(|c| c.get());
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: pointer is set only for the duration of `run_effect`'s
+    // closure invocation, which holds `&mut self` to the graph.
+    // We're a borrow within that window — single-threaded, no
+    // aliasing.
+    Some(f(unsafe { &*p }))
+}
+
+/// Drain queued deferred writes. Called from the outer write's
+/// continuation after notifications fire. Each closure is a fresh
+/// `Signal<T>::set` call that takes the normal path (in-flight
+/// pointer is clear by the time this runs).
+fn drain_deferred_writes() {
+    // Re-entrant safety: a deferred write may itself queue more.
+    // Loop until the queue is empty. Don't hold the borrow across
+    // the call.
+    loop {
+        let next = DEFERRED_WRITES.with(|q| q.borrow_mut().pop());
+        match next {
+            Some(f) => f(),
+            None => break,
+        }
+    }
+}
+
+// =========================================================================
+// Signal<T> rich API — operates against the process-global graph.
+//
+// These methods make `Signal<T>` a first-class reactive primitive:
+// callers can `signal(0).set(...)` / `.get()` / `.update(...)` without
+// holding a `State<T>` wrapper or routing through `BlincContextState`.
+// Each call grabs the global graph Arc (cheap), takes its mutex briefly,
+// then fires the same property-binding + derived + stateful-deps
+// notifiers that `State<T>::set` does. `Signal<T>` stays `Copy` — the
+// graph reference is never stored on the handle.
+// =========================================================================
+
+impl<T: Clone + Send + 'static> Signal<T> {
+    /// Read the current value. Returns `None` if the signal is no
+    /// longer in the graph (e.g. graph reset between tests).
+    ///
+    /// Re-entrancy: when called from inside an effect closure, takes
+    /// the fast path against the in-flight graph reference (no
+    /// mutex acquisition) so DSL effect bodies that call
+    /// `<signal>.get()` don't deadlock against the lock the outer
+    /// `flush_effects` holds.
+    pub fn try_get(&self) -> Option<T> {
+        if let Some(value) = with_in_flight_graph(|g| g.get(*self)) {
+            return value;
+        }
+        let graph = global_graph();
+        let g = graph.lock().unwrap();
+        g.get(*self)
+    }
+
+    /// Read the current value, falling back to `T::default()` if the
+    /// signal isn't resolvable. Matches `State<T>::get` ergonomics.
+    pub fn get(&self) -> T
+    where
+        T: Default,
+    {
+        self.try_get().unwrap_or_default()
+    }
+
+    /// Set a new value. Fires every subscriber: property bindings
+    /// (`.bg(&signal)` etc.), derived chains, and `Stateful` elements
+    /// declaring this signal in `.deps([...])`.
+    ///
+    /// Visual-only — does not flip the dirty flag. Use
+    /// [`Self::set_rebuild`] for structural changes.
+    ///
+    /// Re-entrancy: if called while an effect closure is in flight
+    /// (the global graph mutex is held by an outer `flush_effects`),
+    /// the write is queued in the per-thread deferred-writes table
+    /// and drained after the outer `Signal::set` completes its
+    /// notifications. Writes during an effect are visible to
+    /// subsequent reads but NOT to the in-progress effect's own
+    /// in-this-fire reads — matching the SolidJS / Leptos semantics.
+    pub fn set(&self, value: T) {
+        let id = *self;
+        if is_in_flush() {
+            DEFERRED_WRITES.with(|q| {
+                q.borrow_mut()
+                    .push(Box::new(move || Signal::<T>::from_id(id.id).set(value)));
+            });
+            return;
+        }
+        let dirty_derived = {
+            let graph = global_graph();
+            let mut g = graph.lock().unwrap();
+            g.set(*self, value);
+            g.take_dirty_derived()
+        };
+        notify_stateful_deps(&[self.id]);
+        notify_property_bindings(self.id);
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
+        drain_deferred_writes();
+    }
+
+    /// Set a new value AND flip the global dirty flag, requesting a
+    /// full tree rebuild. Use for structural changes (adding/removing
+    /// children, swapping branches); prefer [`Self::set`] otherwise.
+    pub fn set_rebuild(&self, value: T) {
+        let id = *self;
+        if is_in_flush() {
+            DEFERRED_WRITES.with(|q| {
+                q.borrow_mut().push(Box::new(move || {
+                    Signal::<T>::from_id(id.id).set_rebuild(value)
+                }));
+            });
+            return;
+        }
+        let dirty_derived = {
+            let graph = global_graph();
+            let mut g = graph.lock().unwrap();
+            g.set(*self, value);
+            g.take_dirty_derived()
+        };
+        GLOBAL_DIRTY.store(true, Ordering::SeqCst);
+        notify_stateful_deps(&[self.id]);
+        notify_property_bindings(self.id);
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
+        drain_deferred_writes();
+    }
+
+    /// Update the value via a closure. Fires the same subscribers as
+    /// [`Self::set`].
+    pub fn update(&self, f: impl FnOnce(T) -> T) {
+        // Deferring an `update` mid-flush means: read the value NOW
+        // (off the in-flight graph), apply `f`, and queue a `set` of
+        // the result. Without this, deferring `update` would lose the
+        // closure's snapshot semantics.
+        if is_in_flush() {
+            // Read current value via the in-flight graph fast path,
+            // apply f, queue the resulting set.
+            let current = self.try_get();
+            let Some(current) = current else { return };
+            let next = f(current);
+            self.set(next);
+            return;
+        }
+        let dirty_derived = {
+            let graph = global_graph();
+            let mut g = graph.lock().unwrap();
+            g.update(*self, f);
+            g.take_dirty_derived()
+        };
+        notify_stateful_deps(&[self.id]);
+        notify_property_bindings(self.id);
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
+        drain_deferred_writes();
+    }
+
+    /// Update the value AND flip the global dirty flag.
+    pub fn update_rebuild(&self, f: impl FnOnce(T) -> T) {
+        if is_in_flush() {
+            let current = self.try_get();
+            let Some(current) = current else { return };
+            let next = f(current);
+            self.set_rebuild(next);
+            return;
+        }
+        let dirty_derived = {
+            let graph = global_graph();
+            let mut g = graph.lock().unwrap();
+            g.update(*self, f);
+            g.take_dirty_derived()
+        };
+        GLOBAL_DIRTY.store(true, Ordering::SeqCst);
+        notify_stateful_deps(&[self.id]);
+        notify_property_bindings(self.id);
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
+        drain_deferred_writes();
+    }
+}
+
 impl SignalId {
     /// Convert to raw u64 for storage
     pub fn to_raw(&self) -> u64 {
@@ -123,6 +340,21 @@ impl SignalId {
     }
 
     /// Reconstruct from raw u64
+    pub fn from_raw(raw: u64) -> Self {
+        slotmap::KeyData::from_ffi(raw).into()
+    }
+}
+
+impl DerivedId {
+    /// Convert to raw u64 for cross-FFI storage. Used by the DSL
+    /// `computed { … } : T` lowering to bake a `Computed<T>` handle
+    /// into JIT code as an i64 literal.
+    pub fn to_raw(&self) -> u64 {
+        use slotmap::Key;
+        self.data().as_ffi()
+    }
+
+    /// Reconstruct from raw u64.
     pub fn from_raw(raw: u64) -> Self {
         slotmap::KeyData::from_ffi(raw).into()
     }
@@ -146,6 +378,20 @@ impl<T> Copy for Derived<T> {}
 impl<T> Derived<T> {
     pub fn id(&self) -> DerivedId {
         self.id
+    }
+
+    /// Reconstruct a `Derived<T>` from a raw `DerivedId`.
+    ///
+    /// # Safety
+    /// The caller must ensure the `DerivedId` refers to a derived
+    /// computed of type `T`. Used by the FFI boundary to rehydrate
+    /// a [`Computed<T>`] from a raw `u64` handle baked into JIT
+    /// code by `computed { … } : T` lowering.
+    pub fn from_id(id: DerivedId) -> Self {
+        Self {
+            id,
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -214,6 +460,12 @@ pub struct ReactiveGraph {
     tracking: RefCell<Option<Vec<SignalId>>>,
     /// Global version counter
     global_version: Cell<u64>,
+    /// Per-set buffer of derived ids that just transitioned from
+    /// clean to dirty. Drained at the end of every [`Self::set`] call
+    /// to fire `notify_property_bindings_for_derived` once per
+    /// affected derived (Phase 8 follow-up: Derived ↔ property-binding
+    /// bridge, [[project-reactive-architecture-v2]]).
+    derived_dirty_buffer: RefCell<SmallVec<[DerivedId; 4]>>,
 }
 
 impl ReactiveGraph {
@@ -227,30 +479,8 @@ impl ReactiveGraph {
             batch_depth: Cell::new(0),
             tracking: RefCell::new(None),
             global_version: Cell::new(0),
+            derived_dirty_buffer: RefCell::new(SmallVec::new()),
         }
-    }
-
-    /// Clear all signals, derived values, and effects.
-    pub fn clear(&mut self) {
-        self.signals.clear();
-        self.derived.clear();
-        self.effects.clear();
-        self.pending_effects.borrow_mut().clear();
-        self.batch_depth.set(0);
-        *self.tracking.borrow_mut() = None;
-        self.global_version.set(0);
-    }
-
-    /// Return a best-effort debug summary for a signal value.
-    pub fn debug_signal_summary(&self, signal_id: SignalId) -> Option<String> {
-        self.signals
-            .get(signal_id)
-            .and_then(|node| debug_signal_value_summary(&*node.value))
-    }
-
-    /// Check whether a signal is still present in the graph.
-    pub fn has_signal(&self, signal_id: SignalId) -> bool {
-        self.signals.contains_key(signal_id)
     }
 
     // =========================================================================
@@ -301,7 +531,16 @@ impl ReactiveGraph {
             node.version += 1;
             self.global_version.set(self.global_version.get() + 1);
 
-            // Mark all subscribers as dirty
+            // Mark all subscribers as dirty. mark_dirty recursively
+            // walks derived -> derived chains, collecting every
+            // derived that flipped from clean to dirty into
+            // `derived_dirty_buffer`. The buffer is drained by
+            // `State::set` AFTER it releases its lock on the graph
+            // and fires `notify_property_bindings_for_derived` per
+            // id — firing inline here would deadlock, because the
+            // binding registry's read closures call
+            // `Computed::try_get` which re-acquires this same
+            // mutex.
             let subscribers: SmallVec<[SubscriberId; 4]> = node.subscribers.clone();
             for sub in subscribers {
                 self.mark_dirty(sub);
@@ -312,6 +551,18 @@ impl ReactiveGraph {
                 self.flush_effects();
             }
         }
+    }
+
+    /// Drain the per-set list of derived ids that flipped to dirty
+    /// during the most recent `set` (or chain of effects following
+    /// it). Returns ids in the order they were dirtied. Empty if
+    /// nothing flipped.
+    ///
+    /// Called by `State::set` immediately AFTER dropping its lock on
+    /// the graph, so the property-binding registry's read closures
+    /// can re-enter the lock safely while firing.
+    pub fn take_dirty_derived(&self) -> SmallVec<[DerivedId; 4]> {
+        std::mem::take(&mut *self.derived_dirty_buffer.borrow_mut())
     }
 
     /// Update a signal using a function
@@ -513,14 +764,19 @@ impl ReactiveGraph {
     fn mark_dirty(&mut self, sub: SubscriberId) {
         match sub {
             SubscriberId::Derived(id) => {
-                if let Some(node) = self.derived.get(id) {
-                    if !node.dirty.get() {
-                        node.dirty.set(true);
-                        // Propagate to derived's subscribers
-                        let subscribers: SmallVec<[SubscriberId; 4]> = node.subscribers.clone();
-                        for sub in subscribers {
-                            self.mark_dirty(sub);
-                        }
+                if let Some(node) = self.derived.get(id)
+                    && !node.dirty.get()
+                {
+                    node.dirty.set(true);
+                    // Record for the per-set property-binding fire
+                    // (drained at the end of `set`). Each derived can
+                    // only flip once per set (we're inside the
+                    // `!dirty.get()` arm), so no dedup is needed.
+                    self.derived_dirty_buffer.borrow_mut().push(id);
+                    // Propagate to derived's subscribers
+                    let subscribers: SmallVec<[SubscriberId; 4]> = node.subscribers.clone();
+                    for sub in subscribers {
+                        self.mark_dirty(sub);
                     }
                 }
             }
@@ -573,11 +829,27 @@ impl ReactiveGraph {
             }
         };
 
+        // Set the thread-local in-flight graph pointer so `Signal<T>::get`
+        // / `set` / `update` calls inside the effect closure take the
+        // re-entrant fast path (read directly from this graph, queue
+        // writes for post-flush draining) instead of re-acquiring the
+        // global mutex. Cleared in a guard's Drop so a panic inside the
+        // closure can't leak the pointer to subsequent code.
+        struct InFlightGuard;
+        impl Drop for InFlightGuard {
+            fn drop(&mut self) {
+                IN_FLIGHT_GRAPH.with(|c| c.set(std::ptr::null()));
+            }
+        }
+        IN_FLIGHT_GRAPH.with(|c| c.set(self as *const _));
+        let _guard = InFlightGuard;
+
         // SAFETY: We're not modifying the effect while running it
         // (though the effect can modify signals, which is fine)
         unsafe {
             (*run_ptr)(self);
         }
+        drop(_guard);
 
         // Get tracked dependencies
         let deps = self.tracking.take().unwrap_or_default();
@@ -646,6 +918,91 @@ pub type DirtyFlag = Arc<AtomicBool>;
 
 /// Callback for notifying stateful elements of signal changes
 pub type StatefulDepsCallback = Arc<dyn Fn(&[SignalId]) + Send + Sync>;
+
+/// Global notifier for property-binding subscribers
+/// ([[project-reactive-architecture-v2]] Phase 2). Registered once by
+/// `blinc_layout::binding` on first use; fires on every `State<T>::set`
+/// in addition to the per-State `stateful_deps_callback`.
+///
+/// blinc_core can't depend on blinc_layout (cyclic dep), so the binding
+/// registry lives in blinc_layout and the core just exposes this hook.
+/// `OnceLock` means a single notifier is installed for the process
+/// lifetime; subsequent `set_property_binding_notifier` calls are
+/// silently ignored — matches the singleton lifecycle of the binding
+/// registry.
+static PROPERTY_BINDING_NOTIFIER: std::sync::OnceLock<
+    Box<dyn Fn(SignalId) + Send + Sync + 'static>,
+> = std::sync::OnceLock::new();
+
+/// Install the global property-binding notifier. Called by
+/// `blinc_layout` on first access of its registry. Idempotent: only the
+/// first call wins.
+pub fn set_property_binding_notifier(notifier: impl Fn(SignalId) + Send + Sync + 'static) {
+    let _ = PROPERTY_BINDING_NOTIFIER.set(Box::new(notifier));
+}
+
+/// Fire the property-binding notifier for a signal that just changed.
+/// No-op if no notifier is installed (binding registry never accessed).
+pub(crate) fn notify_property_bindings(id: SignalId) {
+    if let Some(notifier) = PROPERTY_BINDING_NOTIFIER.get() {
+        notifier(id);
+    }
+}
+
+/// Global notifier for stateful-element dependency tracking.
+/// Installed by [`crate::context_state::BlincContextState`] on first
+/// init; fired by [`Signal<T>::set`] / [`Signal<T>::update`] so that
+/// `Stateful` elements with `.deps([signal.id()])` refresh on the
+/// same path as `State<T>::set` does today.
+static STATEFUL_DEPS_NOTIFIER: std::sync::OnceLock<
+    Box<dyn Fn(&[SignalId]) + Send + Sync + 'static>,
+> = std::sync::OnceLock::new();
+
+/// Install the global stateful-deps notifier. Idempotent.
+pub fn set_stateful_deps_notifier(notifier: impl Fn(&[SignalId]) + Send + Sync + 'static) {
+    let _ = STATEFUL_DEPS_NOTIFIER.set(Box::new(notifier));
+}
+
+/// Fire the stateful-deps notifier. No-op if none installed.
+pub(crate) fn notify_stateful_deps(ids: &[SignalId]) {
+    if let Some(notifier) = STATEFUL_DEPS_NOTIFIER.get() {
+        notifier(ids);
+    }
+}
+
+// =============================================================================
+// Process-global default reactive graph
+//
+// `Signal<T>` standalone (no `State<T>` wrapper, no `BlincContextState`
+// required) operates against this graph. The same Arc is used by
+// `BlincContextState` so that `use_state` / `use_state_keyed` produce
+// `State<T>` values that share dependency tracking with bare
+// `signal(...)` / `computed(...)` / `effect(...)` calls.
+// =============================================================================
+
+/// Process-wide default reactive graph. First touch initialises it;
+/// every `signal(...)`, `computed(...)`, `effect(...)`, and every
+/// `Signal<T>::get/set/update` operates against this Arc.
+static GLOBAL_GRAPH: LazyLock<SharedReactiveGraph> =
+    LazyLock::new(|| Arc::new(Mutex::new(ReactiveGraph::new())));
+
+/// Process-wide default dirty flag, paired with [`GLOBAL_GRAPH`].
+/// Platform runners read this every frame to decide whether to
+/// re-render. `BlincContextState` shares the same Arc.
+static GLOBAL_DIRTY: LazyLock<DirtyFlag> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Get a clone of the process-global reactive graph Arc. Cheap —
+/// just an Arc bump. Platform runners should use this instead of
+/// minting their own graph so standalone `signal(...)` shares the
+/// reactive surface with `State<T>` / `Computed<T>` callers.
+pub fn global_graph() -> SharedReactiveGraph {
+    Arc::clone(&GLOBAL_GRAPH)
+}
+
+/// Get a clone of the process-global dirty flag Arc.
+pub fn global_dirty_flag() -> DirtyFlag {
+    Arc::clone(&GLOBAL_DIRTY)
+}
 
 /// A bound state value with direct get/set methods
 ///
@@ -729,10 +1086,26 @@ impl<T: Clone + Send + 'static> State<T> {
     /// Use `set_rebuild()` only when the change affects tree structure
     /// (adding/removing elements, changing text content, etc.)
     pub fn set(&self, value: T) {
-        self.reactive.lock().unwrap().set(self.signal, value);
+        // Set + drain the dirty-derived list in one lock window so the
+        // ids the *just-completed* set produced are the ones we fire
+        // for. Drop the lock BEFORE invoking notifiers — the binding
+        // registry's read closures re-enter this mutex.
+        let dirty_derived = {
+            let mut g = self.reactive.lock().unwrap();
+            g.set(self.signal, value);
+            g.take_dirty_derived()
+        };
         // Notify stateful elements if callback is set
         if let Some(ref callback) = self.stateful_deps_callback {
             callback(&[self.signal.id()]);
+        }
+        // Fire signal-bound property-binding subscribers (P2).
+        notify_property_bindings(self.signal.id());
+        // Fire derived-bound property-binding subscribers for every
+        // derived that flipped to dirty during this set (Phase 8
+        // follow-up: Derived ↔ IntoReactive bridge).
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
         }
     }
 
@@ -745,25 +1118,51 @@ impl<T: Clone + Send + 'static> State<T> {
     ///
     /// For visual-only changes (colors, opacity, animations), use `set()`.
     pub fn set_rebuild(&self, value: T) {
-        self.reactive.lock().unwrap().set(self.signal, value);
+        let dirty_derived = {
+            let mut g = self.reactive.lock().unwrap();
+            g.set(self.signal, value);
+            g.take_dirty_derived()
+        };
         self.dirty_flag.store(true, Ordering::SeqCst);
+        // Property bindings still fire even on the rebuild path — a
+        // signal-bound `.bg(&state)` should patch alongside the rebuild.
+        notify_property_bindings(self.signal.id());
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
     }
 
     /// Update the value using a function
     ///
     /// Does not trigger rebuild. Use `update_rebuild()` for structural changes.
     pub fn update(&self, f: impl FnOnce(T) -> T) {
-        self.reactive.lock().unwrap().update(self.signal, f);
+        let dirty_derived = {
+            let mut g = self.reactive.lock().unwrap();
+            g.update(self.signal, f);
+            g.take_dirty_derived()
+        };
         // Notify stateful elements if callback is set
         if let Some(ref callback) = self.stateful_deps_callback {
             callback(&[self.signal.id()]);
+        }
+        notify_property_bindings(self.signal.id());
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
         }
     }
 
     /// Update the value AND trigger a UI tree rebuild
     pub fn update_rebuild(&self, f: impl FnOnce(T) -> T) {
-        self.reactive.lock().unwrap().update(self.signal, f);
+        let dirty_derived = {
+            let mut g = self.reactive.lock().unwrap();
+            g.update(self.signal, f);
+            g.take_dirty_derived()
+        };
         self.dirty_flag.store(true, Ordering::SeqCst);
+        notify_property_bindings(self.signal.id());
+        for d_id in dirty_derived {
+            notify_property_bindings_for_derived(d_id);
+        }
     }
 
     /// Get the underlying signal (for advanced use cases)
@@ -775,6 +1174,255 @@ impl<T: Clone + Send + 'static> State<T> {
     pub fn signal_id(&self) -> SignalId {
         self.signal.id()
     }
+}
+
+/// Global notifier for derived-driven property-binding subscribers.
+/// Parallels [`PROPERTY_BINDING_NOTIFIER`] but keyed by `DerivedId`
+/// instead of `SignalId`. Fires from inside [`ReactiveGraph::set`]
+/// after the dirty propagation walk completes, for every derived
+/// that was freshly dirtied this set.
+///
+/// blinc_core can't depend on blinc_layout (cyclic dep), so the
+/// property-binding registry installs both notifiers as a pair on
+/// first access. Same OnceLock idempotence story.
+static DERIVED_BINDING_NOTIFIER: std::sync::OnceLock<
+    Box<dyn Fn(DerivedId) + Send + Sync + 'static>,
+> = std::sync::OnceLock::new();
+
+/// Install the global derived-binding notifier. Paired with
+/// [`set_property_binding_notifier`] — `blinc_layout::binding`
+/// installs both on first registry access.
+pub fn set_derived_binding_notifier(notifier: impl Fn(DerivedId) + Send + Sync + 'static) {
+    let _ = DERIVED_BINDING_NOTIFIER.set(Box::new(notifier));
+}
+
+/// Fire the derived-binding notifier for a derived whose value
+/// might have changed (i.e. its dirty bit was just flipped). No-op
+/// if no notifier is installed.
+pub(crate) fn notify_property_bindings_for_derived(id: DerivedId) {
+    if let Some(notifier) = DERIVED_BINDING_NOTIFIER.get() {
+        notifier(id);
+    }
+}
+
+/// Ergonomic wrapper around [`Derived<T>`] that also carries the
+/// reactive graph reference. Same shape as [`State<T>`] — both bundle
+/// a handle (Signal / Derived) with a `SharedReactiveGraph` so
+/// readers don't need to plumb the graph through every call site.
+///
+/// `Computed<T>` is the public binding-friendly form of the lazy
+/// computed value. The underlying [`Derived<T>`] handle is exposed
+/// via [`Self::derived`] for advanced uses that need raw access to
+/// `ReactiveGraph::get_derived` etc.
+///
+/// # Reactivity
+///
+/// Reads call `get_derived` on the underlying graph, which:
+/// 1. Recomputes the value if the cache is stale (dirty bit set).
+/// 2. Auto-tracks dependencies — any signal touched inside the
+///    compute closure subscribes this derived for future dirty
+///    notifications.
+///
+/// When any tracked dependency fires via `State::set`, this
+/// derived's dirty bit flips and the property-binding registry is
+/// notified via `notify_property_bindings_for_derived` — bindings
+/// that subscribed to this `Computed<T>` re-fire and read the
+/// recomputed value.
+///
+/// # Example
+///
+/// ```ignore
+/// let graph: SharedReactiveGraph = ...;
+/// let x = State::new(...);
+/// let y = State::new(...);
+/// let x_sig = x.signal_id();
+/// let y_sig = y.signal_id();
+/// // create_derived auto-tracks signal reads
+/// let pos = {
+///     let mut g = graph.lock().unwrap();
+///     let d = g.create_derived(move |g| {
+///         let x = g.get::<f32>(Signal::from_id(x_sig)).unwrap_or(0.0);
+///         let y = g.get::<f32>(Signal::from_id(y_sig)).unwrap_or(0.0);
+///         (x, y)
+///     });
+///     Computed::new(d, graph.clone())
+/// };
+/// ```
+pub struct Computed<T> {
+    derived: Derived<T>,
+    reactive: SharedReactiveGraph,
+}
+
+impl<T> Clone for Computed<T> {
+    fn clone(&self) -> Self {
+        Self {
+            derived: self.derived,
+            reactive: Arc::clone(&self.reactive),
+        }
+    }
+}
+
+impl<T: Clone + Send + 'static> Computed<T> {
+    /// Create a new `Computed<T>` bundling a `Derived<T>` handle with
+    /// the reactive graph it lives in.
+    pub fn new(derived: Derived<T>, reactive: SharedReactiveGraph) -> Self {
+        Self { derived, reactive }
+    }
+
+    /// Reconstruct a `Computed<T>` from a raw `DerivedId`, anchored
+    /// to the process-global reactive graph.
+    ///
+    /// # Safety
+    /// The caller must ensure the `DerivedId` refers to a derived
+    /// of type `T` and lives in the global graph (i.e. was minted
+    /// by the [`computed`] / [`derived`] free function or one of the
+    /// `BlincContextState::use_*` helpers). Used by the FFI
+    /// boundary to rehydrate a `Computed<T>` baked into JIT code by
+    /// `computed { … } : T` lowering — the lowering hands an
+    /// `i64` derived-id to the host extern; the extern thunk calls
+    /// this to recover a typed handle.
+    pub fn from_id(id: DerivedId) -> Self {
+        Self {
+            derived: Derived::from_id(id),
+            reactive: global_graph(),
+        }
+    }
+
+    /// Get the current value, recomputing if stale. Always returns
+    /// `Some` unless the derived handle is invalid (i.e. the graph
+    /// was rebuilt and the derived id no longer resolves).
+    pub fn try_get(&self) -> Option<T> {
+        self.reactive.lock().unwrap().get_derived(self.derived)
+    }
+
+    /// Get the current value, panicking on failure. Matches
+    /// [`State<T>::get`]'s ergonomic shape.
+    pub fn get(&self) -> T {
+        self.try_get()
+            .expect("Computed::get: derived handle does not resolve in its graph")
+    }
+
+    /// The underlying `Derived<T>` handle, for advanced use.
+    pub fn derived(&self) -> Derived<T> {
+        self.derived
+    }
+
+    /// The derived's id — used by the property-binding registry to
+    /// key subscriptions.
+    pub fn derived_id(&self) -> DerivedId {
+        self.derived.id
+    }
+
+    /// The shared reactive graph this computed lives in. Cloned to
+    /// give callers an independent `Arc<Mutex<…>>` handle.
+    pub fn graph(&self) -> SharedReactiveGraph {
+        Arc::clone(&self.reactive)
+    }
+}
+
+// =========================================================================
+// SolidJS-style free functions over the process-global graph
+//
+// These match the familiar `signal()` / `computed()` / `derived()` /
+// `effect()` surface from SolidJS / Leptos. Each operates against
+// [`GLOBAL_GRAPH`] so the values they produce interoperate seamlessly
+// with `State<T>`, `use_state*`, and the property-binding registry.
+// =========================================================================
+
+/// Create a fresh standalone reactive signal initialised to `initial`.
+/// Lives in the process-global graph; cleaned up when its slotmap key
+/// is reclaimed (currently: never — slotmap keys aren't reclaimed
+/// until the graph itself drops, which matches the existing
+/// `use_state_keyed` story).
+///
+/// Returned `Signal<T>` is `Copy` — capture by value in closures
+/// without `.clone()` boilerplate. Use [`Signal::set`] / [`Signal::get`]
+/// / [`Signal::update`] to interact.
+///
+/// # Example
+/// ```ignore
+/// use blinc_core::reactive::signal;
+///
+/// let count = signal(0_i32);
+/// // count is Copy — re-capture freely.
+/// button.on_click(move |_| count.update(|v| v + 1));
+/// label.text(&count.get().to_string());
+/// ```
+pub fn signal<T: Send + 'static>(initial: T) -> Signal<T> {
+    let graph = global_graph();
+    let mut g = graph.lock().unwrap();
+    g.create_signal(initial)
+}
+
+/// Create a derived (computed) value that auto-tracks every signal
+/// touched inside `compute`. The closure runs lazily — first read,
+/// then again after any tracked dependency changes.
+///
+/// Returns a [`Computed<T>`] which plugs into the same
+/// `IntoReactive<T>` channel as `Signal<T>` / `State<T>`; pass
+/// `&computed` to any reactive setter (`.bg`, `.opacity`, `.w`, …).
+///
+/// # Example
+/// ```ignore
+/// let a = signal(1);
+/// let b = signal(2);
+/// let sum = computed(move |g| g.get(a).unwrap_or(0) + g.get(b).unwrap_or(0));
+/// // sum.get() === 3; sum re-fires whenever a or b sets.
+/// ```
+pub fn computed<T, F>(compute: F) -> Computed<T>
+where
+    T: Clone + Send + 'static,
+    F: Fn(&ReactiveGraph) -> T + Send + 'static,
+{
+    let graph = global_graph();
+    let derived = {
+        let mut g = graph.lock().unwrap();
+        g.create_derived(compute)
+    };
+    Computed::new(derived, graph)
+}
+
+/// SolidJS-flavoured alias for [`computed`] — same semantics, just
+/// the name `derived` for callers more comfortable with that term.
+pub fn derived<T, F>(compute: F) -> Computed<T>
+where
+    T: Clone + Send + 'static,
+    F: Fn(&ReactiveGraph) -> T + Send + 'static,
+{
+    computed(compute)
+}
+
+/// Create an effect that runs every time any signal touched inside
+/// `run` changes. Auto-tracks dependencies on first run.
+///
+/// Effects are side-effects — logging, IO, custom integrations.
+/// For UI updates prefer property bindings (`.bg(&signal)`) or
+/// `Stateful` + `.deps([...])`; effects don't have a render path.
+///
+/// # Example
+/// ```ignore
+/// let count = signal(0);
+/// let _e = effect(move |g| {
+///     println!("count = {}", g.get(count).unwrap_or(0));
+/// });
+/// count.set(5); // prints "count = 5" next batch flush
+/// ```
+pub fn effect<F>(run: F) -> Effect
+where
+    F: FnMut(&ReactiveGraph) + Send + 'static,
+{
+    let handle = {
+        let graph = global_graph();
+        let mut g = graph.lock().unwrap();
+        g.create_effect(run)
+    };
+    // The effect's initial run happens inside `create_effect`'s
+    // `flush_effects`. If that closure queued writes via the
+    // re-entrancy fast path, drain them here — outside the lock,
+    // outside the in-flight window — so the writes actually take
+    // effect.
+    drain_deferred_writes();
+    handle
 }
 
 #[cfg(test)]

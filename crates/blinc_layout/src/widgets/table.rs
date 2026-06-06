@@ -61,8 +61,8 @@
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::div::{div, Div};
-use crate::text::{text, Text};
+use crate::div::{Div, div};
+use crate::text::{Text, text};
 
 // ============================================================================
 // Default Table Styling (from Theme)
@@ -222,6 +222,12 @@ impl TableCell {
         self
     }
 
+    /// Add a boxed child element to this cell.
+    pub fn child_box(mut self, child: Box<dyn crate::div::ElementBuilder>) -> Self {
+        self.inner = self.inner.child_box(child);
+        self
+    }
+
     /// Set cell width in pixels
     pub fn w(mut self, px: f32) -> Self {
         self.inner = self.inner.w(px).flex_shrink_0();
@@ -291,6 +297,18 @@ impl TableCell {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl AsRef<str>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element id for CSS selector matching
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+
     /// Add a separator (vertical line) after this cell
     ///
     /// Creates a visual divider by adding a narrow colored div as the last child
@@ -339,7 +357,7 @@ impl crate::div::ElementBuilder for TableCell {
 /// th("Column Name")
 /// th("Right Aligned").justify_end()
 /// ```
-pub fn th(content: impl ToString) -> TableCell {
+pub fn th(content: impl Into<String>) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -358,7 +376,7 @@ pub fn th(content: impl ToString) -> TableCell {
 /// td("Cell content")
 /// td("123.45").justify_end()  // Right-align numbers
 /// ```
-pub fn td(content: impl ToString) -> TableCell {
+pub fn td(content: impl Into<String>) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color());
@@ -524,7 +542,7 @@ impl Default for TableBuilder {
 ///
 /// Returns a Text element that you can further style.
 /// Use `th()` if you need cell-level styling (padding, background).
-pub fn th_text(content: impl ToString) -> Text {
+pub fn th_text(content: impl Into<String>) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -535,7 +553,7 @@ pub fn th_text(content: impl ToString) -> Text {
 ///
 /// Returns a Text element that you can further style.
 /// Use `td()` if you need cell-level styling (padding, background).
-pub fn td_text(content: impl ToString) -> Text {
+pub fn td_text(content: impl Into<String>) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color())

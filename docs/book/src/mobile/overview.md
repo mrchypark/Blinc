@@ -14,7 +14,7 @@ Blinc supports building native mobile applications for both Android and iOS. The
          │                    │                    │
     ┌────▼────┐         ┌─────▼─────┐        ┌────▼────┐
     │ Desktop │         │  Android  │        │   iOS   │
-    │ (wgpu)  │         │ (NDK)     │        │ (UIKit) │
+    │ (wgpu)  │         │ (Vulkan)  │        │ (Metal) │
     └─────────┘         └───────────┘        └─────────┘
 ```
 
@@ -25,14 +25,14 @@ Blinc supports building native mobile applications for both Android and iOS. The
 - **Touch Support**: Full multi-touch gesture handling
 - **Native Bridge**: Typed function-call protocol between Rust and Kotlin/Swift
 - **Reactive State**: Same reactive state system as desktop
-- **Animations**: Shared animation/state APIs are available on mobile too
+- **Animations**: Spring physics and keyframe animations work seamlessly
 
 ## Supported Platforms
 
-| Platform | Runtime | Min Version  | Status |
+| Platform | Backend | Min Version  | Status |
 |----------|---------|--------------|--------|
-| Android  | NDK + JNI bridge | API 24 (7.0) | Preview |
-| iOS      | UIKit + native bridge | iOS 15+ | Preview |
+| Android  | Vulkan  | API 24 (7.0) | Stable |
+| iOS      | Metal   | iOS 15+      | Stable |
 
 ## Project Structure
 

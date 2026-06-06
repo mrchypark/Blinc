@@ -38,6 +38,11 @@ pub struct Text {
     font_size: f32,
     /// Text color
     color: Color,
+    /// Whether the user explicitly set the color (vs the BLACK default).
+    /// When true, `render_props().text_color` is populated so the renderer
+    /// treats this color as authoritative — parent CSS `color:` inheritance
+    /// is blocked. When false, parent inheritance is allowed to fill in.
+    explicit_color: bool,
     /// Text alignment (horizontal)
     align: TextAlign,
     /// Vertical alignment within bounding box
@@ -52,8 +57,8 @@ pub struct Text {
     style: Style,
     /// Render layer
     render_layer: RenderLayer,
-    /// Drop shadow
-    shadow: Option<Shadow>,
+    /// Drop shadow stack
+    shadow: Vec<Shadow>,
     /// Transform
     transform: Option<Transform>,
     /// Whether to wrap text at container bounds (default: true)
@@ -74,7 +79,7 @@ pub struct Text {
     underline: bool,
     /// Whether this element is transparent to hit-testing
     pointer_events_none: bool,
-    /// Cursor style when hovering over this text (default: Text cursor)
+    /// Cursor style when hovering over this text (default: no override)
     cursor: Option<crate::element::CursorStyle>,
     /// Element ID for CSS selector matching and programmatic queries
     element_id: Option<String>,
@@ -112,6 +117,7 @@ impl Text {
             content: decoded_content,
             font_size: 14.0,
             color: Color::BLACK,
+            explicit_color: false,
             align: TextAlign::default(),
             v_align: TextVerticalAlign::default(),
             weight: FontWeight::default(),
@@ -119,7 +125,7 @@ impl Text {
             font_family: FontFamily::default(),
             style: Style::default(),
             render_layer: RenderLayer::default(),
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             wrap: true,           // wrap by default
             line_height: 1.2,     // standard line height
@@ -130,7 +136,7 @@ impl Text {
             strikethrough: false,
             underline: false,
             pointer_events_none: false,
-            cursor: Some(crate::element::CursorStyle::Text), // Text cursor by default
+            cursor: None,
             element_id: None,
             semantic_type: None,
             classes: Vec::new(),
@@ -172,6 +178,7 @@ impl Text {
     /// Set the text color
     pub fn color(mut self, color: Color) -> Self {
         self.color = color;
+        self.explicit_color = true;
         self
     }
 
@@ -543,9 +550,15 @@ impl Text {
     // Shadow
     // =========================================================================
 
-    /// Apply a drop shadow to this text
+    /// Apply a single drop shadow to this text (replaces any existing stack).
     pub fn shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+        self
+    }
+
+    /// Apply a compound drop shadow stack to this text.
+    pub fn shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
@@ -631,10 +644,16 @@ impl ElementBuilder for Text {
     fn render_props(&self) -> RenderProps {
         RenderProps {
             layer: self.render_layer,
-            shadow: self.shadow,
+            shadow: self.shadow.clone(),
             transform: self.transform.clone(),
             pointer_events_none: self.pointer_events_none,
             cursor: self.cursor,
+            text_color: self.explicit_color.then_some([
+                self.color.r,
+                self.color.g,
+                self.color.b,
+                self.color.a,
+            ]),
             ..Default::default()
         }
     }
@@ -686,8 +705,8 @@ impl ElementBuilder for Text {
 }
 
 /// Convenience function to create a new text element
-pub fn text(content: impl ToString) -> Text {
-    let mut t = Text::new(content.to_string());
+pub fn text(content: impl Into<String>) -> Text {
+    let mut t = Text::new(content);
     t.update_size_estimate();
     t
 }
@@ -724,6 +743,18 @@ mod tests {
 
         assert_eq!(t.content(), "Hello");
         assert_eq!(t.font_size(), 16.0);
+    }
+
+    #[test]
+    fn test_text_has_no_cursor_by_default() {
+        let t = text("Label");
+        assert_eq!(t.render_props().cursor, None);
+
+        let t = t.cursor(crate::element::CursorStyle::Text);
+        assert_eq!(
+            t.render_props().cursor,
+            Some(crate::element::CursorStyle::Text)
+        );
     }
 
     #[test]

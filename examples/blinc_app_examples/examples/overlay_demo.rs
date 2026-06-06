@@ -32,13 +32,13 @@ fn main() -> Result<()> {
     blinc_app::windowed::WindowedApp::run(config, build_ui)
 }
 
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     let overlay_mgr = ctx.overlay_manager();
 
     // Create button states via context for persistence across rebuilds
-    let modal_btn = ctx.use_state_for("modal_btn", ButtonState::Idle);
-    let toast_btn = ctx.use_state_for("toast_btn", ButtonState::Idle);
-    let dialog_btn = ctx.use_state_for("dialog_btn", ButtonState::Idle);
+    let modal_btn = ctx.use_fsm_keyed("modal_btn", ButtonState::Idle);
+    let toast_btn = ctx.use_fsm_keyed("toast_btn", ButtonState::Idle);
+    let dialog_btn = ctx.use_fsm_keyed("dialog_btn", ButtonState::Idle);
 
     div()
         .w(ctx.width)
@@ -147,7 +147,7 @@ pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
         )
 }
 
-fn instruction(text_content: &str) -> impl ElementBuilder {
+fn instruction(text_content: &str) -> impl ElementBuilder + use<> {
     div()
         .flex_row()
         .gap(8.0)

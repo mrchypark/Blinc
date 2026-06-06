@@ -19,21 +19,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use blinc_core::Color;
-use blinc_platform::{AccessibilityAction, AccessibilityRole, ImeCompositionUpdate};
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::accessibility::AccessibilityMetadata;
 use crate::canvas::canvas;
-use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
-use crate::div::{div, Div, ElementBuilder};
+use crate::css_parser::{ElementState, Stylesheet, active_stylesheet};
+use crate::div::{Div, ElementBuilder, div};
 use crate::element::RenderProps;
 use crate::stateful::{
-    refresh_stateful, SharedState, StateTransitions, Stateful, StatefulInner, TextFieldState,
+    SharedState, StateTransitions, Stateful, StatefulInner, TextFieldState, refresh_stateful,
 };
 use crate::text::text;
-use crate::text_selection::{clear_selection, set_selection, SelectionSource};
+use crate::text_selection::{SelectionSource, clear_selection, set_selection};
 use crate::tree::{LayoutNodeId, LayoutTree};
-use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
+use crate::widgets::cursor::{CursorAnimation, SharedCursorState, cursor_state};
 
 /// Get elapsed time in milliseconds since app start (for cursor blinking)
 pub fn elapsed_ms() -> u64 {
@@ -356,19 +354,6 @@ where
     *guard = Some(Box::new(callback));
 }
 
-/// Reset global text-widget test state.
-#[doc(hidden)]
-pub fn reset_text_widget_test_state() {
-    GLOBAL_FOCUS_COUNT.store(0, Ordering::SeqCst);
-    NEEDS_REBUILD.store(false, Ordering::SeqCst);
-    NEEDS_RELAYOUT.store(false, Ordering::SeqCst);
-    NEEDS_CSS_REPARSE.store(false, Ordering::SeqCst);
-    NEEDS_CONTINUOUS_REDRAW.store(false, Ordering::SeqCst);
-    *FOCUSED_TEXT_INPUT.lock().unwrap() = None;
-    *FOCUSED_TEXT_AREA.lock().unwrap() = None;
-    *CONTINUOUS_REDRAW_CALLBACK.lock().unwrap() = None;
-}
-
 /// Internal function to notify animation scheduler about cursor animation needs
 fn notify_continuous_redraw(enabled: bool) {
     if let Ok(guard) = CONTINUOUS_REDRAW_CALLBACK.lock() {
@@ -398,10 +383,6 @@ pub fn take_keyboard_state_change() -> Option<bool> {
 
 pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
-}
-
-pub fn has_live_focused_text_widget() -> bool {
-    has_focused_text_input()
 }
 
 /// Get the current text-input tap generation counter.
@@ -593,6 +574,69 @@ pub fn decrement_focus_count() {
     }
 }
 
+/// Programmatically focus a text_input by its shared state handle.
+///
+/// Mirrors what the click handler does internally — sets the widget's
+/// visual state to `Focused`, marks it as the active focus target for
+/// keyboard / IME / cursor-blink machinery, blurs any previously-focused
+/// text_input or text_area, and increments the soft-keyboard refcount.
+/// Use from a parent widget's open-handler when an embedded text input
+/// should grab focus on appearance (e.g. cn::combobox's search field on
+/// dropdown open).
+/// Force the text input's stateful to re-run its on_state callback
+/// and queue the resulting prop / subtree updates. Use this after
+/// mutating [`TextInputData::value`] (or `cursor` / `selection_start`)
+/// from outside the widget — e.g. a `+` / `−` stepper on
+/// `cn::number_input` that updates the underlying state and needs the
+/// visible field to pick up the new value on the next frame.
+///
+/// Pre-fix, this only set `needs_visual_update = true` + requested a
+/// redraw, which marks intent but doesn't actually run the callback —
+/// the visible text stayed stale until something unrelated (mouse
+/// move, animation tick) drove a frame that happened to call
+/// `ensure_callback_invoked`. Now it routes through
+/// [`crate::stateful::refresh_stateful`] which both runs the
+/// callback AND queues the prop updates.
+pub fn refresh_text_input(state: &SharedTextInputData) {
+    let stateful = {
+        let s = match state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        s.stateful_state.clone()
+    };
+    if let Some(stateful) = stateful {
+        crate::stateful::refresh_stateful(&stateful);
+    }
+    crate::stateful::request_redraw();
+}
+
+pub fn focus_text_input(state: &SharedTextInputData) {
+    use blinc_core::events::event_types;
+    if let Ok(mut s) = state.lock() {
+        if !s.visual.is_focused() {
+            if let Some(new_state) = s.visual.on_event(event_types::FOCUS) {
+                s.visual = new_state;
+            } else {
+                s.visual = TextFieldState::Focused;
+            }
+            s.focus_time_ms = elapsed_ms();
+            s.reset_cursor_blink();
+            increment_focus_count();
+            // Bump the stateful inner so its on_state callback re-runs
+            // with the new visual state — without this the focus border
+            // / bg colour don't reflect the change until the next event.
+            if let Some(ref stateful) = s.stateful_state {
+                if let Ok(mut shared) = stateful.lock() {
+                    shared.needs_visual_update = true;
+                }
+            }
+        }
+    }
+    set_focused_text_input(state);
+    crate::stateful::request_redraw();
+}
+
 pub(crate) fn set_focused_text_input(state: &SharedTextInputData) {
     use blinc_core::events::event_types;
 
@@ -602,7 +646,6 @@ pub(crate) fn set_focused_text_input(state: &SharedTextInputData) {
         if let Some(prev_state) = weak.upgrade() {
             if !Arc::ptr_eq(&prev_state, state) {
                 if let Ok(mut s) = prev_state.lock() {
-                    s.composition = None;
                     if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                         s.visual = new_state;
                         decrement_focus_count();
@@ -635,7 +678,6 @@ pub(crate) fn set_focused_text_area(state: &crate::widgets::text_area::SharedTex
         if let Some(weak) = focused.take() {
             if let Some(prev_state) = weak.upgrade() {
                 if let Ok(mut s) = prev_state.lock() {
-                    s.composition = None;
                     if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                         s.visual = new_state;
                         decrement_focus_count();
@@ -651,7 +693,6 @@ pub(crate) fn set_focused_text_area(state: &crate::widgets::text_area::SharedTex
             if let Some(prev_state) = weak.upgrade() {
                 if !Arc::ptr_eq(&prev_state, state) {
                     if let Ok(mut s) = prev_state.lock() {
-                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -682,7 +723,6 @@ fn blur_focused_text_area() {
     if let Some(weak) = focused.take() {
         if let Some(prev_state) = weak.upgrade() {
             if let Ok(mut s) = prev_state.lock() {
-                s.composition = None;
                 if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                     s.visual = new_state;
                     decrement_focus_count();
@@ -726,7 +766,6 @@ pub fn blur_all_text_inputs() {
             if let Some(state) = weak.upgrade() {
                 if let Ok(mut s) = state.lock() {
                     if s.visual.is_focused() {
-                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -759,7 +798,6 @@ pub fn blur_all_text_inputs() {
             if let Some(state) = weak.upgrade() {
                 if let Ok(mut s) = state.lock() {
                     if s.visual.is_focused() {
-                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -782,91 +820,6 @@ pub fn blur_all_text_inputs() {
                     }
                 }
             }
-        }
-    }
-}
-
-fn focused_text_input_bounds() -> Option<crate::element::ElementBounds> {
-    let focused = FOCUSED_TEXT_INPUT.lock().ok()?;
-    let weak = focused.as_ref()?;
-    let data = weak.upgrade()?;
-    let guard = data.lock().ok()?;
-    absolute_ime_bounds(
-        &guard.layout_bounds_storage,
-        &guard.ime_cursor_bounds_storage,
-    )
-}
-
-fn focused_text_area_bounds() -> Option<crate::element::ElementBounds> {
-    let focused = FOCUSED_TEXT_AREA.lock().ok()?;
-    let weak = focused.as_ref()?;
-    let data = weak.upgrade()?;
-    let guard = data.lock().ok()?;
-    absolute_ime_bounds(
-        &guard.layout_bounds_storage,
-        &guard.ime_cursor_bounds_storage,
-    )
-}
-
-fn absolute_ime_bounds(
-    widget_bounds: &crate::renderer::LayoutBoundsStorage,
-    ime_bounds: &crate::renderer::LayoutBoundsStorage,
-) -> Option<crate::element::ElementBounds> {
-    let widget = widget_bounds.lock().ok().and_then(|bounds| *bounds)?;
-    let ime = ime_bounds.lock().ok().and_then(|bounds| *bounds);
-
-    ime.map(|cursor| crate::element::ElementBounds {
-        x: widget.x + cursor.x,
-        y: widget.y + cursor.y,
-        width: cursor.width,
-        height: cursor.height,
-    })
-    .or(Some(widget))
-}
-
-pub fn focused_text_widget_ime_area() -> Option<crate::element::ElementBounds> {
-    focused_text_input_bounds().or_else(focused_text_area_bounds)
-}
-
-pub fn set_focused_text_widget_composition(composition: Option<ImeCompositionUpdate>) {
-    use crate::stateful::refresh_stateful;
-
-    if let Some(state) = FOCUSED_TEXT_INPUT
-        .lock()
-        .ok()
-        .and_then(|focused| focused.as_ref().and_then(Weak::upgrade))
-    {
-        let stateful = {
-            let mut data = match state.lock() {
-                Ok(data) => data,
-                Err(_) => return,
-            };
-            data.composition = composition.clone();
-            data.stateful_state.clone()
-        };
-
-        if let Some(ref stateful) = stateful {
-            refresh_stateful(stateful);
-        }
-        return;
-    }
-
-    if let Some(state) = FOCUSED_TEXT_AREA
-        .lock()
-        .ok()
-        .and_then(|focused| focused.as_ref().and_then(Weak::upgrade))
-    {
-        let stateful = {
-            let mut data = match state.lock() {
-                Ok(data) => data,
-                Err(_) => return,
-            };
-            data.composition = composition;
-            data.stateful_state.clone()
-        };
-
-        if let Some(ref stateful) = stateful {
-            refresh_stateful(stateful);
         }
     }
 }
@@ -966,7 +919,6 @@ pub struct TextInputData {
     pub value: String,
     pub cursor: usize,
     pub selection_start: Option<usize>,
-    pub composition: Option<ImeCompositionUpdate>,
     pub placeholder: String,
     pub input_type: InputType,
     pub constraints: InputConstraints,
@@ -985,12 +937,19 @@ pub struct TextInputData {
     /// Layout bounds storage - updated after each layout computation
     /// Used to get the actual computed width for proper scroll behavior
     pub layout_bounds_storage: crate::renderer::LayoutBoundsStorage,
-    /// Local caret rectangle used to position IME candidate windows.
-    pub ime_cursor_bounds_storage: crate::renderer::LayoutBoundsStorage,
     /// Reference to the Stateful's shared state for triggering incremental updates
     pub(crate) stateful_state: Option<SharedState<TextFieldState>>,
     /// Callback invoked when text value changes
     pub(crate) on_change_callback: Option<OnChangeCallback>,
+    /// Optional stepper hook fired when the user presses ↑ / ↓ / + / −
+    /// while focused. Argument is `+1` for increment, `-1` for
+    /// decrement. When set, the keys are *consumed* (the default
+    /// behaviour — character insertion for `+` / `−`, no-op for
+    /// arrows on a single-line field — is suppressed). Used by
+    /// `cn::number_input` to wire keyboard stepping to the bound
+    /// `State<f64>`. Unset by default so a plain text input still
+    /// accepts a typed `-` as the leading sign of a negative number.
+    pub(crate) on_step_callback: Option<Arc<dyn Fn(i32) + Send + Sync>>,
     /// CSS element ID for stylesheet matching (set via TextInput::id())
     pub(crate) css_element_id: Option<String>,
     /// CSS class names for stylesheet matching (set via TextInput::class())
@@ -1033,7 +992,6 @@ impl std::fmt::Debug for TextInputData {
             .field("value", &self.value)
             .field("cursor", &self.cursor)
             .field("selection_start", &self.selection_start)
-            .field("composition", &self.composition)
             .field("placeholder", &self.placeholder)
             .field("input_type", &self.input_type)
             .field("constraints", &self.constraints)
@@ -1059,7 +1017,6 @@ impl TextInputData {
             value: String::new(),
             cursor: 0,
             selection_start: None,
-            composition: None,
             placeholder: String::new(),
             input_type: InputType::Text,
             constraints: InputConstraints::default(),
@@ -1072,9 +1029,9 @@ impl TextInputData {
             scroll_offset_x: 0.0,
             computed_width: None,
             layout_bounds_storage: Arc::new(Mutex::new(None)),
-            ime_cursor_bounds_storage: Arc::new(Mutex::new(None)),
             stateful_state: None,
             on_change_callback: None,
+            on_step_callback: None,
             css_element_id: None,
             css_classes: Vec::new(),
             last_click_time: None,
@@ -1162,31 +1119,11 @@ impl TextInputData {
     }
 
     /// Get display text (masked for password, or actual value)
-    pub fn value_with_composition(&self) -> String {
-        let Some(composition) = self.composition.as_ref() else {
-            return self.value.clone();
-        };
-        let (from, to) = if let Some(start) = self.selection_start {
-            if start < self.cursor {
-                (start, self.cursor)
-            } else {
-                (self.cursor, start)
-            }
-        } else {
-            (self.cursor, self.cursor)
-        };
-
-        let before: String = self.value.chars().take(from).collect();
-        let after: String = self.value.chars().skip(to).collect();
-        before + &composition.text + &after
-    }
-
     pub fn display_text(&self) -> String {
-        let value = self.value_with_composition();
         if self.masked {
-            "•".repeat(value.chars().count())
+            "•".repeat(self.value.chars().count())
         } else {
-            value
+            self.value.clone()
         }
     }
 
@@ -1672,37 +1609,43 @@ fn apply_css_overrides(
         TextFieldState::Idle => None,
     };
 
-    // 1. Apply class-based styles (lowest priority — overridden by ID)
+    // 1. Apply class-based styles (lowest priority — overridden by ID).
+    //
+    // Order for FocusedHovered: base → :hover → :focus. `:focus` must run
+    // LAST so its `border-color` wins over `:hover`'s — without this, a
+    // hovered focused input falls back to the hover (grey) border while
+    // the user is still typing in it. The user's intent on hover-while-
+    // focused is "I'm interacting with this input" → focus colour wins.
     for class in css_classes {
         if let Some(base) = stylesheet.get_class(class) {
             apply_style_to_config(cfg, base, visual);
-        }
-        // For FocusedHovered, apply both :focus and :hover
-        if matches!(visual, TextFieldState::FocusedHovered) {
-            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
-                apply_style_to_config(cfg, s, visual);
-            }
         }
         if let Some(s) = state {
             if let Some(state_style) = stylesheet.get_class_with_state(class, s) {
                 apply_style_to_config(cfg, state_style, visual);
             }
         }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
+                apply_style_to_config(cfg, s, visual);
+            }
+        }
     }
 
-    // 2. Apply ID-based styles (higher priority — overrides class)
+    // 2. Apply ID-based styles (higher priority — overrides class).
+    // Same hover-then-focus ordering as the class branch above.
     if let Some(element_id) = element_id {
         if let Some(base) = stylesheet.get(element_id) {
             apply_style_to_config(cfg, base, visual);
         }
-        if matches!(visual, TextFieldState::FocusedHovered) {
-            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
-                apply_style_to_config(cfg, focus_style, visual);
-            }
-        }
         if let Some(s) = state {
             if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
                 apply_style_to_config(cfg, state_style, visual);
+            }
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+                apply_style_to_config(cfg, focus_style, visual);
             }
         }
 
@@ -1790,58 +1733,74 @@ fn apply_style_to_config(
 
 /// Extract outline properties from stylesheet for the current state.
 /// Returns (width, color, offset) if any outline is specified.
+///
+/// Walks class selectors first (lowest priority) and then `#id`
+/// selectors (overrides), matching the precedence rules
+/// `apply_css_overrides` uses for the rest of the input's style.
+/// Without the class branch, rules like `.cn-input:focus { outline:
+/// 2px solid var(--border-focus); }` from the cn stylesheet would
+/// silently no-op because cn::input attaches via class, not id.
 fn extract_outline_from_stylesheet(
     stylesheet: &Stylesheet,
-    element_id: &str,
+    element_id: Option<&str>,
+    css_classes: &[std::sync::Arc<str>],
     visual: &TextFieldState,
 ) -> Option<(f32, Color, f32)> {
     let mut width = None;
     let mut color = None;
     let mut offset = None;
 
-    // Check base style
-    if let Some(base) = stylesheet.get(element_id) {
-        if let Some(w) = base.outline_width {
-            width = Some(w);
-        }
-        if let Some(c) = base.outline_color {
-            color = Some(c);
-        }
-        if let Some(o) = base.outline_offset {
-            offset = Some(o);
-        }
-    }
-
-    // Layer state-specific style
     let state = match visual {
         TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
         TextFieldState::Focused => Some(ElementState::Focus),
         TextFieldState::Disabled => Some(ElementState::Disabled),
         TextFieldState::Idle => None,
     };
-    if matches!(visual, TextFieldState::FocusedHovered) {
-        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
-            if let Some(w) = focus_style.outline_width {
-                width = Some(w);
+
+    let mut absorb = |s: &crate::element_style::ElementStyle| {
+        if let Some(w) = s.outline_width {
+            width = Some(w);
+        }
+        if let Some(c) = s.outline_color {
+            color = Some(c);
+        }
+        if let Some(o) = s.outline_offset {
+            offset = Some(o);
+        }
+    };
+
+    // 1. Class-based styles (lowest priority — overridden by ID).
+    // FocusedHovered order: base → :hover → :focus, so the focus ring
+    // wins over hover (same rationale as apply_css_overrides above).
+    for class in css_classes {
+        if let Some(base) = stylesheet.get_class(class) {
+            absorb(base);
+        }
+        if let Some(s) = state {
+            if let Some(state_style) = stylesheet.get_class_with_state(class, s) {
+                absorb(state_style);
             }
-            if let Some(c) = focus_style.outline_color {
-                color = Some(c);
-            }
-            if let Some(o) = focus_style.outline_offset {
-                offset = Some(o);
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
+                absorb(s);
             }
         }
     }
-    if let Some(s) = state {
-        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
-            if let Some(w) = state_style.outline_width {
-                width = Some(w);
+
+    // 2. ID-based styles (overrides class)
+    if let Some(element_id) = element_id {
+        if let Some(base) = stylesheet.get(element_id) {
+            absorb(base);
+        }
+        if let Some(s) = state {
+            if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+                absorb(state_style);
             }
-            if let Some(c) = state_style.outline_color {
-                color = Some(c);
-            }
-            if let Some(o) = state_style.outline_offset {
-                offset = Some(o);
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+                absorb(focus_style);
             }
         }
     }
@@ -1881,6 +1840,11 @@ pub struct TextInputConfig {
     pub border_width: f32,
     pub padding_x: f32,
     pub placeholder: String,
+    /// Horizontal alignment of the visible text inside the field.
+    /// Default `Left`. `Center` is the canonical choice for
+    /// numeric / OTP-style fields where the value should sit
+    /// visually centred in a fixed-width cell.
+    pub text_align: blinc_core::TextAlign,
 }
 
 impl Default for TextInputConfig {
@@ -1906,6 +1870,7 @@ impl Default for TextInputConfig {
             border_width: 1.5,
             padding_x: 12.0,
             placeholder: String::new(),
+            text_align: blinc_core::TextAlign::Left,
         }
     }
 }
@@ -2020,12 +1985,17 @@ impl TextInput {
                                 &data_guard.css_classes,
                                 visual,
                             );
-                            // Extract outline properties for the inner div
-                            if let Some(ref element_id) = data_guard.css_element_id {
-                                extract_outline_from_stylesheet(&stylesheet, element_id, visual)
-                            } else {
-                                None
-                            }
+                            // Extract outline properties for the inner div.
+                            // Pass both classes and the optional id so a
+                            // class-only target (cn::input attaches by
+                            // class) still picks up `.cn-input:focus {
+                            // outline: …; }` from the stylesheet.
+                            extract_outline_from_stylesheet(
+                                &stylesheet,
+                                data_guard.css_element_id.as_deref(),
+                                &data_guard.css_classes,
+                                visual,
+                            )
                         } else {
                             None
                         }
@@ -2179,9 +2149,13 @@ impl TextInput {
                     // "H" of "Hello World" lands a cursor position
                     // PAST the H, so a drag-select that starts there
                     // misses the first character.
-                    let (font_size, text_origin_x) = {
+                    let (font_size, text_origin_x, is_centered_align) = {
                         let cfg = config_for_click.lock().unwrap();
-                        (cfg.font_size, cfg.padding_x + cfg.border_width)
+                        (
+                            cfg.font_size,
+                            cfg.padding_x + cfg.border_width,
+                            matches!(cfg.text_align, blinc_core::TextAlign::Center),
+                        )
                     };
 
                     // Update FSM state
@@ -2220,8 +2194,28 @@ impl TextInput {
                     // subtracting the left padding + border, then clamp
                     // to >= 0 so clicks in the padding gutter snap to
                     // the start of the text instead of going negative.
+                    //
+                    // EXCEPTION for centred text: the visible text
+                    // doesn't start at `text_origin_x` — it sits at
+                    // `text_origin_x + (clip_w - text_w) / 2` because
+                    // the layout flex-centres the content. We can't
+                    // know `clip_w - text_w` here without runtime
+                    // measurement, and the value clicked is almost
+                    // always a "select everything then retype" gesture
+                    // anyway (canonical numeric-input UX). So when
+                    // `text_align == Center`, single-clicking the
+                    // field selects the whole value and parks the
+                    // cursor at the end — subsequent typing replaces
+                    // the value. Matches `<input type=number>` in most
+                    // browsers + the HIG numeric-input spec. `text_x`
+                    // is still computed so the touch edit-menu anchors
+                    // and on-drag math below stay correct.
                     let text_x = (ctx.local_x - text_origin_x).max(0.0);
-                    let cursor_pos = d.cursor_position_from_x(text_x, font_size);
+                    let cursor_pos = if is_centered_align {
+                        d.value.chars().count()
+                    } else {
+                        d.cursor_position_from_x(text_x, font_size)
+                    };
 
                     // Double-click detection (select word)
                     let now = web_time::Instant::now();
@@ -2267,6 +2261,18 @@ impl TextInput {
                                     | edit_menu_actions::SELECT_ALL,
                             );
                         }
+                    } else if is_centered_align {
+                        // Centred-align single-click: select everything
+                        // and park the cursor at the end. Matches the
+                        // `<input type=number>` browser convention —
+                        // tapping the field selects the value so the
+                        // next keystroke replaces it. No drag-select
+                        // anchor (centred fields don't support drag
+                        // selection because cursor_position_from_x
+                        // can't be trusted under centred layout).
+                        d.selection_start = Some(0);
+                        d.cursor = cursor_pos;
+                        d.drag_select_anchor = None;
                     } else {
                         // Single click: position cursor. On touch, we
                         // do NOT start a drag-select anchor — touch
@@ -2431,6 +2437,20 @@ impl TextInput {
                     }
 
                     if let Some(c) = ctx.key_char {
+                        // Stepper hook: `+` / `−` (or `=` which sits
+                        // on the same physical key on US layouts) step
+                        // the value when `on_step` is registered.
+                        // Skip the character insert so the field
+                        // doesn't end up with stray `+` chars in the
+                        // value buffer.
+                        if matches!(c, '+' | '-' | '=') {
+                            if let Some(cb) = d.on_step_callback.as_ref().map(Arc::clone) {
+                                let delta = if c == '-' { -1 } else { 1 };
+                                drop(d);
+                                cb(delta);
+                                return;
+                            }
+                        }
                         d.insert(&c.to_string());
                         d.reset_cursor_blink();
                         tracing::debug!("TextInput received char: {:?}, value: {}", c, d.value);
@@ -2507,6 +2527,16 @@ impl TextInput {
                         39 => d.move_right(ctx.shift),                // Right
                         36 => d.move_to_start(ctx.shift),             // Home
                         35 => d.move_to_end(ctx.shift),               // End
+                        // ↑ / ↓: stepper hook if registered, else
+                        // no-op on a single-line input.
+                        38 | 40 if d.on_step_callback.is_some() => {
+                            let delta = if ctx.key_code == 38 { 1 } else { -1 };
+                            if let Some(cb) = d.on_step_callback.as_ref().map(Arc::clone) {
+                                drop(d);
+                                cb(delta);
+                            }
+                            return;
+                        }
                         27 => {
                             should_blur = true;
                         }
@@ -2619,19 +2649,17 @@ impl TextInput {
         data: &TextInputData,
         config: &TextInputConfig,
     ) -> Div {
-        let display_value = data.display_text();
-        let has_display_text = !display_value.is_empty();
-        let display = if has_display_text {
-            display_value
-        } else {
+        let display = if data.value.is_empty() {
             if !data.placeholder.is_empty() {
                 data.placeholder.clone()
             } else {
                 config.placeholder.clone()
             }
+        } else {
+            data.display_text()
         };
 
-        let text_color = if !has_display_text {
+        let text_color = if data.value.is_empty() {
             config.placeholder_color
         } else if data.disabled {
             Color::rgba(0.4, 0.4, 0.4, 1.0)
@@ -2690,15 +2718,29 @@ impl TextInput {
             .flex_1()
             .min_w(0.0);
 
-        // Text wrapper with absolute positioning
-        // Using left() with negative scroll offset to scroll content
-        let mut text_wrapper = div()
-            .absolute()
-            .left(-scroll_offset)
-            .top(0.0)
-            .h(inner_height)
-            .flex_row()
-            .items_center();
+        // When the field is set to `text_align: Center`, the text
+        // wrapper fills the clip container and centres its content
+        // horizontally — used by number / OTP / code inputs that want
+        // the value visually centred in a fixed-width cell. Otherwise
+        // the wrapper uses absolute positioning so `left(-scroll_offset)`
+        // can scroll long content horizontally.
+        let is_centered = matches!(config.text_align, blinc_core::TextAlign::Center);
+        let mut text_wrapper = if is_centered {
+            div()
+                .w_full()
+                .h(inner_height)
+                .flex_row()
+                .items_center()
+                .justify_center()
+        } else {
+            div()
+                .absolute()
+                .left(-scroll_offset)
+                .top(0.0)
+                .h(inner_height)
+                .flex_row()
+                .items_center()
+        };
 
         if !display.is_empty() {
             if let Some((sel_start, sel_end)) = selection_range {
@@ -2765,24 +2807,21 @@ impl TextInput {
         // Add text wrapper to clip container
         clip_container = clip_container.child(text_wrapper);
 
-        if let Ok(mut bounds) = data.ime_cursor_bounds_storage.lock() {
-            *bounds = if is_focused {
-                let cursor_left = (config.padding_x + cursor_x - scroll_offset).max(0.0);
-                let cursor_top = ((inner_height - cursor_height) / 2.0).max(0.0);
-                Some(crate::element::ElementBounds {
-                    x: cursor_left,
-                    y: cursor_top,
-                    width: 2.0,
-                    height: cursor_height,
-                })
-            } else {
-                None
-            };
-        }
-
         // Add cursor via canvas as a sibling to text_wrapper, also in clip_container
-        // The cursor position is adjusted for scroll offset since it's not inside text_wrapper
-        if is_focused && selection_range.is_none() {
+        // The cursor position is adjusted for scroll offset since it's not inside text_wrapper.
+        //
+        // SKIP the cursor entirely when `text_align == Center` — the
+        // cursor's absolute `left(cursor_x)` math assumes the text
+        // starts at position 0 in the clip area, but a centred text
+        // wrapper sits at `(clip_w - text_w) / 2` (computed at
+        // runtime by the flex layout, not available here). Drawing
+        // the cursor at the un-centred position lands it to the left
+        // of the value, which is the "confused cursor" the user
+        // sees in number-input / OTP-style fields. Centred fields
+        // are predominantly read-only / stepper-driven anyway; a
+        // future text-measure-driven cursor placement can re-enable
+        // the caret if needed.
+        if is_focused && selection_range.is_none() && !is_centered {
             let cursor_left = cursor_x - scroll_offset;
             // Calculate proper vertical margins to center cursor (inner_height already defined above)
             let cursor_margin = (inner_height - cursor_height) / 2.0;
@@ -2889,6 +2928,47 @@ impl TextInput {
     pub fn input_type(self, input_type: InputType) -> Self {
         if let Ok(mut d) = self.data.lock() {
             d.input_type = input_type;
+        }
+        self
+    }
+
+    /// Set horizontal text alignment inside the field. `Left` (default)
+    /// renders the value flush against `padding_x`. `Center` centres
+    /// the value within the available clip area — canonical for
+    /// number / OTP / code inputs where the field is fixed-width.
+    pub fn text_align(self, align: blinc_core::TextAlign) -> Self {
+        if let Ok(mut cfg) = self.config.lock() {
+            cfg.text_align = align;
+        }
+        self
+    }
+
+    /// Set the internal horizontal padding inside the field (left and
+    /// right spacers). Default is 12 px each side, which gives a
+    /// roomy form-input feel. Number / OTP / code inputs that want a
+    /// tight cell hugging the centred value should drop this to
+    /// 4–6 px so the visible field hugs the text instead of carrying
+    /// 24 px of fixed dead space.
+    pub fn padding_x(self, px: f32) -> Self {
+        if let Ok(mut cfg) = self.config.lock() {
+            cfg.padding_x = px.max(0.0);
+        }
+        self
+    }
+
+    /// Register a stepper hook fired on ↑ / ↓ / `+` / `−` keys while
+    /// the field is focused. The argument is `+1` for increment,
+    /// `-1` for decrement. When this is set, the keys are
+    /// *consumed* — the default behaviour (character insertion for
+    /// `+` / `−`, no-op for arrows on a single-line field) is
+    /// skipped. Used by `cn::number_input` to wire keyboard
+    /// stepping to the bound `State<f64>`.
+    pub fn on_step<F>(self, callback: F) -> Self
+    where
+        F: Fn(i32) + Send + Sync + 'static,
+    {
+        if let Ok(mut d) = self.data.lock() {
+            d.on_step_callback = Some(Arc::new(callback));
         }
         self
     }
@@ -3120,43 +3200,7 @@ impl ElementBuilder for TextInput {
             shared.base_style = self.inner.inner_layout_style();
         }
 
-        let node_id = self.inner.build(tree);
-        let data = Arc::clone(&self.data);
-        tree.set_accessibility_provider(
-            node_id,
-            std::sync::Arc::new(move || {
-                data.lock()
-                    .ok()
-                    .map(|data| {
-                        AccessibilityMetadata::new(AccessibilityRole::TextInput)
-                            .with_name(if data.placeholder.is_empty() {
-                                data.css_element_id.clone()
-                            } else {
-                                Some(data.placeholder.clone())
-                            })
-                            .with_description(
-                                (!data.placeholder.is_empty()).then(|| data.placeholder.clone()),
-                            )
-                            .with_value(Some(data.value_with_composition()))
-                            .with_focusable(true)
-                            .with_focused(data.visual.is_focused())
-                            .with_disabled(data.disabled)
-                            .with_actions(vec![
-                                AccessibilityAction::Focus,
-                                AccessibilityAction::SetValue,
-                            ])
-                    })
-                    .unwrap_or_else(|| {
-                        AccessibilityMetadata::new(AccessibilityRole::TextInput)
-                            .with_focusable(true)
-                            .with_actions(vec![
-                                AccessibilityAction::Focus,
-                                AccessibilityAction::SetValue,
-                            ])
-                    })
-            }),
-        );
-        node_id
+        self.inner.build(tree)
     }
 
     fn render_props(&self) -> RenderProps {
@@ -3175,20 +3219,27 @@ impl ElementBuilder for TextInput {
         Some("input")
     }
 
-    fn element_id(&self) -> Option<&str> {
-        self.inner.element_id()
-    }
-
-    fn element_classes(&self) -> &[std::sync::Arc<str>] {
-        self.inner.element_classes()
-    }
-
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         self.inner.event_handlers()
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    // Forward CSS class list / id from the inner Stateful so
+    // `text_input(...).class("foo")` / `.id("bar")` are visible to
+    // the renderer's selector matcher. Without these, the setters
+    // update the inner widget but the matcher queries the default
+    // `&[]` / `None`, so `.foo` or `#bar` stylesheet rules never
+    // match the input element. Same gotcha as the cn-wrapped
+    // versions had.
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
     }
 
     fn layout_bounds_storage(&self) -> Option<crate::renderer::LayoutBoundsStorage> {
@@ -3256,23 +3307,5 @@ mod tests {
         data.cursor = 0;
         data.insert("abc123");
         assert_eq!(data.value, "123");
-    }
-
-    #[test]
-    fn test_text_input_display_text_uses_composition_when_empty() {
-        let mut data = TextInputData::new();
-        data.composition = Some(ImeCompositionUpdate::new("한", None));
-
-        assert_eq!(data.display_text(), "한");
-    }
-
-    #[test]
-    fn test_text_input_composition_replaces_active_selection() {
-        let mut data = TextInputData::with_value("hello");
-        data.cursor = 4;
-        data.selection_start = Some(1);
-        data.composition = Some(ImeCompositionUpdate::new("한", None));
-
-        assert_eq!(data.value_with_composition(), "h한o");
     }
 }

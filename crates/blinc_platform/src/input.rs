@@ -48,16 +48,6 @@ pub enum InputEvent {
         /// Whether this is the start/end of the gesture
         phase: ScrollPhase,
     },
-    /// IME composition session started.
-    CompositionStarted,
-    /// IME preview text changed.
-    CompositionUpdated(ImeCompositionUpdate),
-    /// IME composition committed user-visible text.
-    CompositionCommitted(String),
-    /// IME composition was cancelled without a commit.
-    CompositionCancelled,
-    /// Keyboard-driven focus traversal without backend-specific key leakage.
-    FocusTraversal(FocusTraversalIntent),
 }
 
 // ============================================================================
@@ -124,51 +114,10 @@ pub enum MouseButton {
 pub struct KeyboardEvent {
     /// The key that was pressed or released
     pub key: Key,
-    /// Text produced by this key event after layout processing.
-    ///
-    /// This is `Some` for committed user-visible text and `None` for
-    /// non-textual keys.
-    pub text: Option<String>,
     /// Whether the key was pressed or released
     pub state: KeyState,
     /// Modifier keys held during this event
     pub modifiers: Modifiers,
-}
-
-/// Platform-agnostic focus traversal direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum FocusTraversalIntent {
-    Next,
-    Previous,
-}
-
-/// Selection range within an IME preview string.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ImeCompositionSelection {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl ImeCompositionSelection {
-    pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-}
-
-/// In-progress IME preview text and selection state.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ImeCompositionUpdate {
-    pub text: String,
-    pub selection: Option<ImeCompositionSelection>,
-}
-
-impl ImeCompositionUpdate {
-    pub fn new(text: impl Into<String>, selection: Option<ImeCompositionSelection>) -> Self {
-        Self {
-            text: text.into(),
-            selection,
-        }
-    }
 }
 
 /// Key press/release state

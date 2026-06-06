@@ -329,6 +329,37 @@ impl MotionBindings {
                 .is_some_and(|g| g.is_playing())
     }
 
+    /// Like [`Self::is_any_animating`] but ignores
+    /// [`Self::rotation_timeline`]. Used by the compositor fast path's
+    /// text/SVG/image cache-hit predicate: pure timeline-driven
+    /// rotation (cn::spinner) doesn't move text or SVG glyph
+    /// positions outside the motion-bound subtree, and the spinner's
+    /// own subtree contains no text/SVG/image elements. Treating it
+    /// as "non-position-affecting" lets the cache stay warm and drops
+    /// the per-frame collect pass — a major CPU win on `cn_demo`
+    /// (60 % → ~30 % with three visible spinners) because the collect
+    /// pass walks the entire element tree even though only one
+    /// rotating arc is changing.
+    ///
+    /// Spring rotation IS counted because spring rotations are
+    /// typically applied to UI elements with text content (a card
+    /// flip, a knob with label, etc.) where stale text positions
+    /// would visibly drift mid-animation.
+    pub fn is_any_position_animating(&self) -> bool {
+        let spring_animating = |v: &Option<SharedAnimatedValue>| {
+            v.as_ref()
+                .and_then(|s| s.lock().ok())
+                .is_some_and(|g| g.is_animating())
+        };
+        spring_animating(&self.translate_x)
+            || spring_animating(&self.translate_y)
+            || spring_animating(&self.scale)
+            || spring_animating(&self.scale_x)
+            || spring_animating(&self.scale_y)
+            || spring_animating(&self.rotation)
+            || spring_animating(&self.opacity)
+    }
+
     /// Get the current translation from animated values
     ///
     /// Returns a translation transform for the tx/ty bindings.
@@ -539,7 +570,26 @@ pub fn motion() -> Motion {
         style: Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
-            // Default to filling parent container (acts as transparent wrapper)
+            // Default to filling parent container (acts as transparent
+            // wrapper). `height: Auto + flex_grow: 1.0` lets motion
+            // size to its content in non-flex parents while expanding
+            // to fill available space in flex parents.
+            //
+            // A previous attempt at `height: Percent(100%)` broke
+            // switch-thumb vertical centring: the thumb sits inside
+            // `motion().translate_x(...)` in a row-flex parent with
+            // `items_center`. With Auto-height + flex_grow, motion
+            // sized to its child (the small thumb) and items_center
+            // on the parent centred it vertically. With Percent(100%)
+            // height, motion took the full track height and the
+            // column-flex layout pinned the thumb to the top of that
+            // full-height area — visually it looked like the knob had
+            // slipped above the track.
+            //
+            // Cases that need motion to fill an absolute-positioned
+            // parent (e.g. spinner arc rotation around the parent's
+            // centre) should size their parent explicitly or use a
+            // sized inner div under motion.
             size: taffy::Size {
                 width: taffy::Dimension::Percent(1.0),
                 height: taffy::Dimension::Auto,
@@ -630,6 +680,12 @@ impl Motion {
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
         // Store single child in children vec so it's returned by children_builders()
         self.children = vec![Box::new(child)];
+        self
+    }
+
+    /// Add a boxed child element to animate.
+    pub fn child_box(mut self, child: Box<dyn ElementBuilder>) -> Self {
+        self.children.push(child);
         self
     }
 
@@ -1040,6 +1096,19 @@ impl Motion {
         self
     }
 
+    /// Shrink this motion wrapper to its content's intrinsic size instead of
+    /// the default fill-parent (`width: 100%; flex_grow: 1`). Used when the
+    /// motion wraps an overlay panel that should be flex-centered or
+    /// otherwise positioned by its own intrinsic dimensions — without this,
+    /// the motion expands to fill the centering container and the panel
+    /// ends up flush against the start edge.
+    pub fn fit_content(mut self) -> Self {
+        self.style.size.width = taffy::Dimension::Auto;
+        self.style.size.height = taffy::Dimension::Auto;
+        self.style.flex_grow = 0.0;
+        self
+    }
+
     /// Get the enter animation if set
     pub fn get_enter_animation(&self) -> Option<&ElementAnimation> {
         self.enter.as_ref()
@@ -1361,8 +1430,8 @@ impl MotionPresenceState {
 
 impl crate::stateful::StateTransitions for MotionPresenceState {
     fn on_event(&self, event: u32) -> Option<Self> {
-        use motion_events::*;
         use MotionPresenceState::*;
+        use motion_events::*;
 
         match (self, event) {
             // Empty -> Entering: Content mounted

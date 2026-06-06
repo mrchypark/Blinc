@@ -11,12 +11,52 @@ publish = false
 
 [features]
 default = ["full"]
-full = ["blinc_core", "blinc_animation", "blinc_layout", "blinc_gpu", "blinc_paint"]
+full = ["blinc_animation", "blinc_gpu", "blinc_paint"]
 
 [dependencies]
-blinc_core = { path = "../blinc_core", version = "0.5.1", optional = true }
+# `blinc_layout` is non-optional because `blinc_runtime::fsm` depends
+# on its `StateTransitions` trait — the substrate that lets DSL-side
+# FSMs plug into widget-side `Stateful<S>` machinery regardless of
+# whether the DSL was JIT-compiled at app runtime or AOT-compiled
+# into the binary. The remaining sub-crates stay optional for callers
+# that want a leaner runtime surface (headless, server-side, etc.).
+blinc_layout = { path = "../blinc_layout", version = "0.5.1" }
+
+# Zyntax type system — pure-data crate. Provides
+# `type_registry::Type` (and the rest of the typed-AST shape)
+# without dragging in any backend. The substrate uses `Type` as
+# the canonical representation for prop types, signal types,
+# event payloads, etc.
+zyntax_typed_ast = { git = "https://github.com/darmie/zyntax", rev = "9763886bd1f6d5ee86e5a5665d3d06be9426e106" }
+
+# Zyntax embedding SDK — used as a thin substrate dep for
+# `ZyntaxValue` (the runtime value enum). Both JIT and AOT-
+# compiled code from Zyntax produce/consume the same
+# `ZyntaxValue` shape, so `blinc_runtime` holds complex types
+# (structs, enums, arrays, optionals, generics) by storing
+# `ZyntaxValue` directly rather than rolling a parallel enum.
+#
+# `default-features = false` because the default `native` feature
+# enables Cranelift JIT and dynamic-plugin loading; the substrate
+# itself stays backend-free so JIT consumers (`blinc_dsl_core`,
+# which enables `native` itself) and AOT consumers (a future
+# Zyntax+LLVM-driven crate that enables `llvm-backend`) each pick
+# the backend they need without `blinc_runtime` forcing one.
+#
+# What `default-features = false` actually exposes:
+# - `ZyntaxValue` (the Rust-friendly runtime value enum)
+# - `ZyntaxString`
+# - `TypedProgram` (re-exported from zyntax_typed_ast)
+# - Pure-data type-registry items (`type_registry::Type`,
+#   `PrimitiveType`, etc.)
+# What it does NOT expose without an additional feature:
+# - `ZyntaxRuntime` / `TieredRuntime` (JIT runtime entry points)
+# - `.zrtl` dynamic plugin loading
+# - LLVM codegen
+zyntax_embed = { git = "https://github.com/darmie/zyntax", rev = "9763886bd1f6d5ee86e5a5665d3d06be9426e106", default-features = false }
+
+blinc_core = { path = "../blinc_core", version = "0.5.1" }
 blinc_animation = { path = "../blinc_animation", version = "0.5.1", optional = true }
-blinc_layout = { path = "../blinc_layout", version = "0.5.1", optional = true }
 blinc_gpu = { path = "../blinc_gpu", version = "0.5.1", optional = true }
 blinc_paint = { path = "../blinc_paint", version = "0.5.1", optional = true }
 # blinc_cn = { path = "../blinc_cn", version = "0.5.1", optional = true }

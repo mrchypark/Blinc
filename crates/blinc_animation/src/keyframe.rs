@@ -174,10 +174,20 @@ pub struct KeyframeProperties {
     pub overflow_fade: Option<[f32; 4]>,
 
     // --- Shadow properties ---
-    /// Shadow [offset_x, offset_y, blur, spread]
+    /// Shadow [offset_x, offset_y, blur, spread] for the first layer.
+    /// Kept alongside [`Self::shadow_stack`] for the single-layer fast paths
+    /// (e.g. composite-promoted `CssAnimPaintMeta` in motion.rs) that
+    /// only sample one layer.
     pub shadow_params: Option<[f32; 4]>,
-    /// Shadow color RGBA
+    /// Shadow color RGBA for the first layer (mirrors `shadow_params`).
     pub shadow_color: Option<[f32; 4]>,
+    /// Full compound shadow stack — each entry is
+    /// `[offset_x, offset_y, blur, spread, r, g, b, a]`. When set this
+    /// is the canonical storage; the consumer applies the whole stack
+    /// to `RenderProps.shadow` rather than just the first layer. Empty
+    /// `Vec` means "no shadow" (so transitioning from a shadow to none
+    /// fades the stack out instead of popping).
+    pub shadow_stack: Option<Vec<[f32; 8]>>,
     /// Text shadow [offset_x, offset_y, blur, spread]
     pub text_shadow_params: Option<[f32; 4]>,
     /// Text shadow color RGBA
@@ -349,6 +359,138 @@ impl KeyframeProperties {
             || self.clip_ellipse_radii.is_some()
     }
 
+    /// Whether every property tracked here can be implemented by
+    /// transforming + alpha-blending a pre-rasterized texture, with
+    /// no per-frame re-rasterization required.
+    ///
+    /// First-cut composite-promotable set:
+    ///
+    /// - `opacity` (alpha multiplier at composite time)
+    /// - `translate_x` / `translate_y` (dest-rect translation)
+    /// - `scale_x` / `scale_y` (dest-rect size)
+    ///
+    /// 2D `rotate` is technically composite-friendly but
+    /// `blit_tight_texture_to_target` doesn't have a `rotate_z`
+    /// path yet — promoting rotation animations today would
+    /// render them without the rotation applied. Tracked as a
+    /// follow-up; until then we keep rotation animations on the
+    /// slow path.
+    ///
+    /// Used by the compositor's composited-layer path: when a CSS-
+    /// animated node's `current_properties` is composite-promotable,
+    /// the walker rasterizes its subtree once into a `LayerTexture`
+    /// and each animation frame just blits the texture with the
+    /// current transform / opacity applied — bypassing the full
+    /// walker re-emission cost.
+    ///
+    /// Returns `false` if any property outside the set above is set
+    /// (3D rotation, layout sizing, colour, filter, clip, shadow,
+    /// 2D rotate, …). Those properties require re-rasterizing the
+    /// subtree on every animation tick, so they take the slow path.
+    pub fn is_composite_promotable(&self) -> bool {
+        // Out-of-scope: any field that changes shading or geometry
+        // beyond a 2D affine + alpha. Inverse of the promotable set
+        // — we list the disqualifiers explicitly to keep this
+        // predicate locked in when new fields are added (better to
+        // omit a new field and force the slow path than silently
+        // promote and produce wrong pixels).
+        let touches_non_compositable = self.translate_z.is_some()
+            || self.rotate_x.is_some()
+            || self.rotate_y.is_some()
+            || self.skew_x.is_some()
+            || self.skew_y.is_some()
+            || self.perspective.is_some()
+            || self.depth.is_some()
+            || self.transform_origin.is_some()
+            // Layout — needs taffy recompute + walker re-emit.
+            || self.width.is_some()
+            || self.height.is_some()
+            || self.min_width.is_some()
+            || self.max_width.is_some()
+            || self.min_height.is_some()
+            || self.max_height.is_some()
+            || self.padding.is_some()
+            || self.margin.is_some()
+            || self.gap.is_some()
+            || self.flex_grow.is_some()
+            || self.flex_shrink.is_some()
+            || self.inset_top.is_some()
+            || self.inset_right.is_some()
+            || self.inset_bottom.is_some()
+            || self.inset_left.is_some()
+            || self.font_size.is_some()
+            || self.z_index.is_some()
+            // Visual / shading — would change the rasterized pixels.
+            || self.background_color.is_some()
+            || self.gradient_start_color.is_some()
+            || self.gradient_end_color.is_some()
+            || self.gradient_angle.is_some()
+            || self.border_color.is_some()
+            || self.border_width.is_some()
+            || self.outline_width.is_some()
+            || self.outline_color.is_some()
+            || self.outline_offset.is_some()
+            || self.text_color.is_some()
+            || self.corner_radius.is_some()
+            || self.corner_shape.is_some()
+            || self.shadow_params.is_some()
+            || self.shadow_color.is_some()
+            || self.shadow_stack.is_some()
+            || self.text_shadow_params.is_some()
+            || self.text_shadow_color.is_some()
+            || self.overflow_fade.is_some()
+            // Lighting / 3D shading.
+            || self.light_intensity.is_some()
+            || self.ambient.is_some()
+            || self.specular.is_some()
+            || self.light_direction.is_some()
+            // CSS filters.
+            || self.filter_grayscale.is_some()
+            || self.filter_invert.is_some()
+            || self.filter_sepia.is_some()
+            || self.filter_brightness.is_some()
+            || self.filter_contrast.is_some()
+            || self.filter_saturate.is_some()
+            || self.filter_hue_rotate.is_some()
+            || self.filter_blur.is_some()
+            // Backdrop filters.
+            || self.backdrop_blur.is_some()
+            || self.backdrop_saturation.is_some()
+            || self.backdrop_brightness.is_some()
+            // Clip-path geometry.
+            || self.clip_inset.is_some()
+            || self.clip_circle_radius.is_some()
+            || self.clip_ellipse_radii.is_some()
+            // Mask + SVG content.
+            || self.mask_gradient.is_some()
+            || self.svg_fill.is_some()
+            || self.svg_stroke.is_some()
+            || self.svg_stroke_width.is_some()
+            || self.svg_stroke_dashoffset.is_some()
+            || self.svg_path_data.is_some();
+        if touches_non_compositable {
+            return false;
+        }
+        // 2D rotation is provisionally OUT of the promotable set
+        // until the blit shader supports a `rotate_z` path. Without
+        // it, promoting `rotate` would render the texture without
+        // the rotation applied — visually broken. Track this in
+        // touches_non_compositable so a rotate-bearing keyframe
+        // takes the slow path even if every other property is
+        // promotable.
+        if self.rotate.is_some() {
+            return false;
+        }
+        // At least one promotable property must be Some — an empty
+        // properties block means "no animation tick", not "promote
+        // an idle subtree".
+        self.opacity.is_some()
+            || self.translate_x.is_some()
+            || self.translate_y.is_some()
+            || self.scale_x.is_some()
+            || self.scale_y.is_some()
+    }
+
     /// Create properties with only opacity set
     pub fn opacity(value: f32) -> Self {
         Self {
@@ -500,6 +642,11 @@ impl KeyframeProperties {
             // Shadow
             shadow_params: lerp_opt_array4(self.shadow_params, other.shadow_params, t),
             shadow_color: lerp_opt_array4(self.shadow_color, other.shadow_color, t),
+            shadow_stack: lerp_opt_shadow_stack(
+                self.shadow_stack.as_deref(),
+                other.shadow_stack.as_deref(),
+                t,
+            ),
             text_shadow_params: lerp_opt_array4(
                 self.text_shadow_params,
                 other.text_shadow_params,
@@ -715,6 +862,37 @@ fn lerp_opt_array8(a: Option<[f32; 8]>, b: Option<[f32; 8]>, t: f32) -> Option<[
         ]),
         (None, None) => None,
     }
+}
+
+/// Element-wise interpolation of a compound shadow stack. When the two
+/// stacks differ in length, the shorter side is padded with a fully
+/// transparent layer (zeros) so the extra layers fade in / out during
+/// the transition instead of popping. Mirrors `box-shadow:` lerp
+/// behaviour in CSS Level 4. Returns `None` only when both inputs are
+/// `None`.
+fn lerp_opt_shadow_stack(
+    a: Option<&[[f32; 8]]>,
+    b: Option<&[[f32; 8]]>,
+    t: f32,
+) -> Option<Vec<[f32; 8]>> {
+    if a.is_none() && b.is_none() {
+        return None;
+    }
+    let a = a.unwrap_or(&[]);
+    let b = b.unwrap_or(&[]);
+    let n = a.len().max(b.len());
+    let zero = [0.0f32; 8];
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let from = a.get(i).copied().unwrap_or(zero);
+        let to = b.get(i).copied().unwrap_or(zero);
+        let mut layer = [0.0f32; 8];
+        for j in 0..8 {
+            layer[j] = from[j] + (to[j] - from[j]) * t;
+        }
+        out.push(layer);
+    }
+    Some(out)
 }
 
 /// A keyframe with multiple animated properties
@@ -1371,5 +1549,102 @@ impl KeyframeTrack {
     /// Get the duration in milliseconds
     pub fn duration_ms(&self) -> u32 {
         self.duration_ms
+    }
+}
+
+#[cfg(test)]
+mod composite_promotable_tests {
+    use super::*;
+
+    #[test]
+    fn opacity_only_is_promotable() {
+        let p = KeyframeProperties {
+            opacity: Some(0.5),
+            ..Default::default()
+        };
+        assert!(p.is_composite_promotable());
+    }
+
+    #[test]
+    fn translate_only_is_promotable() {
+        let p = KeyframeProperties {
+            translate_x: Some(10.0),
+            translate_y: Some(20.0),
+            ..Default::default()
+        };
+        assert!(p.is_composite_promotable());
+    }
+
+    #[test]
+    fn scale_opacity_combination_is_promotable() {
+        let p = KeyframeProperties {
+            scale_x: Some(1.5),
+            scale_y: Some(1.5),
+            opacity: Some(0.7),
+            ..Default::default()
+        };
+        assert!(p.is_composite_promotable());
+    }
+
+    #[test]
+    fn rotate_disqualifies_pending_shader_support() {
+        // 2D rotation is provisionally NOT promotable until the
+        // blit shader gains a `rotate_z` path. Promoting today
+        // would render the texture un-rotated.
+        let p = KeyframeProperties {
+            rotate: Some(45.0),
+            ..Default::default()
+        };
+        assert!(!p.is_composite_promotable());
+    }
+
+    #[test]
+    fn width_disqualifies() {
+        let p = KeyframeProperties {
+            opacity: Some(0.5),
+            width: Some(100.0),
+            ..Default::default()
+        };
+        assert!(!p.is_composite_promotable());
+    }
+
+    #[test]
+    fn background_color_disqualifies() {
+        let p = KeyframeProperties {
+            opacity: Some(0.5),
+            background_color: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        };
+        assert!(!p.is_composite_promotable());
+    }
+
+    #[test]
+    fn rotate_x_disqualifies() {
+        // 3D rotation is out of scope for first cut (uses 3D
+        // perspective pipeline, requires different math).
+        let p = KeyframeProperties {
+            rotate_x: Some(30.0),
+            ..Default::default()
+        };
+        assert!(!p.is_composite_promotable());
+    }
+
+    #[test]
+    fn filter_blur_disqualifies() {
+        let p = KeyframeProperties {
+            filter_blur: Some(2.0),
+            ..Default::default()
+        };
+        assert!(!p.is_composite_promotable());
+    }
+
+    #[test]
+    fn empty_properties_not_promotable() {
+        // An empty properties block means "no animation tick happened",
+        // not "promote this static subtree". Predicate must return
+        // false so we don't allocate layer textures for non-animating
+        // nodes.
+        let p = KeyframeProperties::default();
+        assert!(!p.is_composite_promotable());
     }
 }

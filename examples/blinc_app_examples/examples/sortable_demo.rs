@@ -10,10 +10,10 @@
 use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedApp;
 use blinc_app::windowed::WindowedContext;
+use blinc_core::Color;
 use blinc_core::context_state::BlincContextState;
 use blinc_core::events::event_types;
 use blinc_core::reactive::State;
-use blinc_core::Color;
 
 // ============================================================================
 // FSM State Types
@@ -276,7 +276,7 @@ const STYLESHEET: &str = r#"
 // Layout
 // ============================================================================
 
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     if ctx.rebuild_count == 0 {
         ctx.add_css(STYLESHEET);
     }

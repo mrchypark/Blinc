@@ -41,13 +41,13 @@ pub mod window;
 
 // Re-export public types
 pub use app::{
-    get_display_scale, get_safe_area_insets, is_dark_mode, system_font_paths, IOSPlatform,
+    IOSPlatform, get_display_scale, get_safe_area_insets, is_dark_mode, system_font_paths,
 };
 pub use assets::IOSAssetLoader;
 pub use event_loop::{IOSEventLoop, IOSWakeProxy};
-pub use input::{convert_touch, convert_touches, Gesture, GestureDetector, Touch, TouchPhase};
+pub use input::{Gesture, GestureDetector, Touch, TouchPhase, convert_touch, convert_touches};
 pub use native_bridge::{
-    blinc_native_bridge_is_ready, blinc_set_native_call_fn, IOSNativeBridgeAdapter,
+    IOSNativeBridgeAdapter, blinc_native_bridge_is_ready, blinc_set_native_call_fn,
 };
 pub use window::IOSWindow;
 
@@ -55,11 +55,15 @@ pub use window::IOSWindow;
 #[cfg(target_os = "ios")]
 pub use app::ios_main;
 
+// Convenience constructor for non-iOS builds
+#[cfg(not(target_os = "ios"))]
+use blinc_platform::PlatformError;
+
 #[cfg(not(target_os = "ios"))]
 impl IOSPlatform {
     /// Create a placeholder platform (for cross-compilation checks)
-    pub fn with_placeholder() -> Result<Self, blinc_platform::PlatformError> {
-        Err(blinc_platform::PlatformError::Unsupported(
+    pub fn with_placeholder() -> Result<Self, PlatformError> {
+        Err(PlatformError::Unsupported(
             "iOS platform only available on iOS".to_string(),
         ))
     }

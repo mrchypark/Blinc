@@ -16,7 +16,7 @@
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::div::{div, Div, ElementBuilder};
+use crate::div::{Div, ElementBuilder, div};
 use crate::element::RenderProps;
 use crate::tree::{LayoutNodeId, LayoutTree};
 
@@ -85,6 +85,12 @@ impl Blockquote {
     /// Add a child element to the blockquote content area
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
         self.inner = self.inner.child(child);
+        self
+    }
+
+    /// Add a boxed child element to the blockquote content area.
+    pub fn child_box(mut self, child: Box<dyn ElementBuilder>) -> Self {
+        self.inner = self.inner.child_box(child);
         self
     }
 

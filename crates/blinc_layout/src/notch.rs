@@ -56,14 +56,14 @@ use std::rc::Rc;
 use blinc_core::{
     Brush, Color, CornerRadius, DrawContext, Gradient, Path, Rect, Shadow, Transform,
 };
-use taffy::{prelude::*, Overflow};
+use taffy::{Overflow, prelude::*};
 
+use crate::Div;
 use crate::canvas::{CanvasBounds, CanvasRenderFn};
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{Material, RenderLayer, RenderProps};
 use crate::event_handler::EventHandlers;
 use crate::tree::{LayoutNodeId, LayoutTree};
-use crate::Div;
 
 // =============================================================================
 // Corner Configuration
@@ -314,7 +314,7 @@ pub struct Notch {
     pub(crate) background: Option<Brush>,
     pub(crate) border_color: Option<Color>,
     pub(crate) border_width: f32,
-    pub(crate) shadow: Option<Shadow>,
+    pub(crate) shadow: Vec<Shadow>,
     pub(crate) material: Option<Material>,
     pub(crate) opacity: f32,
     pub(crate) render_layer: RenderLayer,
@@ -322,6 +322,12 @@ pub struct Notch {
     // Interaction
     pub(crate) event_handlers: EventHandlers,
     pub(crate) element_id: Option<String>,
+    /// When true, the notch's hit box is transparent to pointer
+    /// events — hit-test passes through to whatever sits beneath it
+    /// in z-order. Use when the notch is a decorative overlay (e.g.
+    /// a dropdown panel positioned over a menu bar) whose bbox would
+    /// otherwise block hovers on the items below.
+    pub(crate) pointer_events_none: bool,
 
     pub inner: Div,
 }
@@ -344,12 +350,13 @@ impl Notch {
             background: None,
             border_color: None,
             border_width: 0.0,
-            shadow: None,
+            shadow: Vec::new(),
             material: None,
             opacity: 1.0,
             render_layer: RenderLayer::default(),
             event_handlers: EventHandlers::default(),
             element_id: None,
+            pointer_events_none: false,
             inner: Div::new(),
         }
     }
@@ -1237,32 +1244,38 @@ impl Notch {
         self
     }
 
-    /// Add drop shadow
+    /// Add a single drop shadow (replaces any existing stack).
     pub fn shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+        self
+    }
+
+    /// Apply a compound drop shadow stack.
+    pub fn shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
     /// Add a small shadow
     pub fn shadow_sm(mut self) -> Self {
-        self.shadow = Some(Shadow::new(0.0, 1.0, 3.0, Color::rgba(0.0, 0.0, 0.0, 0.1)));
+        self.shadow = vec![Shadow::new(0.0, 1.0, 3.0, Color::rgba(0.0, 0.0, 0.0, 0.1))];
         self
     }
 
     /// Add a medium shadow
     pub fn shadow_md(mut self) -> Self {
-        self.shadow = Some(Shadow::new(0.0, 4.0, 6.0, Color::rgba(0.0, 0.0, 0.0, 0.1)));
+        self.shadow = vec![Shadow::new(0.0, 4.0, 6.0, Color::rgba(0.0, 0.0, 0.0, 0.1))];
         self
     }
 
     /// Add a large shadow
     pub fn shadow_lg(mut self) -> Self {
-        self.shadow = Some(Shadow::new(
+        self.shadow = vec![Shadow::new(
             0.0,
             10.0,
             15.0,
             Color::rgba(0.0, 0.0, 0.0, 0.1),
-        ));
+        )];
         self
     }
 
@@ -1276,6 +1289,16 @@ impl Notch {
     pub fn glass(mut self) -> Self {
         self.material = Some(Material::Glass(Default::default()));
         self.render_layer = RenderLayer::Glass;
+        self
+    }
+
+    /// Make the notch transparent to pointer events. Hit-test passes
+    /// through to whatever sits beneath it in z-order. Useful when
+    /// the notch is a decorative overlay (e.g. a dropdown panel over
+    /// a menu bar) whose bbox would otherwise block hovers on the
+    /// items underneath.
+    pub fn pointer_events_none(mut self) -> Self {
+        self.pointer_events_none = true;
         self
     }
 
@@ -1307,6 +1330,12 @@ impl Notch {
         self
     }
 
+    /// Add a boxed child element.
+    pub fn child_box(mut self, child: Box<dyn ElementBuilder>) -> Self {
+        self.children.push(child);
+        self
+    }
+
     /// Add multiple children from an iterator
     pub fn children(
         mut self,
@@ -1328,11 +1357,7 @@ impl Notch {
     where
         F: FnOnce(Self) -> Self,
     {
-        if condition {
-            f(self)
-        } else {
-            self
-        }
+        if condition { f(self) } else { self }
     }
 
     // =========================================================================
@@ -2302,7 +2327,8 @@ pub struct NotchRenderData {
     pub background: Option<Brush>,
     pub border_color: Option<Color>,
     pub border_width: f32,
-    pub shadow: Option<Shadow>,
+    /// Drop shadow stack
+    pub shadow: Vec<Shadow>,
 }
 
 impl std::fmt::Debug for NotchRenderData {
@@ -2317,30 +2343,29 @@ impl std::fmt::Debug for NotchRenderData {
 // ElementBuilder Implementation
 // =============================================================================
 
-impl ElementBuilder for Notch {
-    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Clone style and adjust padding for center scoops
-        // Scoops curve INWARD, so we need to reserve that space for children
-        let mut style = self.style.clone();
-
-        // Add top padding for top center scoop
+impl Notch {
+    /// Apply the same style adjustments `build()` installs on taffy:
+    /// reserve scoop_depth of padding on whichever edge has a center
+    /// scoop, so child layout doesn't render under the carved-out
+    /// region. Pure function — shared by [`Notch::build`] and
+    /// [`<Notch as ElementBuilder>::effective_layout_style`] so the
+    /// fast layout-prop rebuild path reflows with the same style
+    /// taffy got at original build time.
+    fn apply_scoop_padding(&self, style: &mut Style) {
         if let Some(scoop) = &self.top_center_scoop {
             let current_top = match style.padding.top {
                 LengthPercentage::Length(v) => v,
-                LengthPercentage::Percent(_) => 0.0, // Can't add to percentage
+                LengthPercentage::Percent(_) => 0.0,
             };
             style.padding.top = LengthPercentage::Length(current_top + scoop.depth);
         }
-
-        // Add bottom padding for bottom center scoop
         if let Some(scoop) = &self.bottom_center_scoop {
             let current_bottom = match style.padding.bottom {
                 LengthPercentage::Length(v) => v,
-                LengthPercentage::Percent(_) => 0.0, // Can't add to percentage
+                LengthPercentage::Percent(_) => 0.0,
             };
             style.padding.bottom = LengthPercentage::Length(current_bottom + scoop.depth);
         }
-
         // NOTE: concave corner padding is intentionally NOT auto-added
         // here. Existing callers (e.g. the notch_demo dropdown) already
         // set explicit `.pt(top_radius + …)` padding on notches with
@@ -2348,6 +2373,14 @@ impl ElementBuilder for Notch {
         // inset. Callers that want the inner-body inset reserved for
         // children should set padding manually (or wrap their children
         // in a div sized to the inner body).
+    }
+}
+
+impl ElementBuilder for Notch {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        let mut style = self.style.clone();
+        self.apply_scoop_padding(&mut style);
+
         let node = tree.create_node(style);
 
         // Build and add children
@@ -2357,6 +2390,12 @@ impl ElementBuilder for Notch {
         }
 
         node
+    }
+
+    fn effective_layout_style(&self) -> Option<Style> {
+        let mut style = self.style.clone();
+        self.apply_scoop_padding(&mut style);
+        Some(style)
     }
 
     fn render_props(&self) -> RenderProps {
@@ -2393,9 +2432,10 @@ impl ElementBuilder for Notch {
                 border_sides: Default::default(),
                 layer: self.render_layer,
                 material: self.material.clone(),
-                shadow: None, // Rendered via canvas
+                shadow: Vec::new(), // Rendered via canvas
                 transform: None,
                 opacity: self.opacity,
+                pointer_events_none: self.pointer_events_none,
                 ..Default::default()
             }
         } else {
@@ -2408,12 +2448,28 @@ impl ElementBuilder for Notch {
                 border_sides: Default::default(),
                 layer: self.render_layer,
                 material: self.material.clone(),
-                shadow: self.shadow,
+                shadow: self.shadow.clone(),
                 transform: None,
                 opacity: self.opacity,
+                pointer_events_none: self.pointer_events_none,
                 ..Default::default()
             }
         }
+    }
+
+    fn is_static_canvas(&self) -> bool {
+        // The notch's canvas closure captures all shape parameters
+        // (corner radii, scoop / bulge / cut / peak configs, brush,
+        // shadow, opacity) at construction. The only runtime input
+        // is `bounds.width / height` from layout, and any layout
+        // change forces a full repaint that refreshes the static
+        // cache. So the canvas overlay's per-frame re-invocation of
+        // `render_fn` produces the same output as the static-cache
+        // entry — except it overdraws any children the walker
+        // layered on top. Opting out of the overlay keeps the
+        // children visible and lets the compositor fast-path engage
+        // on frames where the only canvases are notches.
+        true
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
@@ -2474,7 +2530,10 @@ impl ElementBuilder for Notch {
         let background = self.background.clone();
         let border_color = self.border_color;
         let border_width = self.border_width;
-        let shadow = self.shadow;
+        // The notch canvas path emits a single fill_notch call. Compound
+        // shadow stacks degrade to the topmost layer here; full multi-layer
+        // support would need fill_notch to grow a per-shadow iteration.
+        let shadow = self.shadow.first().copied();
         let opacity = self.opacity;
 
         Some(Rc::new(

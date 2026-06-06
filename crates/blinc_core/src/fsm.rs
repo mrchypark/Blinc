@@ -25,7 +25,7 @@
 //! on character animation.
 
 use rustc_hash::FxHashMap;
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 
 new_key_type! {
@@ -339,12 +339,14 @@ mod tests {
     const IDLE: StateId = 0;
     const HOVERED: StateId = 1;
     const PRESSED: StateId = 2;
+    const DISABLED: StateId = 3;
 
     // Event constants for tests
     const POINTER_ENTER: EventId = 1;
     const POINTER_LEAVE: EventId = 2;
     const POINTER_DOWN: EventId = 3;
     const POINTER_UP: EventId = 4;
+    const DISABLE: EventId = 5;
 
     #[test]
     fn test_simple_transitions() {

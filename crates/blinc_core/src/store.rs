@@ -210,18 +210,6 @@ pub struct SubscriptionHandle {
     index: usize,
 }
 
-impl SubscriptionHandle {
-    /// Returns the subscription key.
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-
-    /// Returns the index within the key's subscriber list.
-    pub fn index(&self) -> usize {
-        self.index
-    }
-}
-
 // =============================================================================
 // GLOBAL STORE REGISTRY
 // =============================================================================
@@ -442,13 +430,6 @@ pub fn kv_delete(key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn unique_store_name(prefix: &str) -> String {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        format!("{prefix}-{id}")
-    }
 
     #[derive(Clone, Default, Debug, PartialEq)]
     struct TestState {
@@ -522,8 +503,10 @@ mod tests {
 
     #[test]
     fn test_global_store() {
-        let store_name = unique_store_name("test-store");
-        let store1 = create_store::<TestState>(&store_name);
+        // Clear any existing state
+        clear_all_stores();
+
+        let store1 = create_store::<TestState>("test-store");
         store1.set(
             "key1",
             TestState {
@@ -533,16 +516,17 @@ mod tests {
         );
 
         // Same store retrieved
-        let store2 = create_store::<TestState>(&store_name);
+        let store2 = create_store::<TestState>("test-store");
         let state = store2.get("key1");
         assert_eq!(state.count, 100);
     }
 
     #[test]
     fn test_convenience_functions() {
-        let store_name = unique_store_name("app");
+        clear_all_stores();
+
         set_store_state::<TestState>(
-            &store_name,
+            "app",
             "main",
             TestState {
                 count: 50,
@@ -550,14 +534,14 @@ mod tests {
             },
         );
 
-        let state = get_store_state::<TestState>(&store_name, "main");
+        let state = get_store_state::<TestState>("app", "main");
         assert_eq!(state.count, 50);
 
-        update_store_state::<TestState, _>(&store_name, "main", |s| {
+        update_store_state::<TestState, _>("app", "main", |s| {
             s.count += 10;
         });
 
-        let state = get_store_state::<TestState>(&store_name, "main");
+        let state = get_store_state::<TestState>("app", "main");
         assert_eq!(state.count, 60);
     }
 

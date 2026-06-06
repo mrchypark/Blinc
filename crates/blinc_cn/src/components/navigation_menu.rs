@@ -32,20 +32,17 @@ use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use blinc_animation::AnimationPreset;
-use blinc_core::context_state::BlincContextState;
 use blinc_core::State;
+use blinc_core::context_state::BlincContextState;
+use blinc_layout::InstanceKey;
 use blinc_layout::div::{Div, ElementBuilder, ElementTypeId};
 use blinc_layout::element::CursorStyle;
-use blinc_layout::motion::motion_derived;
-use blinc_layout::overlay_state::get_overlay_manager;
+use blinc_layout::overlay_state::overlay_stack;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful_with_key, ButtonState, NoState};
+use blinc_layout::stateful::{ButtonState, NoState, stateful_with_key};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
-use blinc_layout::widgets::overlay::{
-    OverlayAnimation, OverlayHandle, OverlayKind, OverlayManagerExt,
-};
-use blinc_layout::InstanceKey;
+use blinc_layout::widgets::overlay::AnchorDirection;
+use blinc_layout::widgets::overlay_stack::{OverlayBuilder, OverlayHandle};
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 
 use crate::button::reset_button_state;
@@ -99,14 +96,7 @@ impl NavigationMenu {
             .deps([active_menu.signal_id()])
             .on_state(move |_ctx| {
                 let current_active = active_menu_for_container.get();
-                let compact = ThemeState::get().components().compact;
-                let typography = ThemeState::get().components().typography;
-                let mut nav = div()
-                    .class("cn-nav-menu")
-                    .flex_row()
-                    .items_center()
-                    .h_fit()
-                    .gap_px(compact.cluster_gap_sm);
+                let mut nav = div().class("cn-nav-menu").flex_row().items_center().h_fit().gap(1.0);
 
                 for (idx, item) in items.iter().enumerate() {
                     let item_key = format!("{}_{}", key_base, idx);
@@ -135,9 +125,7 @@ impl NavigationMenu {
                                         .cursor(CursorStyle::Pointer)
                                         .child(
                                             text(&label)
-                                                .class("cn-nav-link__label")
-                                                .class("cn-truncate")
-                                                .size(typography.action_md)
+                                                .size(14.0)
                                                 .medium()
                                                 .color(text_color)
                                                 .no_cursor()
@@ -145,10 +133,8 @@ impl NavigationMenu {
                                         )
                                 })
                                 .on_click(move |_| {
-                                    // Close any open dropdown immediately
                                     if let Some(handle_id) = overlay_handle_for_click.get() {
-                                        let mgr = get_overlay_manager();
-                                        mgr.close_immediate(OverlayHandle::from_raw(handle_id));
+                                        OverlayHandle::from_raw(handle_id).close();
                                     }
                                     active_menu_for_click.set(None);
                                     on_click();
@@ -206,24 +192,13 @@ impl NavigationMenu {
                                             .cursor(CursorStyle::Pointer)
                                             .child(
                                                 text(&label)
-                                                    .class("cn-nav-link__label")
-                                                    .class("cn-truncate")
-                                                    .size(typography.action_md)
+                                                    .size(14.0)
                                                     .medium()
                                                     .color(text_color)
                                                     .no_cursor()
                                                     .pointer_events_none(),
                                             )
-                                            .child(
-                                                div()
-                                                    .class("cn-decorative")
-                                                    .pointer_events_none()
-                                                    .child(
-                                                        svg(chevron)
-                                                            .size(12.0, 12.0)
-                                                            .color(text_color),
-                                                    ),
-                                            );
+                                            .child(div().pointer_events_none().child(svg(chevron).size(12.0, 12.0).color(text_color)));
                                         if is_active {
                                             trigger_div = trigger_div.class("cn-nav-link--active");
                                         }
@@ -232,23 +207,21 @@ impl NavigationMenu {
                                 })
                                 .on_hover_enter(move |ctx| {
                                     let current_active = active_menu_for_hover.get();
-                                    let mgr = get_overlay_manager();
 
-                                    // Build the full motion key to check animation state
-                                    let full_motion_key = format!("motion:navmenu_{}:child:0", menu_key_for_hover);
-
-                                    // If this menu is already open, cancel any pending close
+                                    // If this menu is already open, revive any in-flight exit
+                                    // and cancel any pending close countdown.
                                     if current_active == Some(idx) {
                                         if let Some(handle_id) = overlay_handle_for_hover.get() {
                                             let handle = OverlayHandle::from_raw(handle_id);
-                                            if mgr.is_pending_close(handle) {
-                                                mgr.hover_enter(handle);
-                                            }
-                                            // Also cancel exit animation if playing
-                                            let motion = blinc_layout::selector::query_motion(&full_motion_key);
-                                            if motion.is_exiting() {
-                                                mgr.cancel_close(handle);
-                                                motion.cancel_exit();
+                                            if let Ok(mut stack) = overlay_stack().lock() {
+                                                let exiting = stack
+                                                    .iter_bottom_up()
+                                                    .any(|e| e.handle == handle && e.exiting);
+                                                if exiting {
+                                                    stack.revive(handle);
+                                                } else {
+                                                    stack.handle_mouse_enter(handle);
+                                                }
                                             }
                                         }
                                         return;
@@ -262,15 +235,16 @@ impl NavigationMenu {
                                         }
                                     }
 
-                                    // Close all existing hover-based overlays immediately
-                                    // This ensures only one menu is visible at a time when switching
-                                    mgr.close_all_of(OverlayKind::Tooltip);
+                                    // Close any previously-open dropdown so only one is visible
+                                    // at a time when switching triggers.
+                                    if let Some(handle_id) = overlay_handle_for_hover.get() {
+                                        OverlayHandle::from_raw(handle_id).close();
+                                    }
 
                                     // Calculate position (below the trigger)
                                     let x = ctx.bounds_x;
                                     let y = ctx.bounds_y + ctx.bounds_height + 4.0;
 
-                                    // Show the hover-based dropdown
                                     let handle = show_navigation_dropdown(
                                         x,
                                         y,
@@ -284,20 +258,15 @@ impl NavigationMenu {
                                         radius,
                                     );
 
-                                    overlay_handle_for_hover.set(Some(handle.id()));
+                                    overlay_handle_for_hover.set(Some(handle.raw()));
                                     active_menu_for_hover.set(Some(idx));
                                 })
                                 .on_hover_leave(move |_| {
-                                    // Start close delay when leaving trigger
-                                    // (close_all_of(Tooltip) is in on_hover_enter only —
-                                    // calling it here would bypass the 300ms close delay)
+                                    // Start close delay when leaving trigger.
                                     if let Some(handle_id) = overlay_handle_for_leave.get() {
-                                        let mgr = get_overlay_manager();
                                         let handle = OverlayHandle::from_raw(handle_id);
-
-                                        // Only start close if overlay is visible and not already closing
-                                        if mgr.is_visible(handle) && !mgr.is_pending_close(handle) {
-                                            mgr.hover_leave(handle);
+                                        if let Ok(mut stack) = overlay_stack().lock() {
+                                            stack.handle_mouse_leave(handle);
                                         }
                                     }
                                 });
@@ -322,7 +291,10 @@ impl NavigationMenu {
     }
 }
 
-/// Show navigation dropdown content using hover_card for proper hover handling
+/// Push the nav-menu dropdown for a trigger. Uses the tooltip overlay kind
+/// because its dismiss rules (on_mouse_leave) match a hover-anchored dropdown
+/// — the trigger fires `handle_mouse_leave` on out, the content fires
+/// `handle_mouse_enter` to cancel, identical to the menubar pattern.
 #[allow(clippy::too_many_arguments)]
 fn show_navigation_dropdown(
     x: f32,
@@ -331,77 +303,79 @@ fn show_navigation_dropdown(
     min_width: f32,
     active_menu_state: State<Option<usize>>,
     overlay_handle_state: State<Option<u64>>,
-    key: String,
+    _key: String,
     surface: blinc_core::Color,
     border: blinc_core::Color,
     radius: f32,
 ) -> OverlayHandle {
-    use blinc_layout::widgets::overlay::AnchorDirection;
-
-    // Clone states for different handlers
     let active_menu_for_close = active_menu_state.clone();
     let overlay_handle_for_close = overlay_handle_state.clone();
-    let overlay_handle_for_hover = overlay_handle_state.clone();
 
-    // Motion key for animations
-    let motion_key = format!("navmenu_{}", key);
+    // The content closure captures the handle so its own hover handlers can
+    // cancel / restart the close-on-mouse-leave countdown. We pre-allocate.
+    let next_handle_id = overlay_stack()
+        .lock()
+        .ok()
+        .map(|s| s.peek_next_handle_id())
+        .unwrap_or(0);
+    let dropdown_handle = OverlayHandle::from_raw(next_handle_id);
 
-    let mgr = get_overlay_manager();
-
-    // Use hover_card for transient hover-based overlay (like menubar)
-    mgr.hover_card()
+    let handle = OverlayBuilder::tooltip()
         .at(x, y)
         .anchor_direction(AnchorDirection::Bottom)
-        .animation(OverlayAnimation::none()) // Instant show/hide for snappy feel
-        .dismiss_on_escape(true)
-        .on_close(move || {
+        // Tooltip's default mouse_leave_delay_ms is 0 — too tight for a
+        // hover-anchored dropdown. Give the user ~300ms to cross from the
+        // trigger into the dropdown content; the content's own hover_enter
+        // handler then cancels the countdown.
+        .dismissable_by_mouse_leave(true, 300)
+        .dismissable_by_escape(true)
+        .on_close(move |_reason| {
             active_menu_for_close.set(None);
             overlay_handle_for_close.set(None);
         })
         .content(move || {
             let user_content = content();
 
-            // Clone handle for hover handlers on content
-            let handle_for_enter = overlay_handle_for_hover.clone();
-            let handle_for_leave = overlay_handle_for_hover.clone();
-
-            let panel = div()
+            div()
+                .class("cn-nav-menu-content")
                 .min_w(min_width / 4.0)
                 .bg(surface)
                 .border(1.0, border)
                 .rounded(radius)
                 .shadow_lg()
                 .overflow_clip()
-                .py(1.0)
+                // No top/bottom padding — items extend edge-to-edge so
+                // the rounded overflow_clip can trim their hover bg
+                // into the panel's outer curve. See dropdown_menu.rs
+                // for the same rationale across the menu family.
                 .child(user_content)
-                // Add hover handlers to cancel/start close when mouse enters/leaves content
                 .on_hover_enter(move |_| {
-                    if let Some(handle_id) = handle_for_enter.get() {
-                        let mgr = get_overlay_manager();
-                        let handle = OverlayHandle::from_raw(handle_id);
-                        if mgr.is_pending_close(handle) {
-                            mgr.hover_enter(handle); // Cancel close delay
+                    if let Ok(mut stack) = overlay_stack().lock() {
+                        let exiting = stack
+                            .iter_bottom_up()
+                            .any(|e| e.handle == dropdown_handle && e.exiting);
+                        if exiting {
+                            stack.revive(dropdown_handle);
+                        } else {
+                            stack.handle_mouse_enter(dropdown_handle);
                         }
                     }
                 })
                 .on_hover_leave(move |_| {
-                    if let Some(handle_id) = handle_for_leave.get() {
-                        let mgr = get_overlay_manager();
-                        let handle = OverlayHandle::from_raw(handle_id);
-                        if mgr.is_visible(handle) && !mgr.is_pending_close(handle) {
-                            mgr.hover_leave(handle);
-                        }
+                    if let Ok(mut stack) = overlay_stack().lock() {
+                        stack.handle_mouse_leave(dropdown_handle);
                     }
-                });
-
-            div().child(
-                motion_derived(&motion_key)
-                    .enter_animation(AnimationPreset::dropdown_in(150))
-                    .exit_animation(AnimationPreset::dropdown_out(100))
-                    .child(panel),
-            )
+                })
         })
-        .show()
+        .show();
+
+    debug_assert_eq!(
+        handle.raw(),
+        next_handle_id,
+        "peek_next_handle_id was stale — concurrent push?"
+    );
+
+    handle
 }
 
 impl Deref for NavigationMenu {
@@ -599,7 +573,7 @@ impl NavigationLink {
                     .cursor(CursorStyle::Pointer)
                     .child(
                         text(&label)
-                            .size(theme.components().typography.action_md)
+                            .size(14.0)
                             .medium()
                             .color(text_primary)
                             .no_cursor()

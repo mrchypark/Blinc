@@ -9,26 +9,24 @@
 //! - Inherits ALL Div methods for full layout control via Deref
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
-use blinc_core::reactive::SignalId;
 use blinc_core::Color;
-use blinc_platform::{AccessibilityAction, AccessibilityRole, ImeCompositionUpdate};
+use blinc_core::reactive::SignalId;
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::accessibility::AccessibilityMetadata;
 use crate::canvas::canvas;
-use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
-use crate::div::{div, Div, ElementBuilder};
+use crate::css_parser::{ElementState, Stylesheet, active_stylesheet};
+use crate::div::{Div, ElementBuilder, div};
 use crate::element::RenderProps;
 use crate::stateful::{
-    refresh_stateful, SharedState, StateTransitions, Stateful, StatefulInner, TextFieldState,
+    SharedState, StateTransitions, Stateful, StatefulInner, TextFieldState, refresh_stateful,
 };
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
-use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
+use crate::widgets::cursor::{CursorAnimation, SharedCursorState, cursor_state};
 use crate::widgets::scroll::{Scroll, ScrollDirection, ScrollPhysics, SharedScrollPhysics};
 use crate::widgets::text_input::{
     elapsed_ms, increment_focus_count, request_continuous_redraw_pub, set_focused_text_area,
@@ -68,19 +66,22 @@ fn apply_css_overrides_textarea(
         TextFieldState::Idle => None,
     };
 
-    // 1. Apply class-based styles (lowest priority — overridden by ID)
+    // 1. Apply class-based styles (lowest priority — overridden by ID).
+    // FocusedHovered order: base → :hover → :focus, so focus colour wins
+    // over hover while the user is typing. See text_input::apply_css_overrides
+    // for the full rationale.
     for class in css_classes {
         if let Some(base) = stylesheet.get_class(class) {
             apply_style_to_textarea_config(cfg, base, visual);
         }
-        if matches!(visual, TextFieldState::FocusedHovered) {
-            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
-                apply_style_to_textarea_config(cfg, s, visual);
-            }
-        }
         if let Some(s) = state {
             if let Some(state_style) = stylesheet.get_class_with_state(class, s) {
                 apply_style_to_textarea_config(cfg, state_style, visual);
+            }
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
+                apply_style_to_textarea_config(cfg, s, visual);
             }
         }
     }
@@ -90,14 +91,14 @@ fn apply_css_overrides_textarea(
         if let Some(base) = stylesheet.get(element_id) {
             apply_style_to_textarea_config(cfg, base, visual);
         }
-        if matches!(visual, TextFieldState::FocusedHovered) {
-            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
-                apply_style_to_textarea_config(cfg, focus_style, visual);
-            }
-        }
         if let Some(s) = state {
             if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
                 apply_style_to_textarea_config(cfg, state_style, visual);
+            }
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+                apply_style_to_textarea_config(cfg, focus_style, visual);
             }
         }
 
@@ -162,26 +163,22 @@ fn apply_style_to_textarea_config(
 }
 
 /// Extract outline properties from stylesheet for the current state.
+///
+/// Walks class selectors first (lowest priority) and then `#id`
+/// selectors (overrides). Without the class branch, focus-ring rules
+/// like `.cn-textarea:focus { outline: 2px solid var(--border-focus); }`
+/// from the cn stylesheet silently no-op because cn::textarea
+/// attaches via class, not id. Mirrors the same fix on
+/// `text_input::extract_outline_from_stylesheet`.
 fn extract_outline_from_textarea_stylesheet(
     stylesheet: &Stylesheet,
-    element_id: &str,
+    element_id: Option<&str>,
+    css_classes: &[std::sync::Arc<str>],
     visual: &TextFieldState,
 ) -> Option<(f32, Color, f32)> {
     let mut width = None;
     let mut color = None;
     let mut offset = None;
-
-    if let Some(base) = stylesheet.get(element_id) {
-        if let Some(w) = base.outline_width {
-            width = Some(w);
-        }
-        if let Some(c) = base.outline_color {
-            color = Some(c);
-        }
-        if let Some(o) = base.outline_offset {
-            offset = Some(o);
-        }
-    }
 
     let state = match visual {
         TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
@@ -189,29 +186,51 @@ fn extract_outline_from_textarea_stylesheet(
         TextFieldState::Disabled => Some(ElementState::Disabled),
         TextFieldState::Idle => None,
     };
-    if matches!(visual, TextFieldState::FocusedHovered) {
-        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
-            if let Some(w) = focus_style.outline_width {
-                width = Some(w);
+
+    let mut absorb = |s: &crate::element_style::ElementStyle| {
+        if let Some(w) = s.outline_width {
+            width = Some(w);
+        }
+        if let Some(c) = s.outline_color {
+            color = Some(c);
+        }
+        if let Some(o) = s.outline_offset {
+            offset = Some(o);
+        }
+    };
+
+    // 1. Class-based styles (lowest priority — overridden by ID).
+    // FocusedHovered order: base → :hover → :focus, so the focus ring
+    // wins over hover.
+    for class in css_classes {
+        if let Some(base) = stylesheet.get_class(class) {
+            absorb(base);
+        }
+        if let Some(s) = state {
+            if let Some(state_style) = stylesheet.get_class_with_state(class, s) {
+                absorb(state_style);
             }
-            if let Some(c) = focus_style.outline_color {
-                color = Some(c);
-            }
-            if let Some(o) = focus_style.outline_offset {
-                offset = Some(o);
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(s) = stylesheet.get_class_with_state(class, ElementState::Focus) {
+                absorb(s);
             }
         }
     }
-    if let Some(s) = state {
-        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
-            if let Some(w) = state_style.outline_width {
-                width = Some(w);
+
+    // 2. ID-based styles (overrides class)
+    if let Some(element_id) = element_id {
+        if let Some(base) = stylesheet.get(element_id) {
+            absorb(base);
+        }
+        if let Some(s) = state {
+            if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+                absorb(state_style);
             }
-            if let Some(c) = state_style.outline_color {
-                color = Some(c);
-            }
-            if let Some(o) = state_style.outline_offset {
-                offset = Some(o);
+        }
+        if matches!(visual, TextFieldState::FocusedHovered) {
+            if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+                absorb(focus_style);
             }
         }
     }
@@ -364,8 +383,6 @@ pub struct TextAreaState {
     pub cursor: TextPosition,
     /// Selection start position (if selecting)
     pub selection_start: Option<TextPosition>,
-    /// In-progress IME composition preview at the current cursor.
-    pub composition: Option<ImeCompositionUpdate>,
     /// Visual state for styling
     pub visual: TextFieldState,
     /// Placeholder text
@@ -407,8 +424,6 @@ pub struct TextAreaState {
     pub(crate) change_signal_id: Option<SignalId>,
     /// Layout bounds storage - updated after layout to get actual rendered dimensions
     pub layout_bounds_storage: crate::renderer::LayoutBoundsStorage,
-    /// Local caret rectangle used to position IME candidate windows.
-    pub ime_cursor_bounds_storage: crate::renderer::LayoutBoundsStorage,
     /// CSS element ID for stylesheet matching (set via TextArea::id())
     pub(crate) css_element_id: Option<String>,
     /// CSS class names for stylesheet matching (set via TextArea::class())
@@ -421,7 +436,6 @@ impl std::fmt::Debug for TextAreaState {
             .field("lines", &self.lines)
             .field("cursor", &self.cursor)
             .field("selection_start", &self.selection_start)
-            .field("composition", &self.composition)
             .field("visual", &self.visual)
             .field("placeholder", &self.placeholder)
             .field("disabled", &self.disabled)
@@ -438,7 +452,6 @@ impl Default for TextAreaState {
             lines: vec![String::new()],
             cursor: TextPosition::default(),
             selection_start: None,
-            composition: None,
             visual: TextFieldState::Idle,
             placeholder: String::new(),
             disabled: false,
@@ -457,18 +470,10 @@ impl Default for TextAreaState {
             change_version: Arc::new(AtomicU64::new(0)),
             change_signal_id: None,
             layout_bounds_storage: Arc::new(Mutex::new(None)),
-            ime_cursor_bounds_storage: Arc::new(Mutex::new(None)),
             css_element_id: None,
             css_classes: Vec::new(),
         }
     }
-}
-
-fn split_text_lines(value: &str) -> Vec<String> {
-    value
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
-        .collect()
 }
 
 impl TextAreaState {
@@ -480,7 +485,11 @@ impl TextAreaState {
     /// Create with initial value
     pub fn with_value(value: impl Into<String>) -> Self {
         let value = value.into();
-        let lines = split_text_lines(&value);
+        let lines: Vec<String> = if value.is_empty() {
+            vec![String::new()]
+        } else {
+            value.lines().map(|s| s.to_string()).collect()
+        };
         let cursor = TextPosition::new(
             lines.len().saturating_sub(1),
             lines.last().map(|l| l.chars().count()).unwrap_or(0),
@@ -505,25 +514,13 @@ impl TextAreaState {
         self.lines.join("\n")
     }
 
-    pub fn value_with_composition(&self) -> String {
-        let Some(composition) = self.composition.as_ref() else {
-            return self.value();
-        };
-
-        let mut preview = self.clone();
-        preview.composition = None;
-        preview.insert(&composition.text);
-        preview.value()
-    }
-
-    pub fn display_lines(&self) -> Vec<String> {
-        let value = self.value_with_composition();
-        split_text_lines(&value)
-    }
-
     /// Set the text value
     pub fn set_value(&mut self, value: &str) {
-        self.lines = split_text_lines(value);
+        self.lines = if value.is_empty() {
+            vec![String::new()]
+        } else {
+            value.lines().map(|s| s.to_string()).collect()
+        };
         self.cursor = TextPosition::new(
             self.lines.len().saturating_sub(1),
             self.lines.last().map(|l| l.chars().count()).unwrap_or(0),
@@ -1071,7 +1068,7 @@ impl TextAreaState {
         let available_width = self.available_width;
         let wrap_enabled = self.wrap_enabled;
 
-        for (logical_line_idx, line_text) in self.display_lines().into_iter().enumerate() {
+        for (logical_line_idx, line_text) in self.lines.iter().enumerate() {
             if line_text.is_empty() {
                 // Empty line still takes up one visual line
                 self.visual_lines.push(VisualLine {
@@ -1086,7 +1083,7 @@ impl TextAreaState {
 
             if !wrap_enabled || available_width <= 0.0 {
                 // No wrapping - entire logical line is one visual line
-                let width = crate::text_measure::measure_text(&line_text, font_size).width;
+                let width = crate::text_measure::measure_text(line_text, font_size).width;
                 self.visual_lines.push(VisualLine {
                     logical_line: logical_line_idx,
                     start_char: 0,
@@ -1576,15 +1573,17 @@ impl TextArea {
                                 &data_guard.css_classes,
                                 visual,
                             );
-                            if let Some(ref element_id) = data_guard.css_element_id {
-                                extract_outline_from_textarea_stylesheet(
-                                    &stylesheet,
-                                    element_id,
-                                    visual,
-                                )
-                            } else {
-                                None
-                            }
+                            // Extract outline. Pass both classes and
+                            // the optional id so a class-only target
+                            // (cn::textarea attaches by class) still
+                            // picks up `.cn-textarea:focus { outline:
+                            // …; }` from the stylesheet.
+                            extract_outline_from_textarea_stylesheet(
+                                &stylesheet,
+                                data_guard.css_element_id.as_deref(),
+                                &data_guard.css_classes,
+                                visual,
+                            )
                         } else {
                             None
                         }
@@ -2040,11 +2039,8 @@ impl TextArea {
     ) -> Div {
         // Note: Visual styling (bg, border, rounded) is now applied directly to the
         // container in the callback via set_* methods, not here.
-        let display_text = data.value_with_composition();
-        let display_lines = data.display_lines();
-        let has_display_text = !display_text.is_empty();
 
-        let text_color = if !has_display_text {
+        let text_color = if data.is_empty() {
             config.placeholder_color
         } else if data.disabled {
             Color::rgba(0.4, 0.4, 0.4, 1.0)
@@ -2088,23 +2084,12 @@ impl TextArea {
 
         // Build cursor canvas element (if focused)
         // The cursor is positioned inside the scroll content so it scrolls with text
-        let descender_offset = config.font_size * 0.1;
-        let cursor_top = cursor_visual_y + (line_height - cursor_height) / 2.0 - descender_offset;
-        if let Ok(mut bounds) = data.ime_cursor_bounds_storage.lock() {
-            *bounds = if is_focused {
-                Some(crate::element::ElementBounds {
-                    x: (config.padding_x + cursor_x).max(0.0),
-                    y: (config.padding_y + cursor_top - data.scroll_offset()).max(0.0),
-                    width: 2.0,
-                    height: cursor_height,
-                })
-            } else {
-                None
-            };
-        }
         let cursor_canvas_opt = if is_focused {
             // Cursor top is based on visual line position plus vertical centering within line
             // Shift cursor UP - fonts have descender space at bottom which pushes visible text upward
+            let descender_offset = config.font_size * 0.1;
+            let cursor_top =
+                cursor_visual_y + (line_height - cursor_height) / 2.0 - descender_offset;
             let cursor_left = cursor_x;
 
             {
@@ -2294,7 +2279,7 @@ impl TextArea {
             // Wrapping mode fallback: use natural text wrapping
             // This path is used when visual lines not yet computed
             // In this mode, line_idx corresponds to logical line (visual line not computed)
-            for (line_idx, line) in display_lines.iter().enumerate() {
+            for (line_idx, line) in data.lines.iter().enumerate() {
                 let line_text = if line.is_empty() { " " } else { line.as_str() };
                 let state_for_line = Arc::clone(&shared_state);
 
@@ -2322,7 +2307,7 @@ impl TextArea {
         } else {
             // No-wrap mode: each line stays on single line, horizontally scrollable
             // In this mode, line_idx corresponds to both logical and visual line
-            for (line_idx, line) in display_lines.iter().enumerate() {
+            for (line_idx, line) in data.lines.iter().enumerate() {
                 let line_text = if line.is_empty() { " " } else { line.as_str() };
                 let state_for_line = Arc::clone(&shared_state);
 
@@ -2400,7 +2385,7 @@ impl TextArea {
     }
 
     /// Set placeholder text
-    pub fn placeholder(self, text: impl Into<String>) -> Self {
+    pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         let placeholder = text.into();
         self.config.lock().unwrap().placeholder = placeholder.clone();
         if let Ok(mut s) = self.state.lock() {
@@ -2466,14 +2451,14 @@ impl TextArea {
     }
 
     /// Set font size
-    pub fn font_size(self, size: f32) -> Self {
+    pub fn font_size(mut self, size: f32) -> Self {
         self.config.lock().unwrap().font_size = size;
         self.update_scroll_dimensions();
         self
     }
 
     /// Set disabled state
-    pub fn disabled(self, disabled: bool) -> Self {
+    pub fn disabled(mut self, disabled: bool) -> Self {
         self.config.lock().unwrap().disabled = disabled;
         if let Ok(mut s) = self.state.lock() {
             s.disabled = disabled;
@@ -2485,7 +2470,7 @@ impl TextArea {
     }
 
     /// Set maximum length
-    pub fn max_length(self, max: usize) -> Self {
+    pub fn max_length(mut self, max: usize) -> Self {
         self.config.lock().unwrap().max_length = max;
         self
     }
@@ -2494,7 +2479,7 @@ impl TextArea {
     ///
     /// When wrapping is enabled (default), long lines wrap to the next visual line.
     /// When disabled, text scrolls horizontally instead.
-    pub fn wrap(self, wrap: bool) -> Self {
+    pub fn wrap(mut self, wrap: bool) -> Self {
         self.config.lock().unwrap().wrap = wrap;
         self
     }
@@ -2899,44 +2884,7 @@ impl ElementBuilder for TextArea {
         }
 
         // Build the inner Stateful
-        let node_id = self.inner.build(tree);
-        let state = Arc::clone(&self.state);
-        tree.set_accessibility_provider(
-            node_id,
-            std::sync::Arc::new(move || {
-                state
-                    .lock()
-                    .ok()
-                    .map(|state| {
-                        AccessibilityMetadata::new(AccessibilityRole::TextArea)
-                            .with_name(if state.placeholder.is_empty() {
-                                state.css_element_id.clone()
-                            } else {
-                                Some(state.placeholder.clone())
-                            })
-                            .with_description(
-                                (!state.placeholder.is_empty()).then(|| state.placeholder.clone()),
-                            )
-                            .with_value(Some(state.value_with_composition()))
-                            .with_focusable(true)
-                            .with_focused(state.visual.is_focused())
-                            .with_disabled(state.disabled)
-                            .with_actions(vec![
-                                AccessibilityAction::Focus,
-                                AccessibilityAction::SetValue,
-                            ])
-                    })
-                    .unwrap_or_else(|| {
-                        AccessibilityMetadata::new(AccessibilityRole::TextArea)
-                            .with_focusable(true)
-                            .with_actions(vec![
-                                AccessibilityAction::Focus,
-                                AccessibilityAction::SetValue,
-                            ])
-                    })
-            }),
-        );
-        node_id
+        self.inner.build(tree)
     }
 
     fn render_props(&self) -> RenderProps {
@@ -2961,6 +2909,19 @@ impl ElementBuilder for TextArea {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    // Forward CSS class list / id from the inner Stateful so the
+    // selector matcher can match `.foo` / `#bar` rules added via
+    // `text_area(...).class(..)` / `.id(..)`. Same gotcha as
+    // text_input — the setters update inner state but without
+    // these forwards the renderer queries the default `&[]` / `None`.
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
     }
 
     fn layout_bounds_storage(&self) -> Option<crate::renderer::LayoutBoundsStorage> {
@@ -3034,13 +2995,6 @@ impl ElementBuilder for TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blinc_theme::ThemeState;
-    use std::sync::Once;
-
-    fn ensure_theme() {
-        static INIT: Once = Once::new();
-        INIT.call_once(ThemeState::init_default);
-    }
 
     #[test]
     fn test_text_area_state_insert() {
@@ -3096,68 +3050,5 @@ mod tests {
         state.insert("new");
         assert_eq!(state.value(), "new");
         assert_eq!(state.line_count(), 1);
-    }
-
-    #[test]
-    fn test_text_area_visual_lines_use_composition_text() {
-        let mut state = TextAreaState::new();
-        state.composition = Some(ImeCompositionUpdate::new("한", None));
-        state.font_size = 16.0;
-        state.available_width = 200.0;
-        state.wrap_enabled = true;
-
-        state.compute_visual_lines();
-
-        assert_eq!(state.visual_lines.len(), 1);
-        assert_eq!(state.visual_lines[0].text, "한");
-    }
-
-    #[test]
-    fn test_text_area_composition_replaces_active_selection() {
-        let mut state = TextAreaState::with_value("hello");
-        state.cursor = TextPosition::new(0, 4);
-        state.selection_start = Some(TextPosition::new(0, 1));
-        state.composition = Some(ImeCompositionUpdate::new("한", None));
-
-        assert_eq!(state.value_with_composition(), "h한o");
-    }
-
-    #[test]
-    fn test_text_area_preserves_trailing_empty_logical_line() {
-        let mut state = TextAreaState::with_value("hello\n");
-        state.font_size = 16.0;
-        state.available_width = 200.0;
-        state.wrap_enabled = true;
-
-        assert_eq!(state.line_count(), 2);
-        assert_eq!(
-            state.display_lines(),
-            vec!["hello".to_string(), String::new()]
-        );
-
-        state.compute_visual_lines();
-
-        assert_eq!(state.visual_lines.len(), 2);
-        assert_eq!(state.visual_lines[1].text, "");
-    }
-
-    #[test]
-    fn test_text_area_blank_lines_do_not_fall_back_to_placeholder() {
-        ensure_theme();
-        let state = text_area_state();
-        {
-            let mut data = state.lock().expect("text area lock");
-            data.placeholder = "Type here".to_string();
-            data.set_value("\n");
-        }
-
-        let ui = crate::div::div().child(text_area(&state));
-        let mut tree = crate::renderer::RenderTree::from_element(&ui);
-        tree.compute_layout(320.0, 180.0);
-
-        assert!(!tree
-            .text_elements()
-            .iter()
-            .any(|(text, _)| text.content == "Type here"));
     }
 }

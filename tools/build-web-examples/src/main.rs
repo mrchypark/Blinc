@@ -144,6 +144,18 @@ const INFERABLE_DEPS: &[(&str, &str, &str)] = &[
         r#"{ git = "https://github.com/project-blinc/blinc_canvas_kit.git", rev = "5dbdad2bfdf7189446ee211da9cbd28b3edd4186" }"#,
     ),
     (
+        "blinc_gpu::",
+        "blinc_gpu",
+        // Custom-render-pass demos (`gpu_pass_demo`) import `blinc_gpu`
+        // directly. `default-features = false` is required because the
+        // default `desktop` feature pulls vulkan / metal / dx12 / winit
+        // backends that don't compile on `wasm32-unknown-unknown`. The
+        // `web` feature enables `webgpu` + `webgl` wgpu backends — same
+        // set blinc_app's `web` feature chains in transitively, but
+        // wrappers depending on `blinc_gpu` by name need their own copy.
+        r#"{ path = "../../../crates/blinc_gpu", default-features = false, features = ["web"] }"#,
+    ),
+    (
         "blinc_theme::",
         "blinc_theme",
         r#"{ path = "../../../crates/blinc_theme" }"#,
@@ -213,6 +225,19 @@ const INFERABLE_DEPS: &[(&str, &str, &str)] = &[
     // `performance.now()` with the same API. Detected by source
     // scan so demos that don't animate don't pay the extra dep.
     ("web_time::", "web-time", r#""1.1""#),
+    // wgpu + bytemuck: pulled in only by demos that drive a
+    // `CustomRenderPass` directly (currently `gpu_pass_demo`). The
+    // workspace pins `wgpu = "=26.0.1"` so the wrapper agrees on
+    // ABI with `blinc_gpu`; backend features (`webgpu`, `webgl`)
+    // come transitively via `blinc_gpu`'s `web` feature, so we
+    // don't enable them here. `bytemuck` carries the `derive`
+    // feature for `Pod` / `Zeroable` proc-macros.
+    ("wgpu::", "wgpu", r#""=26.0.1""#),
+    (
+        "bytemuck::",
+        "bytemuck",
+        r#"{ version = "1.14", features = ["derive"] }"#,
+    ),
 ];
 
 // ============================================================================
@@ -252,6 +277,14 @@ struct ExampleMeta {
     /// `index.html` can set `data-width`/`data-height` on the canvas
     /// for consistent rendering in docs/book iframes.
     window_size: Option<(u32, u32)>,
+    /// `true` when the example defines `pub fn theme_bundle() ->
+    /// ThemeBundle`. When set, the wasm wrapper hands the bundle to
+    /// `ThemeState::init` before `WebApp::run` so the example gets
+    /// the same theme + `with_css(...)` registration on web that it
+    /// gets on desktop via `WindowedApp::run_with_theme`. Examples
+    /// without this function inherit `platform_theme_bundle()` and
+    /// no extra CSS.
+    has_theme_bundle: bool,
 }
 
 /// Walk `EXAMPLES_DIR`, parse each `.rs`, and return metadata for
@@ -317,9 +350,22 @@ fn discover_examples(workspace_root: &Path) -> Vec<ExampleMeta> {
 
         let title = extract_title(&source).unwrap_or_else(|| format_fallback_title(&stem));
         let description = extract_description(&source);
-        let extra_deps = infer_extra_deps(&source);
+        let mut extra_deps = infer_extra_deps(&source);
         let image_assets = detect_image_assets(&source);
         let window_size = extract_window_size(&source);
+        let has_theme_bundle = has_pub_theme_bundle(&ast);
+        // The wrapper directly references `blinc_theme::ThemeState`
+        // and `blinc_theme::detect_system_color_scheme` when the
+        // example exports `theme_bundle()`. Force-add the dep even
+        // if the example source happens not to mention `blinc_theme::`
+        // by name (it usually does — but don't depend on it).
+        if has_theme_bundle && !extra_deps.iter().any(|(p, _)| p == "blinc_theme") {
+            extra_deps.push((
+                "blinc_theme".to_string(),
+                r#"{ path = "../../../crates/blinc_theme" }"#.to_string(),
+            ));
+            extra_deps.sort_by(|a, b| a.0.cmp(&b.0));
+        }
 
         let relative_path = path
             .strip_prefix(workspace_root)
@@ -342,6 +388,7 @@ fn discover_examples(workspace_root: &Path) -> Vec<ExampleMeta> {
             extra_deps,
             image_assets,
             window_size,
+            has_theme_bundle,
         });
     }
 
@@ -362,6 +409,23 @@ fn has_pub_build_ui(ast: &syn::File) -> bool {
     ast.items.iter().any(|item| {
         if let syn::Item::Fn(f) = item {
             matches!(f.vis, syn::Visibility::Public(_)) && f.sig.ident == "build_ui"
+        } else {
+            false
+        }
+    })
+}
+
+/// Returns true if the parsed syn AST exposes a top-level
+/// `pub fn theme_bundle()`. Examples that need a non-default
+/// `ThemeBundle` (e.g. `cn_demo` registering `cn_styles::CN_STYLES`)
+/// define this so the wasm wrapper can hand the bundle to
+/// `ThemeState::init` before `WebApp::run` — same effect as the
+/// desktop's `WindowedApp::run_with_theme`. Examples that don't
+/// define it inherit the auto-init platform bundle.
+fn has_pub_theme_bundle(ast: &syn::File) -> bool {
+    ast.items.iter().any(|item| {
+        if let syn::Item::Fn(f) = item {
+            matches!(f.vis, syn::Visibility::Public(_)) && f.sig.ident == "theme_bundle"
         } else {
             false
         }
@@ -561,10 +625,10 @@ fn detect_image_assets(source: &str) -> Vec<String> {
     // Match markdown image syntax: ![alt](examples/blinc_app_examples/examples/assets/foo.webp)
     for segment in source.split('(') {
         let trimmed = segment.trim();
-        if trimmed.starts_with(asset_prefix) {
-            if let Some(end) = trimmed.find(')') {
-                raw_paths.insert(trimmed[..end].to_string());
-            }
+        if trimmed.starts_with(asset_prefix)
+            && let Some(end) = trimmed.find(')')
+        {
+            raw_paths.insert(trimmed[..end].to_string());
         }
     }
 
@@ -595,14 +659,13 @@ fn detect_image_assets(source: &str) -> Vec<String> {
         } else if p.is_file() {
             out.insert(path.clone());
             let is_gltf_json = path.ends_with(".gltf");
-            if is_gltf_json {
-                if let Some(parent) = p.parent() {
-                    if let Ok(entries) = list_files_recursive(parent) {
-                        for file_path in entries {
-                            if let Some(s) = file_path.to_str() {
-                                out.insert(s.to_string());
-                            }
-                        }
+            if is_gltf_json
+                && let Some(parent) = p.parent()
+                && let Ok(entries) = list_files_recursive(parent)
+            {
+                for file_path in entries {
+                    if let Some(s) = file_path.to_str() {
+                        out.insert(s.to_string());
                     }
                 }
             }
@@ -680,7 +743,12 @@ fn generate_wrapper(workspace_root: &Path, meta: &ExampleMeta) -> std::io::Resul
     )?;
     fs::write(
         src_dir.join("lib.rs"),
-        render_lib_rs(&meta.name, &crate_name, &meta.image_assets),
+        render_lib_rs(
+            &meta.name,
+            &crate_name,
+            &meta.image_assets,
+            meta.has_theme_bundle,
+        ),
     )?;
     fs::write(
         wrapper_dir.join("index.html"),
@@ -898,7 +966,12 @@ fn main() {{
     )
 }
 
-fn render_lib_rs(stem: &str, crate_name: &str, image_assets: &[String]) -> String {
+fn render_lib_rs(
+    stem: &str,
+    crate_name: &str,
+    image_assets: &[String],
+    has_theme_bundle: bool,
+) -> String {
     format!(
         r#"//! Auto-generated by `tools/build-web-examples`.
 //!
@@ -966,7 +1039,7 @@ pub fn _start() {{
             .build(),
     );
 
-    wasm_bindgen_futures::spawn_local(async {{
+{theme_init_block}    wasm_bindgen_futures::spawn_local(async {{
         let result = WebApp::run_with_async_setup(
             "blinc-canvas",
             |app| Box::pin(async move {{
@@ -976,7 +1049,12 @@ pub fn _start() {{
 {preload_block}
                 Ok(())
             }}),
-            build_ui,
+            // Closure wrapper: on edition 2024, a free fn
+            // `build_ui(ctx) -> impl Element` captures `ctx`'s
+            // lifetime in the return type, which breaks the
+            // higher-ranked `FnMut` bound on `run_with_async_setup`.
+            // The closure form bypasses the inference failure.
+            |ctx| build_ui(ctx),
         )
         .await;
 
@@ -990,6 +1068,18 @@ pub fn _start() {{
 "#,
         stem = stem,
         crate_name = crate_name,
+        theme_init_block = if has_theme_bundle {
+            // Install the example's bundle before WebApp::new()'s
+            // auto-init runs — its `try_get().is_none()` guard skips
+            // when we've already initialised. Without this, the
+            // bundle's `with_css(...)` payload (cn_styles, app
+            // overrides) never lands.
+            "    blinc_theme::ThemeState::init(\n        example::theme_bundle(),\n        \
+             blinc_theme::detect_system_color_scheme(),\n    );\n\n"
+                .to_string()
+        } else {
+            String::new()
+        },
         preload_block = {
             // Media URLs (video/audio) stream via `<video>.src` /
             // `<audio>.src` — they don't need to be materialised in
@@ -1615,11 +1705,11 @@ fn plan_builds(workspace_root: &Path, examples: &[ExampleMeta], force: bool) -> 
         if let Some(rest) = path.strip_prefix("examples/blinc_app_examples/examples/") {
             // Only top-level *.rs files in that directory count;
             // subdirectories (like the `assets/` folder) don't.
-            if let Some(stem) = rest.strip_suffix(".rs") {
-                if !stem.contains('/') {
-                    changed_examples.insert(stem.to_string());
-                    continue;
-                }
+            if let Some(stem) = rest.strip_suffix(".rs")
+                && !stem.contains('/')
+            {
+                changed_examples.insert(stem.to_string());
+                continue;
             }
             // Files under examples/blinc_app_examples/examples/ that aren't
             // top-level .rs (e.g. assets/) don't affect any

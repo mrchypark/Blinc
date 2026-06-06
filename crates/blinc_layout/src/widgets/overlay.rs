@@ -39,7 +39,8 @@ use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
 use blinc_core::Color;
 use indexmap::IndexMap;
 
-use crate::div::{div, Div};
+use crate::div::{Div, div};
+use crate::key::InstanceKey;
 use crate::renderer::RenderTree;
 use crate::stack::stack;
 use crate::stateful::StateTransitions;
@@ -162,8 +163,8 @@ impl OverlayState {
 
 impl StateTransitions for OverlayState {
     fn on_event(&self, event: u32) -> Option<Self> {
-        use overlay_events::*;
         use OverlayState::*;
+        use overlay_events::*;
 
         match (self, event) {
             // Closed -> Opening: Start show animation
@@ -1695,6 +1696,7 @@ impl OverlayManagerInner {
             .left(0.0)
             .top(0.0)
             .stack_layer()
+            .overlay_root()
             .pointer_events_none();
 
         // Add visible overlays as children
@@ -2058,7 +2060,7 @@ impl OverlayManagerInner {
         let mut positions = Vec::new();
         let mut y_offset = margin;
 
-        for toast in toasts.iter().take(self.max_toasts) {
+        for (i, toast) in toasts.iter().take(self.max_toasts).enumerate() {
             // Estimate toast height (will be refined after layout)
             let estimated_height = toast.cached_size.map(|(_, h)| h).unwrap_or(60.0);
 
@@ -2152,8 +2154,6 @@ pub trait OverlayManagerExt {
     fn handle_escape(&self) -> bool;
     /// Handle backdrop click (dismiss if applicable)
     fn handle_backdrop_click(&self) -> bool;
-    /// Check whether a point hits the visible backdrop instead of overlay content
-    fn is_backdrop_click(&self, x: f32, y: f32) -> bool;
     /// Handle click at position - dismisses if on backdrop
     fn handle_click_at(&self, x: f32, y: f32) -> bool;
     /// Update viewport dimensions (logical pixels)
@@ -2288,10 +2288,6 @@ impl OverlayManagerExt for OverlayManager {
 
     fn handle_backdrop_click(&self) -> bool {
         self.lock().unwrap().handle_backdrop_click()
-    }
-
-    fn is_backdrop_click(&self, x: f32, y: f32) -> bool {
-        self.lock().unwrap().is_backdrop_click(x, y)
     }
 
     fn handle_click_at(&self, x: f32, y: f32) -> bool {

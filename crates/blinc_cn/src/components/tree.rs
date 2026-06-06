@@ -25,14 +25,14 @@
 use blinc_animation::{AnimatedValue, SchedulerHandle, SpringConfig};
 use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, SignalId, State};
+use blinc_layout::InstanceKey;
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::SharedAnimatedValue;
+use blinc_layout::motion::{SharedAnimatedValue, motion};
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
 use blinc_layout::stateful::Stateful;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
-use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 use std::cell::OnceCell;
 use std::sync::{Arc, Mutex};
@@ -183,7 +183,7 @@ impl TreeViewBuilder {
             nodes: Vec::new(),
             selected_key: None,
             on_select: None,
-            indent_size: 4.0,
+            indent_size: 8.0,
             show_guides: false,
             classes: Vec::new(),
             user_id: None,
@@ -323,7 +323,7 @@ impl TreeViewBuilder {
         let on_select = self.on_select.clone();
         let container_key = format!("{}_container", self.instance_key.get());
 
-        let container_state = use_shared_state_with(&container_key, ());
+        let container_state = blinc_layout::stateful::use_fsm_keyed(&container_key, ());
 
         let text_primary = theme.color(ColorToken::TextPrimary);
         let text_secondary = theme.color(ColorToken::TextSecondary);
@@ -513,12 +513,28 @@ impl TreeViewBuilder {
                         // Build node container with optional children
                         let mut node_div = div().flex_col().flex_shrink_0().child(row);
 
-                        // Children (if expanded)
-                        if has_children && is_expanded {
+                        // Children container — ALWAYS render when the node has
+                        // children, even if collapsed. FLIP needs a stable element
+                        // to compare bounds against; if we only added the container
+                        // on expand, the first reveal had no `previous_visual_bounds`
+                        // and the animation didn't start until something else
+                        // (mouse move) forced another frame.
+                        //
+                        // Collapsed = explicit h(0); expanded = natural height.
+                        // overflow_clip + clip_to_animated hide overflow during the
+                        // shrink/grow.
+                        if has_children {
                             let anim_key = format!("tree-children-{}", node.key);
 
+                            // Mirrors the accordion pattern: `w_full()` so the
+                            // child width stays stable across collapsed → expanded
+                            // (without it, taffy resolves an `h(0)` container to a
+                            // different cross-axis size than the natural-height
+                            // expanded form, and the FLIP `from_bounds` snapshot
+                            // doesn't compose with the new `to_bounds`).
                             let mut children_container = div()
                                 .flex_col()
+                                .w_full()
                                 .flex_shrink_0()
                                 .relative()
                                 .overflow_clip()
@@ -526,15 +542,17 @@ impl TreeViewBuilder {
                                     blinc_layout::visual_animation::VisualAnimationConfig::height()
                                         .with_key(&anim_key)
                                         .clip_to_animated()
-                                        .gentle(),
+                                        .snappy(),
                                 );
 
-                            // Optional guide line - positioned at center of this node's chevron
+                            // Optional guide line - positioned at center of this node's chevron.
+                            // Chevron container is 16px wide, starts at `indent + 1.0`,
+                            // so its center is `indent + 9.0`.
                             if show_guides {
                                 children_container = children_container.child(
                                     div()
                                         .absolute()
-                                        .left((indent * 4.0) + 12.0)
+                                        .left(indent + 9.0)
                                         .top(0.0)
                                         .bottom(0.0)
                                         .w(1.0)
@@ -561,6 +579,20 @@ impl TreeViewBuilder {
                                     diff_removed,
                                     diff_modified,
                                 ));
+                            }
+
+                            if !is_expanded {
+                                // Matches accordion's `w_full().h(0.0).px(1.0)`
+                                // pattern: a non-zero horizontal padding when
+                                // collapsed keeps the element's cross-axis size
+                                // stable so the FLIP `from_bounds` snapshot
+                                // produces a clean dh delta against the expanded
+                                // `to_bounds`. Pure `h(0)` left taffy
+                                // computing different widths between states
+                                // and that produced choppy mid-animation paints
+                                // (only some children visible until the next
+                                // input forced another full repaint).
+                                children_container = children_container.h(0.0).px(1.0);
                             }
 
                             node_div = node_div.child(children_container);

@@ -4,84 +4,15 @@
 
 use crate::event_loop::IOSEventLoop;
 use crate::window::IOSWindow;
-use blinc_platform::{LifecycleState, PlatformEnvironmentSnapshot};
 use blinc_platform::{Platform, PlatformError};
-#[cfg(target_os = "ios")]
-use blinc_platform::{ViewportInsets, WindowMetrics};
 
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{
-    UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle, UIWindow, UIWindowScene,
-};
+use objc2_ui_kit::{UIApplication, UIScreen, UIWindowScene};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
-
-fn resolve_dark_mode(value: Option<bool>) -> bool {
-    value.unwrap_or(false)
-}
-
-fn resolve_safe_area_insets(value: Option<(f32, f32, f32, f32)>) -> (f32, f32, f32, f32) {
-    value.unwrap_or((0.0, 0.0, 0.0, 0.0))
-}
-
-#[cfg(target_os = "ios")]
-#[allow(deprecated)]
-fn active_window() -> Option<objc2::rc::Retained<UIWindow>> {
-    let mtm = MainThreadMarker::new()?;
-    let application = UIApplication::sharedApplication(mtm);
-
-    application
-        .keyWindow()
-        .or_else(|| application.windows().firstObject())
-}
-
-#[cfg(target_os = "ios")]
-pub(crate) fn current_window() -> Option<IOSWindow> {
-    let window = active_window()?;
-    let scale_factor = window.screen().scale() as f64;
-    let bounds = window.bounds();
-    let width = (bounds.size.width * scale_factor).round() as u32;
-    let height = (bounds.size.height * scale_factor).round() as u32;
-    Some(IOSWindow::new(window, scale_factor, width, height))
-}
-
-#[cfg(target_os = "ios")]
-fn query_dark_mode() -> Option<bool> {
-    let window = active_window()?;
-    let scene = window.windowScene()?;
-    let traits = scene.traitCollection();
-    let style = unsafe { traits.userInterfaceStyle() };
-    Some(style == UIUserInterfaceStyle::Dark)
-}
-
-#[cfg(target_os = "ios")]
-fn query_safe_area_insets() -> Option<(f32, f32, f32, f32)> {
-    let window = active_window()?;
-
-    if let Some(controller) = window.rootViewController() {
-        controller.loadViewIfNeeded();
-        if let Some(view) = controller.view() {
-            let insets = view.safeAreaInsets();
-            return Some((
-                insets.top as f32,
-                insets.left as f32,
-                insets.bottom as f32,
-                insets.right as f32,
-            ));
-        }
-    }
-
-    let insets = window.safeAreaInsets();
-    Some((
-        insets.top as f32,
-        insets.left as f32,
-        insets.bottom as f32,
-        insets.right as f32,
-    ))
-}
 
 /// iOS platform implementation
 pub struct IOSPlatform {
@@ -95,7 +26,6 @@ pub struct IOSPlatform {
 #[cfg(target_os = "ios")]
 impl IOSPlatform {
     /// Get the main screen's scale factor
-    #[allow(deprecated)]
     fn get_screen_scale() -> f64 {
         // On iOS, UIScreen::mainScreen() requires MainThreadMarker.
         // We assume this is called from the main thread.
@@ -113,21 +43,6 @@ impl IOSPlatform {
         let screen = UIScreen::mainScreen(mtm);
         screen.scale()
     }
-}
-
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-fn lifecycle_state_from_ios_raw(raw: isize) -> LifecycleState {
-    match raw {
-        0 => LifecycleState::Foreground,
-        1 => LifecycleState::Inactive,
-        2 => LifecycleState::Background,
-        _ => LifecycleState::Inactive,
-    }
-}
-
-#[cfg(target_os = "ios")]
-fn lifecycle_state_from_application_state(state: UIApplicationState) -> LifecycleState {
-    lifecycle_state_from_ios_raw(state.0)
 }
 
 impl Platform for IOSPlatform {
@@ -215,13 +130,15 @@ pub fn get_display_scale() -> f64 {
 /// Check if the system is in dark mode
 #[cfg(target_os = "ios")]
 pub fn is_dark_mode() -> bool {
-    resolve_dark_mode(query_dark_mode())
+    // TODO: Implement proper dark mode detection using UITraitCollection
+    // For now, default to light mode
+    false
 }
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 pub fn is_dark_mode() -> bool {
-    resolve_dark_mode(None)
+    false
 }
 
 /// Get the safe area insets for the key window.
@@ -288,54 +205,7 @@ pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
-    resolve_safe_area_insets(None)
-}
-
-/// Capture the active iOS platform environment as a window-scoped snapshot.
-#[cfg(target_os = "ios")]
-pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
-    let mtm = MainThreadMarker::new().expect("Must be called from main thread");
-    let screen = UIScreen::mainScreen(mtm);
-    let scale_factor = screen.scale() as f32;
-    let bounds = screen.bounds();
-    let logical_width = bounds.size.width as f32;
-    let logical_height = bounds.size.height as f32;
-    let physical_width = (logical_width * scale_factor).round() as u32;
-    let physical_height = (logical_height * scale_factor).round() as u32;
-
-    let mut safe_area_insets = ViewportInsets::default();
-    let mut is_dark_mode = false;
-
-    let application = UIApplication::sharedApplication(mtm);
-    let lifecycle_state = lifecycle_state_from_application_state(application.applicationState());
-    if let Some((top, left, bottom, right)) = query_safe_area_insets() {
-        safe_area_insets = ViewportInsets {
-            top,
-            left,
-            bottom,
-            right,
-        };
-    }
-    is_dark_mode = resolve_dark_mode(query_dark_mode());
-
-    PlatformEnvironmentSnapshot {
-        lifecycle_state,
-        metrics: WindowMetrics {
-            logical_width,
-            logical_height,
-            physical_width,
-            physical_height,
-            scale_factor: f64::from(scale_factor),
-        },
-        safe_area_insets,
-        viewport_insets: safe_area_insets,
-        is_dark_mode,
-    }
-}
-
-#[cfg(not(target_os = "ios"))]
-pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
-    PlatformEnvironmentSnapshot::default()
+    (0.0, 0.0, 0.0, 0.0)
 }
 
 /// iOS system font paths
@@ -365,42 +235,4 @@ pub fn system_font_paths() -> &'static [&'static str] {
         "/System/Library/Fonts/CoreAddition/Verdana.ttf",
         "/System/Library/Fonts/CoreAddition/TimesNewRomanPS.ttf",
     ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{lifecycle_state_from_ios_raw, resolve_dark_mode, resolve_safe_area_insets};
-    use blinc_platform::LifecycleState;
-
-    #[test]
-    fn dark_mode_defaults_to_light_when_unavailable() {
-        assert!(!resolve_dark_mode(None));
-    }
-
-    #[test]
-    fn dark_mode_preserves_detected_value() {
-        assert!(resolve_dark_mode(Some(true)));
-        assert!(!resolve_dark_mode(Some(false)));
-    }
-
-    #[test]
-    fn safe_area_defaults_to_zeroes_when_unavailable() {
-        assert_eq!(resolve_safe_area_insets(None), (0.0, 0.0, 0.0, 0.0));
-    }
-
-    #[test]
-    fn safe_area_preserves_detected_insets() {
-        assert_eq!(
-            resolve_safe_area_insets(Some((10.0, 4.0, 34.0, 4.0))),
-            (10.0, 4.0, 34.0, 4.0)
-        );
-    }
-
-    #[test]
-    fn lifecycle_state_mapping_matches_ios_state_values() {
-        assert_eq!(lifecycle_state_from_ios_raw(0), LifecycleState::Foreground);
-        assert_eq!(lifecycle_state_from_ios_raw(1), LifecycleState::Inactive);
-        assert_eq!(lifecycle_state_from_ios_raw(2), LifecycleState::Background);
-        assert_eq!(lifecycle_state_from_ios_raw(99), LifecycleState::Inactive);
-    }
 }

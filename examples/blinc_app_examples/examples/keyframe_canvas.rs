@@ -26,6 +26,7 @@ fn main() -> Result<()> {
         title: "Keyframe Canvas Animations".to_string(),
         width: 800,
         height: 600,
+        animation_fps_cap: Some(25),
         ..Default::default()
     };
 
@@ -34,7 +35,7 @@ fn main() -> Result<()> {
 
 /// See [`scroll::build_ui`](../scroll/fn.build_ui.html) for the
 /// cross-target example convention this signature follows.
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     div()
         .w(ctx.width)
         .h(ctx.height)

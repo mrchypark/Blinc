@@ -8,9 +8,15 @@ description = "Blinc DSL core — Zyntax-embedded grammar, runtime engine, and c
 publish = false
 
 [dependencies]
-# Zyntax SDK. See workspace dep notes in /Cargo.toml — this is path-pinned
-# during prototyping because upstream is 0.1.0 with no semver guarantees.
-zyntax_embed = { workspace = true }
+# Zyntax SDK. Pinned directly here (rather than via
+# `[workspace.dependencies]`) so the Zyntax pull is gated to the
+# DSL crate — workspace members that don't touch Zyntax stay
+# fetch-clean. `blinc_runtime` carries its own pin against the
+# same rev for the same reason; bump both together when pulling
+# in upstream changes (upstream is `0.1.0` with no semver
+# guarantees and a blanket `#![allow(unused, dead_code, deprecated)]`,
+# so expect occasional breakage).
+zyntax_embed = { git = "https://github.com/darmie/zyntax", rev = "9763886bd1f6d5ee86e5a5665d3d06be9426e106" }
 # Direct dep on the typed-AST crate so we can inject extern function
 # declarations into a parsed `TypedProgram` from Rust before passing
 # it to `compile_typed_program`. The grammar-action interpreter
@@ -18,9 +24,49 @@ zyntax_embed = { workspace = true }
 # zyntax/crates/zyn_peg/src/runtime2/interpreter.rs:866-899), so any
 # host that wants statically-registered builtins to round-trip
 # through type inference has to add the extern decls programmatically.
-# Pinned to the same upstream rev as `zyntax_embed` in the workspace
-# Cargo.toml — bump both together when pulling in upstream changes.
-zyntax_typed_ast = { git = "https://github.com/darmie/zyntax", rev = "a4dfa215d7664ce08b96052bf3de2f4c38a429f0" }
+# Pinned to the same upstream rev as `zyntax_embed` above —
+# bump every Zyntax-pinned dep across the workspace together.
+zyntax_typed_ast = { git = "https://github.com/darmie/zyntax", rev = "9763886bd1f6d5ee86e5a5665d3d06be9426e106" }
+
+# Zyntax runtime support library (`sdk/zrtl/`). The JIT compiles
+# DSL closures (`|| { … }`) into `ZrtlClosure*` values; the Div
+# on_click extern receives that pointer as an `i64` and invokes
+# it via `zrtl_closure_call`. Pinned to the same upstream rev as
+# the other Zyntax crates.
+zrtl = { git = "https://github.com/darmie/zyntax", rev = "9763886bd1f6d5ee86e5a5665d3d06be9426e106" }
+
+# Runtime-agnostic FSM substrate. blinc_dsl_core publishes its
+# parsed FSM defs into `blinc_runtime::fsm::FsmRegistry` and
+# installs a JIT-flavoured `GuardDispatcher` so widget-side
+# `Stateful<FsmStateId>` consumers can reach DSL-defined FSMs
+# without depending on Zyntax themselves. The AOT path
+# (Zyntax+LLVM, future) writes the same registry types from its
+# own generated init function — so this dep stays runtime-only,
+# not a path back into Zyntax.
+blinc_runtime = { path = "../blinc_runtime", version = "0.5.1", default-features = false }
+
+# `blinc_layout` is the widget primitives crate. `blinc_dsl_core`
+# uses it directly in the value-returning view externs
+# (`$Blinc$Text$view`, `$Blinc$Div$view`, …) to construct real
+# widgets that flow back through the JIT as widget handles.
+blinc_layout = { path = "../blinc_layout", version = "0.5.1" }
+
+# `blinc_core` carries the canonical `Brush` / `Color` /
+# `CornerRadius` types `RenderPropsOverlay` overlays on top of a
+# widget's base `RenderProps`. `blinc_layout` doesn't re-export
+# them publicly, so we depend on `blinc_core` directly.
+blinc_core = { path = "../blinc_core", version = "0.5.1" }
+
+# Several ready-made layout widgets pull token colors from the
+# global theme during construction. The DSL thunks lazily initialize
+# this for headless/test hosts that do not have an app loop yet.
+blinc_theme = { path = "../blinc_theme", version = "0.5.1" }
+
+# `blinc_dsl_macro` carries the `#[extern_widget]` attribute macro
+# that desugars Rust widget definitions into the extern thunk +
+# `ExternWidget` impl. Re-exported from the crate root so users get
+# a single import.
+blinc_dsl_macro = { path = "../blinc_dsl_macro", version = "0.5.1" }
 
 # Logging
 tracing = { workspace = true }
@@ -31,3 +77,19 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+
+# Windowed demo example (`counter_dsl`) — pulls the desktop app
+# loop in as a dev-dep so the example can host a real
+# `BlincDsl`-compiled view inside a window. The example is
+# gated behind `#[cfg(not(target_arch = "wasm32"))]` so the
+# `cargo check --target wasm32-unknown-unknown` lane skips it
+# (winit + the desktop platform crate aren't wasm-compatible).
+blinc_app = { path = "../blinc_app", default-features = false, features = ["windowed"] }
+
+[[example]]
+name = "counter_dsl"
+path = "examples/counter_dsl.rs"
+
+[[example]]
+name = "reactive_dsl"
+path = "examples/reactive_dsl.rs"

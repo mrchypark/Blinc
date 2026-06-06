@@ -11,8 +11,8 @@
 //! ```
 
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -81,8 +81,8 @@ pub struct Svg {
     style: Style,
     /// Render layer
     render_layer: RenderLayer,
-    /// Drop shadow
-    shadow: Option<Shadow>,
+    /// Drop shadow stack
+    shadow: Vec<Shadow>,
     /// Transform
     transform: Option<Transform>,
     /// Element ID for CSS selector targeting
@@ -112,7 +112,7 @@ impl Svg {
                 ..Default::default()
             },
             render_layer: RenderLayer::default(),
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             element_id: None,
             classes: Vec::new(),
@@ -297,9 +297,15 @@ impl Svg {
     // Shadow
     // =========================================================================
 
-    /// Apply a drop shadow to this SVG
+    /// Apply a single drop shadow to this SVG (replaces any existing stack).
     pub fn shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+        self
+    }
+
+    /// Apply a compound drop shadow stack to this SVG.
+    pub fn shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
@@ -349,7 +355,7 @@ impl ElementBuilder for Svg {
     fn render_props(&self) -> RenderProps {
         RenderProps {
             layer: self.render_layer,
-            shadow: self.shadow,
+            shadow: self.shadow.clone(),
             transform: self.transform.clone(),
             ..Default::default()
         }
@@ -364,11 +370,7 @@ impl ElementBuilder for Svg {
     }
 
     fn semantic_type_name(&self) -> Option<&'static str> {
-        if self.is_internal {
-            None
-        } else {
-            Some("svg")
-        }
+        if self.is_internal { None } else { Some("svg") }
     }
 
     fn element_id(&self) -> Option<&str> {

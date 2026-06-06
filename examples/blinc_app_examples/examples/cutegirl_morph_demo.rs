@@ -37,8 +37,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use blinc_animation::get_scheduler;
 use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedContext;
-use blinc_canvas_kit::prelude::*;
 use blinc_canvas_kit::AutoFramer;
+use blinc_canvas_kit::prelude::*;
 use blinc_core::events::KeyCode;
 use blinc_core::{Color, DrawContext, Light, Mat4, MeshData, State, Vec3};
 use blinc_gltf::{GltfAnimation, GltfScene};
@@ -270,7 +270,7 @@ fn main() {
     // header. A nop `main` keeps the target compilable for tooling.
 }
 
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     let scene_ready = ctx.use_state_keyed("cutegirl_scene_ready", || false);
     let camera_signal = ctx.use_state_keyed("cutegirl_morph_demo_cam", OrbitCamera::default);
     let kit = SceneKit3D::new("cutegirl_morph_demo")
@@ -495,7 +495,7 @@ pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
                 .items_center()
                 .justify_center()
                 .child(
-                    text("Loading cutegirl_g1… (asset is gitignored — see README)")
+                    text("Loading cutegirl_g1… (asset is gitignored for web — see README)")
                         .size(16.0)
                         .color(Color::rgba(0.95, 0.95, 0.95, 1.0)),
                 );

@@ -64,6 +64,11 @@ logs/
 coverage/
 .nyc_output/
 
+# Reactive-arch-v2 regression harness — CPU trace captures.
+# Local-only; phase work measures against these but they don't ship.
+/baselines/
+/regression-reports/
+
 # Temporary
 *.tmp
 *.temp
@@ -100,3 +105,10 @@ vendor/
 /examples/blinc_app_examples/examples/assets/3d/cutegirl_g1/*
 !/examples/blinc_app_examples/examples/assets/3d/cutegirl_g1/README.md
 
+./claude/*.logs
+*.logs
+
+# Ad-hoc screen recordings dropped into the workspace root while
+# debugging UI issues — keep them local, never commit binary captures.
+Screen Recording *.mov
+*.mov

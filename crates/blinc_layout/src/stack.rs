@@ -6,10 +6,10 @@
 use blinc_core::{Brush, Color, Shadow, Transform};
 use taffy::{LengthPercentageAuto, Overflow, Position, Rect, Style};
 
+use crate::ElementBuilder;
 use crate::div::Div;
 use crate::element::{Material, RenderLayer, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
-use crate::ElementBuilder;
 
 /// A stack container where all children are positioned absolutely and stack over each other.
 ///
@@ -66,6 +66,13 @@ impl Stack {
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
         // Wrap child in an absolutely positioned container
         let wrapper = StackChild::new(Box::new(child));
+        self.inner.children.push(Box::new(wrapper));
+        self
+    }
+
+    /// Add a boxed child element (will be absolutely positioned).
+    pub fn child_box(mut self, child: Box<dyn ElementBuilder>) -> Self {
+        let wrapper = StackChild::new(child);
         self.inner.children.push(Box::new(wrapper));
         self
     }
@@ -847,41 +854,12 @@ impl Stack {
         self
     }
 
-    /// Register a drag end handler
-    pub fn on_drag_end<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
-    {
-        self.inner = self.inner.on_drag_end(handler);
-        self
-    }
-
     /// Register a scroll handler
     pub fn on_scroll<F>(mut self, handler: F) -> Self
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
         self.inner = self.inner.on_scroll(handler);
-        self
-    }
-
-    /// Register a pinch handler (trackpad/touch zoom gesture)
-    pub fn on_pinch<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
-    {
-        self.inner = self
-            .inner
-            .on_event(blinc_core::events::event_types::PINCH, handler);
-        self
-    }
-
-    /// Register a handler for an arbitrary event type.
-    pub fn on_event<F>(mut self, event_type: blinc_core::events::EventType, handler: F) -> Self
-    where
-        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
-    {
-        self.inner = self.inner.on_event(event_type, handler);
         self
     }
 
@@ -989,11 +967,7 @@ impl Stack {
     where
         F: FnOnce(Self) -> Self,
     {
-        if condition {
-            f(self)
-        } else {
-            self
-        }
+        if condition { f(self) } else { self }
     }
 }
 

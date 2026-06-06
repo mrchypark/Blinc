@@ -5,52 +5,25 @@
 > This crate is a component of Blinc, a GPU-accelerated UI framework for Rust.
 > For full documentation and guides, visit the [Blinc documentation](https://project-blinc.github.io/Blinc).
 
-Component library for Blinc UI with themed, token-driven components built on top of `blinc_layout`.
+Component library for Blinc UI - shadcn/ui-style themed components.
 
 ## Overview
 
-`blinc_cn` provides a broad set of reusable UI components on top of the Blinc theme system.
-It is best used with an explicit bootstrap step so theme tokens and component styles are available
-before the first render.
-The default stylesheet is now driven by semantic component tokens from `blinc_theme`, so presets
-control sizing, container spacing, overlay chrome, typography roles, and newer CSS defaults such as
-`corner-shape`, `backdrop-filter`, truncation, and CSS link decoration more consistently.
+`blinc_cn` provides a comprehensive set of production-ready UI components built on top of `blinc_layout`. Inspired by [shadcn/ui](https://ui.shadcn.com/), it offers beautifully designed, accessible components with consistent theming.
+
+## Features
+
+- **40+ Components**: Buttons, cards, dialogs, menus, forms, and more
+- **Theme Integration**: Automatic dark/light mode support
+- **Variants & Sizes**: Multiple visual variants for each component
+- **Accessibility**: Keyboard navigation and ARIA support
+- **Customizable**: Override styles and behaviors as needed
 
 ## Installation
 
 ```toml
 [dependencies]
 blinc_cn = { path = "../blinc_cn" }
-blinc_theme = { path = "../blinc_theme" }
-```
-
-## Recommended Setup
-
-Initialize theme state once at startup:
-
-```rust
-use blinc_cn::ensure_default_theme;
-
-fn init_ui() {
-    ensure_default_theme();
-}
-```
-
-Or choose a specific preset:
-
-```rust
-use blinc_cn::ensure_theme;
-use blinc_theme::{ColorScheme, ThemePreset};
-
-fn init_ui() {
-    ensure_theme(ThemePreset::Slate.bundle(), ColorScheme::Light);
-}
-```
-
-When using CSS stylesheets in a `WindowedContext`, load the default component stylesheet once:
-
-```rust
-ctx.add_css(blinc_cn::default_styles());
 ```
 
 ## Quick Start
@@ -59,116 +32,304 @@ ctx.add_css(blinc_cn::default_styles());
 use blinc_cn::prelude::*;
 
 fn build_ui() -> impl ElementBuilder {
-    card()
-        .w(360.0)
+    div()
+        .flex_col()
+        .gap(16.0)
+        .p(24.0)
         .child(
-            card_header()
-                .title("Welcome")
-                .description("Get started with blinc_cn"),
-        )
-        .child(
-            card_content().child(
-                text("Theme-aware components with sensible defaults."),
-            ),
-        )
-        .child(
-            card_footer().child(
-                button("Continue").variant(ButtonVariant::Primary),
-            ),
+            card()
+                .child(card_header()
+                    .child(card_title("Welcome"))
+                    .child(card_description("Get started with Blinc")))
+                .child(card_content()
+                    .child(text("Your content here")))
+                .child(card_footer()
+                    .child(button("Continue").variant(ButtonVariant::Primary)))
         )
 }
 ```
 
-## Buttons
-
-```rust
-button("Primary")
-button("Outline").variant(ButtonVariant::Outline)
-button("Danger").variant(ButtonVariant::Destructive)
-button("Small").size(ButtonSize::Small)
-button("Large").size(ButtonSize::Large)
-button("").size(ButtonSize::Icon).icon(icons::SETTINGS)
-```
-
-## Form Components
-
-```rust
-use blinc_layout::widgets::text_area::text_area_state;
-use blinc_layout::widgets::text_input::text_input_data;
-
-let email = text_input_data();
-let notes = text_area_state();
-
-form()
-    .max_w(420.0)
-    .child(
-        field("Email")
-            .required()
-            .child(input(&email).placeholder("name@example.com")),
-    )
-    .child(
-        field("Notes")
-            .description("Optional")
-            .child(textarea(&notes).rows(4).placeholder("Write a short note")),
-    )
-```
-
-```rust
-let enabled = blinc_core::State::new(false);
-switch(&enabled).on_change(|value| println!("enabled: {value}"));
-```
-
-```rust
-let selected = blinc_core::State::new(String::new());
-
-select(&selected)
-    .label("Framework")
-    .placeholder("Choose one")
-    .option("react", "React")
-    .option("svelte", "Svelte")
-    .on_change(|value| println!("selected: {value}"));
-```
-
-## Dialogs
-
-`dialog()` and `alert_dialog()` are imperative builders that display overlays with `.show()`.
-
-```rust
-button("Open Dialog").on_click(|_| {
-    dialog()
-        .title("Confirm")
-        .description("Apply these changes?")
-        .confirm_text("Apply")
-        .on_confirm(|| println!("confirmed"))
-        .show();
-});
-```
-
-## Navigation
-
-```rust
-let tab_state = blinc_core::State::new(String::new());
-
-tabs(&tab_state)
-    .tab("account", "Account", || div().child(text("Account settings")))
-    .tab("billing", "Billing", || div().child(text("Billing settings")));
-```
-
-```rust
-let collapsed = blinc_core::State::new(false);
-
-sidebar(&collapsed)
-    .section("Main")
-    .item_active("Dashboard", icons::HOME, || {})
-    .item("Settings", icons::SETTINGS, || {});
-```
-
 ## Components
 
-- Buttons: `button`
-- Cards: `card`, `card_header`, `card_content`, `card_footer`
-- Feedback: `alert`, `badge`, `progress`, `spinner`, `skeleton`, `toast`
-- Forms: `input`, `textarea`, `checkbox`, `switch`, `radio_group`, `select`, `combobox`, `slider`, `field`, `form`
-- Navigation: `tabs`, `dropdown_menu`, `context_menu`, `breadcrumb`, `sidebar`, `navigation_menu`, `pagination`, `menubar`
-- Overlays: `dialog`, `alert_dialog`, `sheet`, `drawer`, `tooltip`, `popover`, `hover_card`
-- Layout and display: `avatar`, `separator`, `scroll_area`, `accordion`, `aspect_ratio`, `chart`, `tree_view`
+### Buttons
+
+```rust
+// Variants
+button("Primary").variant(ButtonVariant::Primary)
+button("Secondary").variant(ButtonVariant::Secondary)
+button("Destructive").variant(ButtonVariant::Destructive)
+button("Outline").variant(ButtonVariant::Outline)
+button("Ghost").variant(ButtonVariant::Ghost)
+button("Link").variant(ButtonVariant::Link)
+
+// Sizes
+button("Small").size(ButtonSize::Sm)
+button("Default").size(ButtonSize::Default)
+button("Large").size(ButtonSize::Lg)
+button("Icon").size(ButtonSize::Icon)
+
+// With icon
+button("Settings").icon(icons::SETTINGS)
+```
+
+### Cards
+
+```rust
+card()
+    .child(card_header()
+        .child(card_title("Card Title"))
+        .child(card_description("Card description")))
+    .child(card_content()
+        .child(/* content */))
+    .child(card_footer()
+        .child(/* actions */))
+```
+
+### Dialogs
+
+```rust
+dialog()
+    .open(is_open)
+    .on_open_change(|open| set_is_open(open))
+    .child(dialog_trigger()
+        .child(button("Open Dialog")))
+    .child(dialog_content()
+        .child(dialog_header()
+            .child(dialog_title("Dialog Title"))
+            .child(dialog_description("Dialog description")))
+        .child(/* content */)
+        .child(dialog_footer()
+            .child(button("Cancel").variant(ButtonVariant::Outline))
+            .child(button("Continue"))))
+```
+
+### Form Components
+
+```rust
+// Input
+input()
+    .placeholder("Enter email...")
+    .value(email)
+    .on_change(|v| set_email(v))
+
+// Textarea
+textarea()
+    .placeholder("Enter message...")
+    .rows(4)
+
+// Checkbox
+checkbox()
+    .checked(is_checked)
+    .on_change(|c| set_checked(c))
+    .child(label("Accept terms"))
+
+// Switch
+switch_()
+    .checked(is_enabled)
+    .on_change(|e| set_enabled(e))
+
+// Radio Group
+radio_group()
+    .value(selected)
+    .on_change(|v| set_selected(v))
+    .child(radio_item("option1").child(label("Option 1")))
+    .child(radio_item("option2").child(label("Option 2")))
+
+// Select
+select()
+    .value(selected)
+    .on_change(|v| set_selected(v))
+    .child(select_trigger()
+        .child(select_value()))
+    .child(select_content()
+        .child(select_item("opt1").child(text("Option 1")))
+        .child(select_item("opt2").child(text("Option 2"))))
+
+// Slider
+slider()
+    .value(volume)
+    .min(0.0)
+    .max(100.0)
+    .on_change(|v| set_volume(v))
+```
+
+### Navigation
+
+```rust
+// Tabs
+tabs()
+    .value(active_tab)
+    .on_change(|t| set_active_tab(t))
+    .child(tabs_list()
+        .child(tabs_trigger("tab1").child(text("Tab 1")))
+        .child(tabs_trigger("tab2").child(text("Tab 2"))))
+    .child(tabs_content("tab1").child(/* content */))
+    .child(tabs_content("tab2").child(/* content */))
+
+// Dropdown Menu
+dropdown_menu()
+    .child(dropdown_menu_trigger()
+        .child(button("Menu")))
+    .child(dropdown_menu_content()
+        .child(dropdown_menu_item("edit").child(text("Edit")))
+        .child(dropdown_menu_separator())
+        .child(dropdown_menu_item("delete").child(text("Delete"))))
+
+// Breadcrumb
+breadcrumb()
+    .child(breadcrumb_list()
+        .child(breadcrumb_item().child(breadcrumb_link("Home")))
+        .child(breadcrumb_separator())
+        .child(breadcrumb_item().child(breadcrumb_link("Products")))
+        .child(breadcrumb_separator())
+        .child(breadcrumb_item().child(breadcrumb_page("Details"))))
+
+// Sidebar
+sidebar()
+    .child(sidebar_header()
+        .child(text("App Name")))
+    .child(sidebar_content()
+        .child(sidebar_group()
+            .child(sidebar_group_label("Menu"))
+            .child(sidebar_menu()
+                .child(sidebar_menu_item("Dashboard").icon(icons::HOME))
+                .child(sidebar_menu_item("Settings").icon(icons::SETTINGS)))))
+```
+
+### Feedback
+
+```rust
+// Alert
+alert()
+    .variant(AlertVariant::Destructive)
+    .child(alert_title("Error"))
+    .child(alert_description("Something went wrong"))
+
+// Badge
+badge("New").variant(BadgeVariant::Default)
+badge("Beta").variant(BadgeVariant::Secondary)
+
+// Progress
+progress().value(75.0)
+
+// Spinner
+spinner().size(SpinnerSize::Lg)
+
+// Skeleton
+skeleton().w(200.0).h(20.0)
+
+// Toast
+toast()
+    .title("Success")
+    .description("Your changes have been saved")
+    .variant(ToastVariant::Success)
+```
+
+### Layout
+
+```rust
+// Avatar
+avatar()
+    .src("user.jpg")
+    .fallback("JD")
+    .size(AvatarSize::Lg)
+
+// Avatar Group
+avatar_group()
+    .max(3)
+    .child(avatar().src("user1.jpg"))
+    .child(avatar().src("user2.jpg"))
+    .child(avatar().src("user3.jpg"))
+    .child(avatar().src("user4.jpg"))
+
+// Separator
+separator().orientation(Orientation::Horizontal)
+
+// Aspect Ratio
+aspect_ratio(16.0 / 9.0)
+    .child(img("video-thumbnail.jpg"))
+
+// Scroll Area
+scroll_area()
+    .h(400.0)
+    .child(/* scrollable content */)
+
+// Collapsible
+collapsible()
+    .open(is_open)
+    .child(collapsible_trigger()
+        .child(button("Toggle")))
+    .child(collapsible_content()
+        .child(/* hidden content */))
+
+// Accordion
+accordion()
+    .child(accordion_item("item1")
+        .child(accordion_trigger().child(text("Section 1")))
+        .child(accordion_content().child(text("Content 1"))))
+```
+
+### Data Display
+
+```rust
+// Tooltip
+tooltip()
+    .child(tooltip_trigger()
+        .child(button("Hover me")))
+    .child(tooltip_content()
+        .child(text("Tooltip text")))
+
+// Hover Card
+hover_card()
+    .child(hover_card_trigger()
+        .child(text("@username")))
+    .child(hover_card_content()
+        .child(/* user profile card */))
+
+// Popover
+popover()
+    .child(popover_trigger()
+        .child(button("Open")))
+    .child(popover_content()
+        .child(/* popover content */))
+
+// Charts
+chart()
+    .chart_type(ChartType::Line)
+    .data(&data_points)
+    .x_axis("Date")
+    .y_axis("Value")
+```
+
+## Theming
+
+Components automatically use theme tokens:
+
+```rust
+use blinc_theme::ThemeState;
+
+// Set theme
+ThemeState::set_color_scheme(ColorScheme::Dark);
+
+// Components automatically update
+button("Themed Button") // Uses theme colors
+```
+
+## Component List
+
+| Category | Components |
+|----------|------------|
+| **Buttons** | Button |
+| **Cards** | Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter |
+| **Dialogs** | Dialog, AlertDialog, Sheet, Drawer |
+| **Forms** | Input, Textarea, Checkbox, Switch, Radio, Select, Combobox, Slider |
+| **Navigation** | Tabs, DropdownMenu, ContextMenu, Menubar, NavigationMenu, Breadcrumb, Pagination, Sidebar |
+| **Feedback** | Alert, Badge, Progress, Spinner, Skeleton, Toast |
+| **Layout** | Avatar, Separator, AspectRatio, ScrollArea, Collapsible, Accordion, Resizable |
+| **Data** | Tooltip, HoverCard, Popover, Chart, Tree |
+| **Typography** | Typography (H1-H6, P, Blockquote, etc.) |
+| **Misc** | Icon, Kbd, Label |
+
+## License
+
+MIT OR Apache-2.0

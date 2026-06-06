@@ -49,6 +49,7 @@ use blinc_canvas_kit::prelude::*;
 use blinc_core::{
     AlphaMode, Color, Light, Mat4, Material, MeshData, State, TextureData, Vec3, Vertex,
 };
+use blinc_input::InputState;
 
 const HELMET_GLTF_DIR: &str = "examples/blinc_app_examples/examples/assets/3d/DamagedHelmet";
 const HDR_PATH: &str = "examples/blinc_app_examples/examples/assets/3d/rogland_clear_night_2k.hdr";
@@ -161,6 +162,13 @@ fn try_load_assets() -> Option<(Arc<MeshData>, Vec<u8>)> {
     Some((Arc::new(helmet), hdr_bytes))
 }
 
+fn register_scheduler_tick() {
+    let scheduler_for_redraw = get_scheduler();
+    get_scheduler().register_tick_callback(move |_dt: f32| {
+        scheduler_for_redraw.request_redraw();
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Async asset handle — slot populated by the loader, `scene_ready`
 // flipped once `slot.set` has succeeded.
@@ -169,12 +177,14 @@ fn try_load_assets() -> Option<(Arc<MeshData>, Vec<u8>)> {
 #[derive(Clone)]
 struct AsyncAssets {
     slot: Arc<OnceLock<Arc<MeshData>>>,
+    input: InputState,
 }
 
 impl AsyncAssets {
     fn new() -> Self {
         Self {
             slot: Arc::new(OnceLock::new()),
+            input: InputState::new(),
         }
     }
 
@@ -190,6 +200,7 @@ impl AsyncAssets {
                 tracing::error!("mesh_3d_demo: asset load failed");
                 return;
             };
+            register_scheduler_tick();
             tracing::info!("mesh_3d_demo: applying HDRI ({} bytes)", hdr_bytes.len());
             kit.set_hdri(&hdr_bytes, 256);
             let _ = slot.set(helmet);
@@ -200,6 +211,7 @@ impl AsyncAssets {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
+                register_scheduler_tick();
                 loop {
                     if let Some((helmet, hdr_bytes)) = try_load_assets() {
                         tracing::info!("mesh_3d_demo: applying HDRI ({} bytes)", hdr_bytes.len());
@@ -261,13 +273,14 @@ fn main() -> Result<()> {
         title: "3D Mesh Demo — DamagedHelmet".to_string(),
         width: 960,
         height: 720,
+        animation_fps_cap: Some(60),
         ..Default::default()
     };
 
     blinc_app::windowed::WindowedApp::run(config, build_ui)
 }
 
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     // Scene-ready signal — flipped by the loader once helmet + HDR
     // are resident. The overlay's Stateful subtree watches it.
     let scene_ready = ctx.use_state_keyed("mesh_3d_scene_ready", || false);
@@ -308,12 +321,15 @@ pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
         .expect("assets handle should exist after use_state_keyed init");
 
     let assets_ren = assets.clone();
-    let viewport = kit.element(move |ctx, _bounds| {
-        let Some(helmet) = assets_ren.get() else {
-            return;
-        };
-        ctx.draw_mesh_data(helmet.clone(), Mat4::default());
-    });
+    let viewport = kit
+        .with_input(&assets.input)
+        .element(move |ctx, _bounds| {
+            let Some(helmet) = assets_ren.get() else {
+                return;
+            };
+            ctx.draw_mesh_data(helmet.clone(), Mat4::default());
+        })
+        .id("mesh_3d_viewport");
 
     // Loading overlay — same structure every refresh, `.hidden()`
     // toggled on ready. See `gltf_animation_demo` for why the shape

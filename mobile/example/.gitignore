@@ -11,8 +11,6 @@ Cargo.lock
 
 # iOS
 /platforms/ios/build/
-/platforms/ios/build-device/
-/platforms/ios/build-signed/
 *.xcworkspace
 *.xcuserdata
 

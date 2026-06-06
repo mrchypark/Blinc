@@ -5,7 +5,7 @@
 
 use super::headless::{HeadlessConfig, HeadlessContext};
 use crate::{
-    install_recorder, record_event, RecordedEvent, RecordingConfig, SharedRecordingSession,
+    RecordedEvent, RecordingConfig, SharedRecordingSession, install_recorder, record_event,
 };
 use std::sync::Arc;
 
@@ -223,7 +223,7 @@ impl TestContext {
     /// Note: Full element assertions require integration with RenderTree.
     /// This is a placeholder for the assertion API.
     pub fn assert_element(&self, _id: &str) -> ElementAssertion {
-        ElementAssertion { _exists: false }
+        ElementAssertion { exists: false }
     }
 }
 
@@ -231,7 +231,7 @@ impl TestContext {
 ///
 /// This is a placeholder - full implementation requires RenderTree integration.
 pub struct ElementAssertion {
-    _exists: bool,
+    exists: bool,
 }
 
 impl ElementAssertion {

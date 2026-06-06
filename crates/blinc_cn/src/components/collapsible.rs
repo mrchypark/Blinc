@@ -39,14 +39,14 @@
 
 use blinc_animation::{AnimatedValue, SpringConfig};
 use blinc_core::State;
+use blinc_layout::InstanceKey;
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::{motion, SharedAnimatedValue};
+use blinc_layout::motion::{SharedAnimatedValue, motion};
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
-use blinc_layout::stateful::{stateful, ButtonState};
+use blinc_layout::stateful::{ButtonState, stateful};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
-use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 use std::sync::{Arc, Mutex};
 
@@ -125,7 +125,7 @@ impl CollapsibleBuilder {
     }
 
     /// Create with explicit instance key (for multiple collapsibles)
-    pub fn with_key(_key: InstanceKey, is_open: &State<bool>) -> Self {
+    pub fn with_key(key: InstanceKey, is_open: &State<bool>) -> Self {
         let is_currently_open = is_open.get();
         let initial_scale = if is_currently_open { 1.0 } else { 0.0 };
         let initial_opacity = if is_currently_open { 1.0 } else { 0.0 };
@@ -399,7 +399,11 @@ impl CollapsibleTrigger {
                     .rounded(radius)
                     .cursor(CursorStyle::Pointer)
                     .bg(bg)
-                    .child(text(&label_text).size(14.0).color(text_primary))
+                    .child(
+                        text(&label_text)
+                            .size(theme.typography().text_sm)
+                            .color(text_primary),
+                    )
                     .child(svg(chevron_svg).size(16.0, 16.0).color(text_secondary))
             })
             .on_click(move |_| {

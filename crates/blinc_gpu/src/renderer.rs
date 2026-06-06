@@ -34,12 +34,12 @@ use crate::primitives::{
     Sdf3DUniform, SdfPipelineCategory, SdfVertexInstance, Uniforms, Viewport3D,
 };
 use crate::shaders::{
-    BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_DT_SHADER,
-    GLASS_SHADER, GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, MASK_IMAGE_SHADER,
-    MESH_DT_SHADER, PATH_SHADER, SDF_3D_DT_SHADER, SDF_3D_SHADER, SDF_3D_VB_SHADER,
-    SDF_CORE_DT_SHADER, SDF_CORE_SHADER, SDF_CORE_VB_SHADER, SDF_NOTCH_DT_SHADER, SDF_NOTCH_SHADER,
-    SDF_NOTCH_VB_SHADER, SDF_SHADER, SDF_SHADOW_DT_SHADER, SDF_SHADOW_SHADER, SDF_SHADOW_VB_SHADER,
-    SIMPLE_GLASS_DT_SHADER, SIMPLE_GLASS_SHADER, TEXT_DT_SHADER, TEXT_SHADER,
+    BLUR_SHADER, CLEAR_QUAD_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER,
+    GLASS_DT_SHADER, GLASS_SHADER, GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER,
+    MASK_IMAGE_SHADER, MESH_DT_SHADER, PATH_SHADER, SDF_3D_DT_SHADER, SDF_3D_SHADER,
+    SDF_3D_VB_SHADER, SDF_CORE_DT_SHADER, SDF_CORE_SHADER, SDF_CORE_VB_SHADER, SDF_NOTCH_DT_SHADER,
+    SDF_NOTCH_SHADER, SDF_NOTCH_VB_SHADER, SDF_SHADER, SDF_SHADOW_DT_SHADER, SDF_SHADOW_SHADER,
+    SDF_SHADOW_VB_SHADER, SIMPLE_GLASS_DT_SHADER, SIMPLE_GLASS_SHADER, TEXT_DT_SHADER, TEXT_SHADER,
 };
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -190,6 +190,15 @@ impl std::fmt::Display for RendererError {
 }
 
 impl std::error::Error for RendererError {}
+
+/// Axis-aligned bounding box intersection test. Each rect is
+/// `[x, y, w, h]` (top-left origin, screen pixels). Returns true when
+/// the rects overlap (zero-area overlap counts as no intersection).
+fn aabb_intersects(a: [f32; 4], b: [f32; 4]) -> bool {
+    let [ax, ay, aw, ah] = a;
+    let [bx, by, bw, bh] = b;
+    ax + aw > bx && bx + bw > ax && ay + ah > by && by + bh > ay
+}
 
 /// Configuration for creating a renderer
 #[derive(Clone, Debug)]
@@ -376,6 +385,13 @@ struct Pipelines {
     path_overlay: wgpu::RenderPipeline,
     /// Pipeline for layer composition (blend modes)
     layer_composite: wgpu::RenderPipeline,
+    /// Compositor v2 damage-rect scissored clear. Draws a fullscreen
+    /// triangle with REPLACE blend writing `(0,0,0,0)`; combined with
+    /// `set_scissor_rect`, only the damaged region is zeroed. Used by
+    /// `render_static_layer_damaged` to clear ghost pixels from the
+    /// motion-bound element's previous position before the SDF
+    /// dispatch re-paints over it.
+    clear_quad: wgpu::RenderPipeline,
 }
 
 /// Effect pipelines lazily created on first use to reduce GPU memory for simple apps
@@ -1106,6 +1122,26 @@ pub struct GpuRenderer {
     pub(crate) viewport_size: (u32, u32),
     /// Saved viewport size during offscreen rendering (for restore_viewport)
     saved_viewport_size: Option<(u32, u32)>,
+    /// Optional scissor rect applied to subsequent text/image render
+    /// passes. Set via `set_pending_scissor` / cleared via
+    /// `clear_pending_scissor`. Used by the compositor v2 damage-rect
+    /// path to confine text / SVG / image dispatches to the same
+    /// scissor region as the SDF clear-and-redraw run by
+    /// `render_static_layer_damaged`. `None` = no scissor (default;
+    /// full-attachment dispatch).
+    pending_scissor: Option<(u32, u32, u32, u32)>,
+    /// Damage scissor applied to subsequent layer-composite blits
+    /// inside `blit_tight_texture_to_target`. Unlike
+    /// [`Self::pending_scissor`] (a hard replacement used by text /
+    /// SVG / image overlays), this scissor is *intersected* with
+    /// the blit's own visible-bounds scissor so layer composites
+    /// can only paint inside the union of damage rect AND the
+    /// layer's content area. Phase 4d Opt 2 sets this on the
+    /// damage path so re-rendering a scissored cache region keeps
+    /// effect-layer composites confined to the damage rect.
+    /// `None` = no damage scissor (default; blit uses its own
+    /// visible-bounds scissor only).
+    pending_damage_scissor: Option<(u32, u32, u32, u32)>,
     /// Renderer configuration
     config: RendererConfig,
     /// Current frame time (for animations)
@@ -1178,6 +1214,38 @@ pub struct GpuRenderer {
     /// (all desktop adapters support BC; WebGL2 on iOS Safari and
     /// a handful of older browsers do not).
     pub(crate) has_texture_compression_bc: bool,
+    /// Layer-compositor static cache. Holds the most recent full-paint
+    /// output for the bg primitive batch / text / SVG / image / flow
+    /// passes, *excluding* canvas content (the walker is invoked with
+    /// `RenderTree::set_skip_canvas_drawing(true)` for that pass).
+    /// Each compositor frame blits this texture to the surface and
+    /// then draws fresh canvas content on top — see
+    /// `blit_static_layer_to` and `render_overlay` for the dispatch
+    /// side. Lazily allocated; reset on viewport resize.
+    static_layer: Option<StaticLayer>,
+}
+
+/// Offscreen render target backing the layer compositor's static-tree
+/// cache. The renderer renders the full bg / text / SVG / image / flow
+/// content into this texture once per "static" full paint; every
+/// subsequent fast-path frame copies the texture onto the surface
+/// and overlays only the canvas primitives that change frame-to-frame.
+pub struct StaticLayer {
+    /// Storage for the cached image. Sized to the current viewport;
+    /// reallocated on resize.
+    pub(crate) texture: wgpu::Texture,
+    /// View used as a render attachment when rendering INTO the cache
+    /// (`RenderAttachment` usage) and bound for the blit when reading
+    /// FROM it (`COPY_SRC` usage).
+    pub(crate) view: wgpu::TextureView,
+    /// Physical pixel width.
+    pub(crate) width: u32,
+    /// Physical pixel height.
+    pub(crate) height: u32,
+    /// `true` after the renderer has written a frame into the texture;
+    /// `false` after construction or invalidation. The compositor
+    /// path falls back to full paint while `valid == false`.
+    pub(crate) valid: bool,
 }
 
 /// Image rendering pipeline (created lazily on first image render)
@@ -1192,8 +1260,8 @@ struct ImagePipeline {
 pub(crate) const SHADOW_MAP_SIZE: u32 = 2048;
 
 use crate::mesh_pipeline::{
-    MeshBufferCacheEntry, MeshPipeline, MAX_MORPH_TARGETS, MESH_CACHE_CAPACITY,
-    MORPH_CACHE_CAPACITY,
+    MAX_MORPH_TARGETS, MESH_CACHE_CAPACITY, MORPH_CACHE_CAPACITY, MeshBufferCacheEntry,
+    MeshPipeline,
 };
 
 struct BindGroupLayouts {
@@ -1260,6 +1328,55 @@ impl GpuRenderer {
         )))]
         {
             wgpu::Backends::PRIMARY
+        }
+    }
+
+    /// Write only the given subranges of `primitives` to the GPU
+    /// storage buffer, leaving the rest as it was after the previous
+    /// upload. Used by the compositor fast path: when an animation
+    /// frame patched only the primitives covered by a handful of
+    /// motion-bound subtrees, we re-upload just those byte ranges
+    /// (each one `range.len() × sizeof::<GpuPrimitive>()` bytes) via
+    /// `queue.write_buffer(offset, slice)` instead of pushing the
+    /// whole batch.
+    ///
+    /// Caller guarantees:
+    ///  - `primitives` is the SAME-length view as what was uploaded
+    ///    on the previous full paint (no insertions / deletions).
+    ///  - Each range is in-bounds (`end <= primitives.len()`).
+    ///  - DT-mode (no storage buffers) is **not** in use — partial
+    ///    upload via `write_texture` isn't worth the complexity for
+    ///    a fallback path; fall back to the full
+    ///    `write_primitives_safe` if `has_storage_buffers` is false.
+    ///
+    /// Cost (cn_demo benchmark): full upload was ~100 KB / frame
+    /// (~150 µs of `queue.write_buffer` overhead). A typical fast-path
+    /// frame patches a single binding's range — for the
+    /// `cn::progress_animated` indicator that's <10 primitives or
+    /// ~2.5 KB / frame, putting the write closer to ~5 µs.
+    pub fn write_primitives_partial(
+        &self,
+        primitives: &[GpuPrimitive],
+        ranges: &[std::ops::Range<usize>],
+    ) {
+        if primitives.is_empty() || ranges.is_empty() || !self.has_storage_buffers {
+            return;
+        }
+        let stride = std::mem::size_of::<GpuPrimitive>() as u64;
+        let max_primitives = self.config.max_primitives;
+        for range in ranges {
+            // Clip to the same capacity bounds `write_primitives_safe`
+            // uses for the full upload — keeps both paths consistent
+            // when an app accidentally over-emits.
+            let end = range.end.min(primitives.len()).min(max_primitives);
+            if range.start >= end {
+                continue;
+            }
+            let slice = &primitives[range.start..end];
+            let bytes = bytemuck::cast_slice::<GpuPrimitive, u8>(slice);
+            let offset_bytes = (range.start as u64) * stride;
+            self.queue
+                .write_buffer(&self.buffers.primitives, offset_bytes, bytes);
         }
     }
 
@@ -1674,42 +1791,33 @@ impl GpuRenderer {
             surface_caps.alpha_modes
         );
 
-        // Select texture format based on platform
+        // Always prefer a non-sRGB surface format. Blinc's shaders
+        // emit sRGB-encoded colors directly into the framebuffer
+        // (text glyphs, SDF fills, layer composites all bake the
+        // gamma transfer at the source), so an sRGB-format surface
+        // would treat those already-encoded values as linear and
+        // re-apply the curve on present — every colour visibly
+        // washes out.
+        //
+        // This was originally `#[cfg(target_os = "macos")]`-only,
+        // with non-macOS native falling through to sRGB "for now."
+        // Linux users reported washed colours; the underlying
+        // pipeline is the same on every native platform so the
+        // selection should be too. WebGL2 was already covered by
+        // the storage-buffer-limit heuristic below — folded into
+        // this unconditional non-sRGB-first preference.
+        //
+        // The fallback (first available format) only kicks in on
+        // platforms whose surface only advertises sRGB formats;
+        // there's nothing better we can do there short of writing
+        // a manual `pow(c, 2.2)` in every shader.
         let texture_format = config.texture_format.unwrap_or_else(|| {
-            // On macOS, prefer non-sRGB format to avoid automatic gamma correction
-            // which causes colors to appear washed out. Other platforms may behave
-            // differently, so we use sRGB there for now.
-            #[cfg(target_os = "macos")]
-            {
-                surface_caps
-                    .formats
-                    .iter()
-                    .find(|f| !f.is_srgb())
-                    .copied()
-                    .unwrap_or(surface_caps.formats[0])
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                // On WebGL2 (GL adapter without storage buffers), prefer non-sRGB
-                // to avoid double gamma correction — shaders output sRGB-encoded
-                // colors directly, and an sRGB surface would apply gamma again.
-                let prefer_non_srgb = adapter.limits().max_storage_buffers_per_shader_stage == 0;
-                if prefer_non_srgb {
-                    surface_caps
-                        .formats
-                        .iter()
-                        .find(|f| !f.is_srgb())
-                        .copied()
-                        .unwrap_or(surface_caps.formats[0])
-                } else {
-                    surface_caps
-                        .formats
-                        .iter()
-                        .find(|f| f.is_srgb())
-                        .copied()
-                        .unwrap_or(surface_caps.formats[0])
-                }
-            }
+            surface_caps
+                .formats
+                .iter()
+                .find(|f| !f.is_srgb())
+                .copied()
+                .unwrap_or(surface_caps.formats[0])
         });
         tracing::info!(
             "Selected texture format: {:?} (sRGB: {})",
@@ -1726,6 +1834,10 @@ impl GpuRenderer {
             config,
             (800, 600),
         )?;
+
+        // Force driver to compile deferred Vulkan pipelines now,
+        // before the first surface present. No-op on macOS/Windows.
+        renderer.pre_warm_pipelines();
 
         Ok((renderer, surface))
     }
@@ -1933,6 +2045,148 @@ impl GpuRenderer {
         )
     }
 
+    /// Pre-compile the eagerly-created render pipelines by issuing
+    /// dummy draws against a throwaway texture.
+    ///
+    /// Vulkan drivers defer shader compilation to first-draw, so the
+    /// first frame in a Linux app pays the cost of compiling 8+ SDF
+    /// shaders + path/clear_quad sequentially on the main thread. On
+    /// 8GB-RAM laptops the user reported this as "huge delay before
+    /// the initial route renders". Pre-warming pushes that cost into
+    /// renderer construction (before the window is visible), trading
+    /// a slightly slower `with_surface` for a snappy first paint.
+    ///
+    /// Only pipelines whose required bind groups exist at this point
+    /// are pre-warmed (SDF family + path + clear_quad). text_overlay,
+    /// composite_overlay, and layer_composite need per-call bind
+    /// groups created at first use, so they're left to JIT-compile on
+    /// the first real frame — those are individually cheap. MSAA
+    /// variants are created lazily for the active sample_count and
+    /// aren't pre-warmed here either.
+    ///
+    /// Opt out with `BLINC_PIPELINE_PREWARM=0`. No-op on non-Linux
+    /// (Metal/DX12 don't defer compilation this way).
+    #[cfg(target_os = "linux")]
+    fn pre_warm_pipelines(&self) {
+        if std::env::var("BLINC_PIPELINE_PREWARM").as_deref() == Ok("0") {
+            tracing::debug!("Pipeline pre-warm disabled via BLINC_PIPELINE_PREWARM=0");
+            return;
+        }
+
+        let start = std::time::Instant::now();
+
+        let throwaway = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Pipeline Pre-Warm Throwaway"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.texture_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = throwaway.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Dummy vertex buffer for pipelines that declare a vertex
+        // buffer layout (Path always; SDF when VERTEX_STORAGE is
+        // unavailable and the renderer falls back to instance VBs).
+        // Validation requires slot 0 to be bound to a real buffer
+        // matching the declared stride — without it, `pass.draw(…)`
+        // panics with "requires vertex buffer 0 to be set" and the
+        // pre-warm aborts the whole renderer construction. 1 KiB of
+        // zeros covers every draw count we issue here (≤ 3 vertices
+        // × 120 B per PathVertex = 360 B, comfortably less than 1024).
+        let dummy_vb = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Pipeline Pre-Warm Dummy VB"),
+            size: 1024,
+            usage: wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Pipeline Pre-Warm Encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Pipeline Pre-Warm Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // clear_quad — no bind group, no vertex buffer required.
+            pass.set_pipeline(&self.pipelines.clear_quad);
+            pass.draw(0..3, 0..1);
+
+            // SDF family shares `bind_groups.sdf` at slot 0. The
+            // pipelines only declare a vertex buffer when
+            // `has_vertex_storage` is false (instance-stepped VB
+            // fallback) — bind the dummy in that case so validation
+            // accepts the draw on hosts without storage in vertex
+            // shaders (older Intel iGPUs, some Mesa configs).
+            pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            if !self.has_vertex_storage {
+                pass.set_vertex_buffer(0, dummy_vb.slice(..));
+            }
+            for sdf_pipeline in [
+                &self.pipelines.sdf_core,
+                &self.pipelines.sdf_shadow,
+                &self.pipelines.sdf_3d,
+                &self.pipelines.sdf_notch,
+                &self.pipelines.sdf_core_overlay,
+                &self.pipelines.sdf_shadow_overlay,
+                &self.pipelines.sdf_3d_overlay,
+                &self.pipelines.sdf_notch_overlay,
+            ] {
+                pass.set_pipeline(sdf_pipeline);
+                pass.draw(0..6, 0..1);
+            }
+
+            // Path family always declares a vertex buffer layout —
+            // bind the dummy unconditionally before drawing.
+            pass.set_bind_group(0, &self.bind_groups.path, &[]);
+            pass.set_vertex_buffer(0, dummy_vb.slice(..));
+            for path_pipeline in [&self.pipelines.path, &self.pipelines.path_overlay] {
+                pass.set_pipeline(path_pipeline);
+                pass.draw(0..3, 0..1);
+            }
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Block until the GPU has actually finished compiling and
+        // running these. Without this the work stays queued and the
+        // first real frame still pays the compile cost.
+        let _ = self.device.poll(wgpu::PollType::Wait);
+
+        tracing::info!(
+            "Vulkan pipeline pre-warm complete in {:.1} ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    /// No-op pre-warm for non-Linux targets — Metal (macOS),
+    /// DX12 (Windows), and WebGPU compile shaders eagerly at
+    /// pipeline creation, so there's nothing to warm up.
+    #[cfg(not(target_os = "linux"))]
+    fn pre_warm_pipelines(&self) {}
+
     fn create_renderer(
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
@@ -2021,6 +2275,11 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(LAYER_COMPOSITE_SHADER.into()),
         });
 
+        let clear_quad_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Clear Quad Shader"),
+            source: wgpu::ShaderSource::Wgsl(CLEAR_QUAD_SHADER.into()),
+        });
+
         // Split SDF shaders — specialized pipelines for each primitive category.
         // Three tiers:
         //   Tier 1 (full): Storage buffers in VS + FS — sdf_*.wgsl
@@ -2091,6 +2350,7 @@ impl GpuRenderer {
             &composite_shader,
             &path_shader,
             &layer_composite_shader,
+            &clear_quad_shader,
             texture_format,
             config.sample_count,
             has_vertex_storage,
@@ -2275,6 +2535,8 @@ impl GpuRenderer {
             bind_group_layouts,
             viewport_size,
             saved_viewport_size: None,
+            pending_scissor: None,
+            pending_damage_scissor: None,
             memory_budget: GpuMemoryBudget::new(config.gpu_memory_budget),
             config,
             time: 0.0,
@@ -2304,6 +2566,7 @@ impl GpuRenderer {
             has_vertex_storage,
             has_storage_buffers,
             has_texture_compression_bc,
+            static_layer: None,
         })
     }
 
@@ -2981,6 +3244,7 @@ impl GpuRenderer {
         composite_shader: &wgpu::ShaderModule,
         path_shader: &wgpu::ShaderModule,
         layer_composite_shader: &wgpu::ShaderModule,
+        clear_quad_shader: &wgpu::ShaderModule,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
         has_vertex_storage: bool,
@@ -3442,6 +3706,54 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Compositor v2 scissored clear. No bindings, no vertex
+        // buffer — the shader generates a fullscreen triangle from
+        // `vertex_index`. REPLACE blend so the fragment's
+        // `(0,0,0,0)` output fully overwrites the attachment inside
+        // the active scissor rect.
+        let clear_quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Clear Quad Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        let clear_quad = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Clear Quad Pipeline"),
+            layout: Some(&clear_quad_layout),
+            vertex: wgpu::VertexState {
+                module: clear_quad_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: clear_quad_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: texture_format,
+                    // REPLACE blend: fragment output replaces dest
+                    // verbatim. No multiplicative compositing — we
+                    // want the cleared pixels to be exactly
+                    // (0,0,0,0), not blended with whatever was there.
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: overlay_multisample_state,
+            multiview: None,
+            cache: None,
+        });
+
         Pipelines {
             sdf,
             sdf_overlay,
@@ -3460,6 +3772,7 @@ impl GpuRenderer {
             path,
             path_overlay,
             layer_composite,
+            clear_quad,
         }
     }
 
@@ -4013,6 +4326,46 @@ impl GpuRenderer {
         self.viewport_size = (width, height);
     }
 
+    /// Current viewport dimensions in physical pixels — width, height.
+    /// Used by the compositor v2 damage-rect path on the app side to
+    /// clamp scissor rects to the static-layer extent before staging.
+    pub fn viewport_size(&self) -> (u32, u32) {
+        self.viewport_size
+    }
+
+    /// Stage a scissor rect that subsequent text / image dispatches
+    /// will apply via `set_scissor_rect`. Used by the compositor v2
+    /// damage-rect path to confine text/SVG/image re-dispatches to
+    /// the same region the SDF clear + redraw covered. Stays in
+    /// effect until [`Self::clear_pending_scissor`] is called.
+    pub fn set_pending_scissor(&mut self, rect: (u32, u32, u32, u32)) {
+        self.pending_scissor = Some(rect);
+    }
+
+    /// Damage-scissor variant of [`Self::set_pending_scissor`]: the
+    /// rect is *intersected* with `blit_tight_texture_to_target`'s
+    /// own visible-bounds scissor instead of replacing it. Phase 4d
+    /// Opt 2 sets this before re-rendering a CSS-animated cache
+    /// region so layer-effect composites paint only inside the
+    /// damage rect, leaving the rest of the cache from last paint
+    /// untouched. Call [`Self::clear_pending_damage_scissor`] when
+    /// done.
+    pub fn set_pending_damage_scissor(&mut self, rect: (u32, u32, u32, u32)) {
+        self.pending_damage_scissor = Some(rect);
+    }
+
+    /// Clear the damage scissor — subsequent layer composites use
+    /// their own visible-bounds scissor only.
+    pub fn clear_pending_damage_scissor(&mut self) {
+        self.pending_damage_scissor = None;
+    }
+
+    /// Drop the staged scissor so subsequent dispatches paint to the
+    /// full attachment again. Paired with `set_pending_scissor`.
+    pub fn clear_pending_scissor(&mut self) {
+        self.pending_scissor = None;
+    }
+
     /// Set the current render target texture for blend mode two-pass compositing.
     ///
     /// Must be called before `render_overlay()` when the batch may contain
@@ -4056,6 +4409,13 @@ impl GpuRenderer {
         self.queue.clone()
     }
 
+    /// Surface texture format the renderer was configured with. Used by
+    /// the custom-pass dispatch site so user passes know what format
+    /// their `initialize` should target.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.texture_format
+    }
+
     /// Create a new surface for an additional window.
     ///
     /// Uses the existing wgpu Instance to create a surface that can be
@@ -4072,6 +4432,14 @@ impl GpuRenderer {
         self.instance
             .create_surface(wgpu::SurfaceTarget::from(window))
             .map_err(RendererError::SurfaceError)
+    }
+
+    /// The adapter the device/queue were created against. Needed for
+    /// `Surface::get_capabilities` so callers can negotiate format /
+    /// alpha mode / present mode against what the OS compositor
+    /// actually exposes.
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
     }
 
     /// Get the texture format used by this renderer's pipelines
@@ -4105,12 +4473,33 @@ impl GpuRenderer {
     /// `self.bind_groups.sdf`, so ALL render paths automatically get the atlas
     /// without needing to thread it through every method.
     ///
-    /// Uses pointer comparison to avoid recreating the bind group when the atlas
-    /// hasn't changed between frames.
+    /// Always rebuilds the bind group. The previous pointer-equality
+    /// optimisation was a false-negative trap: `text_ctx` replaces
+    /// the `atlas_view` field *in place* (same `Option<TextureView>`
+    /// memory address, different inner `Arc`) when the atlas grows.
+    /// The borrowed reference `atlas_view as *const TextureView`
+    /// returned the same pointer before and after growth, so the
+    /// check thought "no change" while the underlying view was a
+    /// different texture — the bind group kept the OLD view's Arc
+    /// and subsequent glyph samples landed in the old atlas.
     ///
-    /// SAFETY: The raw pointers stored in `active_glyph_atlas` must remain valid
-    /// for the duration of the frame. This is guaranteed because they point to
-    /// TextureViews owned by the text context, which outlives all render calls.
+    /// Symptom: canvas_demo `ctx.draw_text` rendered blank because
+    /// `collect_canvas_overlay` grew the atlas after the slow
+    /// path's `set_glyph_atlas` call, the bind group stayed on the
+    /// pre-growth view, and the new glyph UVs (referring to the
+    /// post-growth atlas) sampled from the wrong texture.
+    ///
+    /// Cost of always rebuilding: one `create_bind_group` call
+    /// (~50 µs) per `set_glyph_atlas` invocation. Per frame on the
+    /// slow path that's negligible; the overlay-rebind helper
+    /// `BlincApp::rebind_glyph_atlas_for_overlay` calls this once
+    /// per `composite_frame` site, so total cost is one extra
+    /// rebuild per frame at most.
+    ///
+    /// SAFETY: The raw pointers stored in `active_glyph_atlas` must
+    /// remain valid for the duration of the frame — guaranteed
+    /// because they point to TextureViews owned by the text
+    /// context, which outlives all render calls.
     pub fn set_glyph_atlas(
         &mut self,
         atlas_view: &wgpu::TextureView,
@@ -4118,21 +4507,11 @@ impl GpuRenderer {
     ) {
         let atlas_ptr = atlas_view as *const wgpu::TextureView;
         let color_ptr = color_atlas_view as *const wgpu::TextureView;
-
-        let need_rebuild = match &self.active_glyph_atlas {
-            Some(active) => {
-                active.atlas_view_ptr != atlas_ptr || active.color_atlas_view_ptr != color_ptr
-            }
-            None => true,
-        };
-
-        if need_rebuild {
-            self.active_glyph_atlas = Some(ActiveGlyphAtlas {
-                atlas_view_ptr: atlas_ptr,
-                color_atlas_view_ptr: color_ptr,
-            });
-            self.rebind_sdf_bind_group();
-        }
+        self.active_glyph_atlas = Some(ActiveGlyphAtlas {
+            atlas_view_ptr: atlas_ptr,
+            color_atlas_view_ptr: color_ptr,
+        });
+        self.rebind_sdf_bind_group();
     }
 
     /// Get a mutable reference to the @flow pipeline cache
@@ -4312,6 +4691,662 @@ impl GpuRenderer {
     }
 
     /// Render primitives with a specified clear color
+    /// Ensure the layer-compositor's static-cache texture exists at
+    /// the given dimensions and matches the surface format. Allocates
+    /// on first use; reallocates on viewport resize. Marks the new
+    /// texture invalid so the next `render_with_clear` knows it has
+    /// to repaint the cache from scratch.
+    pub fn ensure_static_layer(&mut self, width: u32, height: u32) {
+        if let Some(layer) = &self.static_layer {
+            if layer.width == width && layer.height == height {
+                return;
+            }
+        }
+        if width == 0 || height == 0 {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("blinc-static-layer"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.texture_format,
+            // RENDER_ATTACHMENT so we can render into it; COPY_SRC so
+            // we can `copy_texture_to_texture` it onto the surface
+            // each compositor frame.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("blinc-static-layer-view"),
+            ..Default::default()
+        });
+        self.static_layer = Some(StaticLayer {
+            texture,
+            view,
+            width,
+            height,
+            valid: false,
+        });
+    }
+
+    /// Mark the static-cache texture invalid. Called when the
+    /// composition source changes (rebuild, layout change, CSS state
+    /// flip, scroll, motion-binding tick) — the next compositor
+    /// frame will repaint the cache before using it.
+    pub fn invalidate_static_layer(&mut self) {
+        if let Some(layer) = self.static_layer.as_mut() {
+            layer.valid = false;
+        }
+    }
+
+    /// `true` if a static-cache texture exists and was painted into
+    /// since the last invalidation. The compositor's fast path
+    /// blits the cache when this is true; otherwise it falls back to
+    /// rendering the cache afresh.
+    pub fn static_layer_valid(&self) -> bool {
+        self.static_layer.as_ref().map(|l| l.valid).unwrap_or(false)
+    }
+
+    /// Borrow the static-layer view, if the cache has been
+    /// allocated. The compositor uses this as the render target for
+    /// the static paint pass (everything goes into the offscreen
+    /// texture instead of the surface).
+    pub fn static_layer_view(&self) -> Option<&wgpu::TextureView> {
+        self.static_layer.as_ref().map(|l| &l.view)
+    }
+
+    /// Mark the static-layer cache freshly painted. Called by the
+    /// compositor after `render_static_layer` (or after an inner
+    /// `render_with_clear` that targeted the static layer view)
+    /// completes — flips `static_layer_valid()` to true so the next
+    /// fast-path frame blits instead of repainting.
+    pub fn mark_static_layer_valid(&mut self) {
+        if let Some(layer) = self.static_layer.as_mut() {
+            layer.valid = true;
+        }
+    }
+
+    /// Render `batch` into the static-cache texture. The caller is
+    /// expected to have called `ensure_static_layer` first; this
+    /// method asserts in debug and no-ops in release if the cache is
+    /// missing. After this returns, [`Self::static_layer_valid`]
+    /// reads `true` and [`Self::blit_static_layer_into`] will copy
+    /// the freshly-painted cache onto the surface.
+    pub fn render_static_layer(&mut self, batch: &PrimitiveBatch, clear_color: [f64; 4]) {
+        // Take the view out as a clone-of-handle so we can pass it
+        // to render_with_clear without holding a borrow into
+        // self.static_layer (render_with_clear needs `&mut self`).
+        let view = match &self.static_layer {
+            Some(layer) => layer.view.clone(),
+            None => {
+                debug_assert!(false, "render_static_layer without ensure_static_layer");
+                return;
+            }
+        };
+        self.render_with_clear(&view, batch, clear_color);
+        if let Some(layer) = self.static_layer.as_mut() {
+            layer.valid = true;
+        }
+    }
+
+    /// Re-render the static layer only within `damage_rects`. Pixels
+    /// outside the union are untouched; pixels inside are cleared and
+    /// re-drawn from every primitive in `batch` whose AABB intersects
+    /// the union. The static layer stays `valid` afterwards.
+    ///
+    /// Returns `false` when the cache isn't valid or non-SDF content
+    /// the damage path doesn't yet support (paths, 3D viewports,
+    /// particles) is present in the batch — caller falls back to a
+    /// full repaint.
+    ///
+    /// Layer commands ARE supported (Phase 4d Opt 2): batches with
+    /// push / pop pairs walk the same effect-layer logic that
+    /// `render_with_layer_effects` uses, then composite each effect
+    /// layer back into the static cache with `pending_damage_scissor`
+    /// set so the blit lands only inside the damage union. Layers
+    /// whose bounds don't intersect the damage union are skipped
+    /// entirely.
+    pub fn render_static_layer_damaged(
+        &mut self,
+        damage_rects: &[[f32; 4]],
+        batch: &PrimitiveBatch,
+    ) -> bool {
+        let Some(layer) = self.static_layer.as_ref() else {
+            return false;
+        };
+        if !layer.valid {
+            return false;
+        }
+        // Bail to full repaint when the batch has anything the
+        // damage path doesn't yet support. Paths / 3D viewports /
+        // particles need their own scissored dispatch routines and
+        // are out of scope for this commit; layer_commands are
+        // handled below.
+        if !batch.paths.vertices.is_empty()
+            || !batch.viewports_3d.is_empty()
+            || !batch.particle_viewports.is_empty()
+        {
+            return false;
+        }
+        if damage_rects.is_empty() {
+            // No damage — caller can skip the dispatch entirely.
+            return true;
+        }
+
+        let view = layer.view.clone();
+        let layer_width = layer.width as f32;
+        let layer_height = layer.height as f32;
+
+        // Union all damage rects into a single scissor (wgpu only
+        // supports one scissor per pass). Clamp to layer extent —
+        // a damage rect can extend past the cache when a binding's
+        // primitives moved off-screen.
+        //
+        // Pad outward by `AABB_PAD` pixels. SDF primitives anti-
+        // alias at the edges of their `bounds`; without padding,
+        // 1-pixel AA pixels at the trailing edge of the moved
+        // element stay in the cache from the previous frame and
+        // produce a faint "vibrating" outline as the bounds round
+        // sub-pixel positions differently each frame. 4 px is well
+        // over the AA distance for typical UI font sizes and
+        // corner radii (~1-2 px) while still keeping the damage
+        // rect proportional to the actual movement.
+        const AABB_PAD: f32 = 4.0;
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for [x, y, w, h] in damage_rects.iter().copied() {
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            min_x = min_x.min(x - AABB_PAD);
+            min_y = min_y.min(y - AABB_PAD);
+            max_x = max_x.max(x + w + AABB_PAD);
+            max_y = max_y.max(y + h + AABB_PAD);
+        }
+        if !min_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return true;
+        }
+        let scissor_x = min_x.max(0.0).floor() as u32;
+        let scissor_y = min_y.max(0.0).floor() as u32;
+        let scissor_right = max_x.min(layer_width).ceil() as u32;
+        let scissor_bottom = max_y.min(layer_height).ceil() as u32;
+        if scissor_right <= scissor_x || scissor_bottom <= scissor_y {
+            return true;
+        }
+        let scissor_w = scissor_right - scissor_x;
+        let scissor_h = scissor_bottom - scissor_y;
+
+        // Phase 4d Opt 2: build the effect-layer list from
+        // `batch.layer_commands` (mirrors `render_with_layer_effects`
+        // exactly, including the Phase 4a relax that lets pure-
+        // opacity layers reach the offscreen-composite path). Each
+        // entry's primitive range gets excluded from the SDF pass
+        // below — those primitives render into their layer's tight
+        // texture instead. The layer-composite blit lands inside
+        // the damage scissor via `pending_damage_scissor`.
+        let mut effect_layers: Vec<EffectLayerRange> = Vec::new();
+        let mut effect_primitive_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        if !batch.layer_commands.is_empty() {
+            use crate::primitives::LayerCommand;
+            let mut layer_stack: Vec<(LayerStackFrame, blinc_core::LayerConfig)> = Vec::new();
+            for entry in &batch.layer_commands {
+                match &entry.command {
+                    LayerCommand::Push { config } => {
+                        layer_stack.push((
+                            LayerStackFrame {
+                                primitive_start: entry.primitive_index,
+                                path_index_start: entry.path_index_count,
+                                path_vertex_start: entry.path_vertex_index,
+                            },
+                            config.clone(),
+                        ));
+                    }
+                    LayerCommand::Pop => {
+                        if let Some((start, config)) = layer_stack.pop() {
+                            let has_effect_or_blend_or_3d = !config.effects.is_empty()
+                                || config.blend_mode != blinc_core::BlendMode::Normal
+                                || config.transform_3d.is_some();
+                            let has_pure_opacity = config.opacity < 1.0;
+                            if has_effect_or_blend_or_3d || has_pure_opacity {
+                                effect_layers.push(EffectLayerRange {
+                                    primitive_start: start.primitive_start,
+                                    primitive_end: entry.primitive_index,
+                                    path_index_start: start.path_index_start,
+                                    path_index_end: entry.path_index_count,
+                                    path_vertex_start: start.path_vertex_start,
+                                    path_vertex_end: entry.path_vertex_index,
+                                    config,
+                                });
+                            }
+                        }
+                    }
+                    LayerCommand::Sample { .. } => {}
+                }
+            }
+            for layer in &effect_layers {
+                for i in layer.primitive_start..layer.primitive_end {
+                    effect_primitive_indices.insert(i);
+                }
+            }
+        }
+
+        // Cull primitives to only those intersecting the union rect
+        // AND not inside an effect layer. The static cache outside
+        // the scissor is preserved by `LoadOp::Load`, so we skip
+        // every prim whose AABB doesn't touch the damaged region.
+        // Effect-layer prims render separately into their layer's
+        // offscreen texture below.
+        let scissor_rect = [
+            scissor_x as f32,
+            scissor_y as f32,
+            scissor_w as f32,
+            scissor_h as f32,
+        ];
+        let visible: Vec<GpuPrimitive> = batch
+            .primitives
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| {
+                if effect_primitive_indices.contains(i) {
+                    return false;
+                }
+                let [x, y, w, h] = p.bounds;
+                if w <= 0.0 || h <= 0.0 {
+                    return false;
+                }
+                aabb_intersects(scissor_rect, [x, y, w, h])
+            })
+            .map(|(_, p)| p)
+            .copied()
+            .collect();
+
+        // Update uniforms (viewport is the cache extent, not the
+        // window — primitives were emitted into cache pixel space).
+        let uniforms = Uniforms {
+            viewport_size: [layer_width, layer_height],
+            _padding: [0.0; 2],
+        };
+        self.queue
+            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        let sdf_ranges = if visible.is_empty() {
+            SdfPrimitiveRanges::default()
+        } else {
+            self.upload_sorted_primitives(&visible)
+        };
+        self.update_aux_data_buffer(batch);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("blinc-damage-rect-encoder"),
+            });
+
+        // Single-pass damage-rect re-render. wgpu's `LoadOp::Clear`
+        // ignores `set_scissor_rect`, so we can't clear-inside-
+        // scissor via attachment ops. Instead we open ONE render
+        // pass with `LoadOp::Load` and issue two draws inside it:
+        //
+        //   1. clear-quad pipeline (REPLACE blend, writes opaque
+        //      black) → with the active scissor, zeros the damaged
+        //      region.
+        //   2. SDF pipeline → re-paints the cleared region in
+        //      z-order from every primitive whose AABB intersects
+        //      the union damage rect.
+        //
+        // Two passes was the original cut but every render-pass
+        // begin/end forces a tile-memory load + store on Metal
+        // (the static cache is a multi-MB texture). Folding both
+        // draws into a single pass means one load + one store per
+        // damage frame instead of two — measurable on cn_demo's
+        // switch / progress / slider animations where the slow
+        // path's single-pass full-clear was visibly smoother than
+        // the two-pass damage path despite doing more total work.
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blinc-damage-rect-combined"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            render_pass.set_scissor_rect(scissor_x, scissor_y, scissor_w, scissor_h);
+            // First draw: scissored clear via the clear-quad pipeline.
+            render_pass.set_pipeline(&self.pipelines.clear_quad);
+            render_pass.draw(0..3, 0..1);
+            // Second draw: SDF re-paint inside the just-cleared scissor.
+            if !visible.is_empty() {
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
+            }
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Phase 4d Opt 2: composite each effect layer back into the
+        // static cache with `pending_damage_scissor` set so the blit
+        // lands only inside the damage union. Layers whose bounds
+        // don't intersect the damage rect are skipped entirely —
+        // their previous-frame pixels stay in the cache (preserved
+        // by `LoadOp::Load` in the SDF pass above).
+        //
+        // The blit's own visible-bounds scissor intersects with
+        // `pending_damage_scissor` inside `blit_tight_texture_to_target`
+        // (commit e0286ef0). Empty intersection ⇒ the blit's render
+        // pass submits as a no-op.
+        if !effect_layers.is_empty() {
+            let damage_scissor = (scissor_x, scissor_y, scissor_w, scissor_h);
+            let damage_rect_f = [
+                scissor_x as f32,
+                scissor_y as f32,
+                (scissor_x + scissor_w) as f32,
+                (scissor_y + scissor_h) as f32,
+            ];
+            for layer in effect_layers {
+                let primitives = &batch.primitives[layer.primitive_start..layer.primitive_end];
+                let path_verts: &[PathVertex] = if layer.path_vertex_end > layer.path_vertex_start {
+                    &batch.paths.vertices[layer.path_vertex_start..layer.path_vertex_end]
+                } else {
+                    &[]
+                };
+                if primitives.is_empty() && path_verts.is_empty() {
+                    continue;
+                }
+
+                // Compute layer's screen-space bounding box (same
+                // logic as `render_with_layer_effects`). Path vertex
+                // positions matter for Lottie-style content; SDF
+                // primitives carry their bbox in `bounds`.
+                let mut min_x = f32::MAX;
+                let mut min_y = f32::MAX;
+                let mut max_x = f32::MIN;
+                let mut max_y = f32::MIN;
+                let mut clip: Option<([f32; 4], [f32; 4])> = None;
+                for p in primitives {
+                    let (px, py, pw, ph) = (p.bounds[0], p.bounds[1], p.bounds[2], p.bounds[3]);
+                    min_x = min_x.min(px);
+                    min_y = min_y.min(py);
+                    max_x = max_x.max(px + pw);
+                    max_y = max_y.max(py + ph);
+                    if clip.is_none() && p.clip_bounds[0] > -5000.0 && p.clip_bounds[2] < 90000.0 {
+                        clip = Some((p.clip_bounds, p.clip_radius));
+                    }
+                }
+                for v in path_verts {
+                    min_x = min_x.min(v.position[0]);
+                    min_y = min_y.min(v.position[1]);
+                    max_x = max_x.max(v.position[0]);
+                    max_y = max_y.max(v.position[1]);
+                    if clip.is_none() && v.clip_bounds[0] > -5000.0 && v.clip_bounds[2] < 90000.0 {
+                        clip = Some((v.clip_bounds, v.clip_radius));
+                    }
+                }
+                let layer_width = (max_x - min_x).max(1.0);
+                let layer_height = (max_y - min_y).max(1.0);
+                let layer_pos = (min_x, min_y);
+                let layer_size = (layer_width, layer_height);
+                let layer_clip = clip;
+
+                // Layer ∩ damage check — skip if disjoint. Compare
+                // pre-effect-expansion bounds (post-expansion bounds
+                // get computed below for the blit destination, but
+                // the *content* lives inside the raw bounds and an
+                // empty raw ∩ damage means no work needed).
+                if layer_pos.0 + layer_size.0 <= damage_rect_f[0]
+                    || layer_pos.1 + layer_size.1 <= damage_rect_f[1]
+                    || layer_pos.0 >= damage_rect_f[2]
+                    || layer_pos.1 >= damage_rect_f[3]
+                {
+                    continue;
+                }
+
+                // Skip if entirely outside viewport (same as
+                // `render_with_layer_effects`).
+                let vp_w = self.viewport_size.0 as f32;
+                let vp_h = self.viewport_size.1 as f32;
+                let is_visible = layer_pos.0 < vp_w
+                    && layer_pos.1 < vp_h
+                    && layer_pos.0 + layer_size.0 > 0.0
+                    && layer_pos.1 + layer_size.1 > 0.0
+                    && layer_size.0 > 0.0
+                    && layer_size.1 > 0.0;
+                if !is_visible {
+                    continue;
+                }
+
+                let config = layer.config.clone();
+                let effect_expansion = Self::calculate_effect_expansion(&config.effects);
+
+                // Render layer to tight offscreen texture (helper
+                // already exists; same call shape as
+                // `render_with_layer_effects`).
+                let (layer_texture, content_size) = self.render_layer_range_tight(
+                    batch,
+                    layer.primitive_start,
+                    layer.primitive_end,
+                    layer.path_vertex_start,
+                    layer.path_vertex_end,
+                    layer.path_index_start,
+                    layer.path_index_end,
+                    layer_pos,
+                    layer_size,
+                    effect_expansion,
+                );
+                let tight_size = content_size;
+                let expanded_pos = (
+                    layer_pos.0 - effect_expansion.0,
+                    layer_pos.1 - effect_expansion.1,
+                );
+                let expanded_size = (
+                    layer_size.0 + effect_expansion.0 + effect_expansion.2,
+                    layer_size.1 + effect_expansion.1 + effect_expansion.3,
+                );
+
+                // The damage scissor is the intersection rule:
+                // `blit_tight_texture_to_target` intersects its own
+                // visible-bounds scissor with this, so the blit
+                // paints only inside (layer content area) ∩ (damage
+                // rect). Empty intersection ⇒ the blit is a no-op.
+                self.set_pending_damage_scissor(damage_scissor);
+
+                if config.effects.is_empty() {
+                    self.blit_tight_texture_to_target(
+                        &layer_texture.view,
+                        tight_size,
+                        &view,
+                        expanded_pos,
+                        expanded_size,
+                        config.opacity,
+                        config.blend_mode,
+                        layer_clip,
+                        config.transform_3d,
+                        0.0,
+                    );
+                    self.layer_texture_cache.release(layer_texture);
+                } else {
+                    let effected = self.apply_layer_effects(&layer_texture, &config.effects);
+                    self.layer_texture_cache.release(layer_texture);
+                    self.blit_tight_texture_to_target(
+                        &effected.view,
+                        tight_size,
+                        &view,
+                        expanded_pos,
+                        expanded_size,
+                        config.opacity,
+                        config.blend_mode,
+                        layer_clip,
+                        config.transform_3d,
+                        0.0,
+                    );
+                    self.layer_texture_cache.release(effected);
+                }
+
+                self.clear_pending_damage_scissor();
+            }
+        }
+
+        true
+    }
+
+    /// `copy_texture_to_texture` the static-cache onto the supplied
+    /// surface texture. Caller must use the underlying `wgpu::Texture`
+    /// (not a `TextureView`) because that's what `CommandEncoder::
+    /// copy_texture_to_texture` requires. Returns `false` if the
+    /// cache hasn't been painted yet — in that case the caller
+    /// should fall back to a full repaint.
+    pub fn blit_static_layer_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_texture: &wgpu::Texture,
+    ) -> bool {
+        let Some(layer) = &self.static_layer else {
+            return false;
+        };
+        if !layer.valid {
+            return false;
+        }
+        let extent = wgpu::Extent3d {
+            width: layer.width,
+            height: layer.height,
+            depth_or_array_layers: 1,
+        };
+        encoder.copy_texture_to_texture(
+            layer.texture.as_image_copy(),
+            target_texture.as_image_copy(),
+            extent,
+        );
+        true
+    }
+
+    /// Layer-compositor composite step: blit the cached static
+    /// layer onto the surface and then dispatch `overlay_primitives`
+    /// (typically canvas content re-emitted this frame) on top.
+    ///
+    /// Done in a single command-encoder submission so the GPU sees
+    /// blit-then-load-then-draw as one ordered batch — no extra
+    /// submit overhead vs the previous full-paint path.
+    ///
+    /// Returns `false` if the static layer hasn't been painted yet;
+    /// the caller should fall back to a full repaint into the cache
+    /// before retrying.
+    pub fn composite_frame(
+        &mut self,
+        target_view: &wgpu::TextureView,
+        target_texture: &wgpu::Texture,
+        overlay_primitives: &[GpuPrimitive],
+        overlay_aux_data: &[[f32; 4]],
+    ) -> bool {
+        // First, validate the cache and capture the extent. We can't
+        // hold a borrow into `self.static_layer` across the upload
+        // calls below (they take `&mut self`), so we just record what
+        // we need.
+        let extent = match &self.static_layer {
+            Some(layer) if layer.valid => wgpu::Extent3d {
+                width: layer.width,
+                height: layer.height,
+                depth_or_array_layers: 1,
+            },
+            _ => return false,
+        };
+
+        // Upload + sort overlay primitives (smaller than the full
+        // batch — typically <200 prims for cn_demo's spinners). The
+        // SDF GPU buffer is shared with the static pass that wrote
+        // earlier this frame, but the GPU has already consumed
+        // those reads in the static-layer render pass, so the queue
+        // is allowed to overwrite the buffer here.
+        let uniforms = Uniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            _padding: [0.0; 2],
+        };
+        self.queue
+            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        // Upload the overlay's aux_data so polygon-clip / 3D-group
+        // offsets carried on overlay primitives index into valid GPU
+        // data. The static layer's aux_data was written earlier this
+        // frame but has already been consumed into the cache texture;
+        // overwriting the buffer here is safe and ensures the overlay
+        // SDF dispatch reads the right vertex / shape descriptors.
+        self.update_aux_data_slice(overlay_aux_data);
+
+        let visible_overlay: Vec<GpuPrimitive> = overlay_primitives
+            .iter()
+            .filter(|p| self.is_primitive_visible(p))
+            .copied()
+            .collect();
+        let sdf_ranges = if visible_overlay.is_empty() {
+            SdfPrimitiveRanges::default()
+        } else {
+            self.upload_sorted_primitives(&visible_overlay)
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("blinc-compositor-encoder"),
+            });
+
+        // 1. Blit static cache onto surface (replaces all pixels).
+        let source_copy = self.static_layer.as_ref().unwrap().texture.as_image_copy();
+        let dest_copy = target_texture.as_image_copy();
+        encoder.copy_texture_to_texture(source_copy, dest_copy, extent);
+
+        // 2. Draw overlay primitives on top with `LoadOp::Load` so
+        //    the just-blitted cache content is preserved.
+        if !visible_overlay.is_empty() {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blinc-compositor-overlay-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            Self::draw_split_sdf(
+                &mut render_pass,
+                &self.pipelines,
+                &sdf_ranges,
+                false,
+                self.sdf_vb_buffer(),
+            );
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        true
+    }
+
     ///
     /// # Arguments
     /// * `target` - The texture view to render to
@@ -4327,12 +5362,17 @@ impl GpuRenderer {
         // This prevents memory bloat from accumulated large textures
         self.layer_texture_cache.evict_oversized();
 
-        // Check if we have layer commands with effects, blend modes, or 3D transforms
+        // Check whether any layer command needs the layer-aware path.
+        // Phase 4a: include pure-opacity layers so `config.opacity`
+        // actually reaches the composite blit. Without this, opacity-
+        // only `@keyframes` rendered at full alpha (the simple path
+        // ignores layer commands entirely).
         let has_layer_effects = batch.layer_commands.iter().any(|entry| {
             if let crate::primitives::LayerCommand::Push { config } = &entry.command {
                 !config.effects.is_empty()
                     || config.blend_mode != blinc_core::BlendMode::Normal
                     || config.transform_3d.is_some()
+                    || config.opacity < 1.0
             } else {
                 false
             }
@@ -4581,10 +5621,27 @@ impl GpuRenderer {
                 }
                 LayerCommand::Pop => {
                     if let Some((start, config)) = layer_stack.pop() {
-                        if !config.effects.is_empty()
+                        // Phase 4a: include pure-opacity layers
+                        // (`config.opacity < 1.0` alone). Pre-fix the
+                        // gate required effects / blend / 3D; pure-
+                        // opacity layers were silently dropped — their
+                        // primitives rendered at full alpha in the
+                        // first pass and `config.opacity` went
+                        // nowhere. The walker's hybrid flatten now
+                        // skips `push_layer` for simple-enough opacity
+                        // subtrees (children.len() <= 1) so those
+                        // don't reach this gate at all; what does
+                        // reach is the cases that genuinely need a
+                        // layer composite (overlapping children,
+                        // nested opacity), and they get correct
+                        // offscreen-then-composite rendering via
+                        // `blit_tight_texture_to_target`, which reads
+                        // `config.opacity`.
+                        let has_effect_or_blend_or_3d = !config.effects.is_empty()
                             || config.blend_mode != blinc_core::BlendMode::Normal
-                            || config.transform_3d.is_some()
-                        {
+                            || config.transform_3d.is_some();
+                        let has_pure_opacity = config.opacity < 1.0;
+                        if has_effect_or_blend_or_3d || has_pure_opacity {
                             effect_layers.push(EffectLayerRange {
                                 primitive_start: start.primitive_start,
                                 primitive_end: entry.primitive_index,
@@ -4768,6 +5825,7 @@ impl GpuRenderer {
                     config.blend_mode,
                     layer_clip,
                     config.transform_3d,
+                    0.0,
                 );
                 self.layer_texture_cache.release(layer_texture);
             } else {
@@ -4787,6 +5845,7 @@ impl GpuRenderer {
                     config.blend_mode,
                     layer_clip,
                     config.transform_3d,
+                    0.0,
                 );
                 self.layer_texture_cache.release(effected);
             }
@@ -4964,17 +6023,37 @@ impl GpuRenderer {
     /// If the batch has aux_data, writes it to the GPU buffer, recreating the buffer
     /// and rebinding if it's too small.
     fn update_aux_data_buffer(&mut self, batch: &PrimitiveBatch) {
-        if batch.aux_data.is_empty() {
+        self.update_aux_data_slice(&batch.aux_data);
+    }
+
+    /// Public wrapper for callers in `blinc_app` that need to
+    /// re-upload a batch's aux_data after another batch's render
+    /// pass clobbered the shared GPU buffer. Used by the
+    /// non-compositor path's dynamic-batch dispatch: after the
+    /// motion-bound batch's aux upload + draw, the static batch's
+    /// polygon clip / 3D-group descriptor offsets would otherwise
+    /// reference stale data on downstream dispatches.
+    pub fn update_aux_data_for_batch(&mut self, batch: &PrimitiveBatch) {
+        self.update_aux_data_buffer(batch);
+    }
+
+    /// Slice-variant of [`Self::update_aux_data_buffer`] for callers that
+    /// only have an `&[[f32; 4]]` (e.g. the compositor overlay path
+    /// which carries the dynamic batch's aux_data separately from a
+    /// `PrimitiveBatch`). Avoids constructing a throwaway batch just
+    /// to satisfy the buffer-variant signature.
+    fn update_aux_data_slice(&mut self, aux_data: &[[f32; 4]]) {
+        if aux_data.is_empty() {
             return;
         }
 
         if !self.has_storage_buffers {
             // DT mode: upload aux data to texture instead of storage buffer
-            self.update_aux_data_texture(&batch.aux_data);
+            self.update_aux_data_texture(aux_data);
             return;
         }
 
-        let data_size = (batch.aux_data.len() * std::mem::size_of::<[f32; 4]>()) as u64;
+        let data_size = std::mem::size_of_val(aux_data) as u64;
         let buffer_size = self.buffers.aux_data.size();
 
         // Recreate buffer if too small
@@ -4993,11 +6072,8 @@ impl GpuRenderer {
             self.rebind_path_bind_group();
         }
 
-        self.queue.write_buffer(
-            &self.buffers.aux_data,
-            0,
-            bytemuck::cast_slice(&batch.aux_data),
-        );
+        self.queue
+            .write_buffer(&self.buffers.aux_data, 0, bytemuck::cast_slice(aux_data));
     }
 
     /// Upload auxiliary data to the DT fallback texture (Tier 3 / WebGL2).
@@ -6083,10 +7159,16 @@ impl GpuRenderer {
     /// * `target` - The single-sampled texture view to render to (existing content is preserved)
     /// * `batch` - The primitive batch to render
     pub fn render_overlay(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
-        // Check if we have layer commands with effects or blend modes that need processing
+        // Phase 4a: include pure-opacity layers in the gate so an
+        // overlay containing only opacity-animated content takes the
+        // layer-aware path (which actually composites with the
+        // configured opacity) instead of the simple path (which drops
+        // layer commands entirely).
         let has_layer_processing = batch.layer_commands.iter().any(|entry| {
             if let crate::primitives::LayerCommand::Push { config } = &entry.command {
-                !config.effects.is_empty() || config.blend_mode != blinc_core::BlendMode::Normal
+                !config.effects.is_empty()
+                    || config.blend_mode != blinc_core::BlendMode::Normal
+                    || config.opacity < 1.0
             } else {
                 false
             }
@@ -6198,10 +7280,15 @@ impl GpuRenderer {
                 }
                 LayerCommand::Pop => {
                     if let Some((start_idx, config)) = layer_stack.pop() {
-                        if !config.effects.is_empty()
+                        // Phase 4a: pure-opacity layers also need
+                        // processing so `config.opacity` reaches the
+                        // composite blit instead of being silently
+                        // dropped.
+                        let needs_processing = !config.effects.is_empty()
                             || config.blend_mode != blinc_core::BlendMode::Normal
                             || config.transform_3d.is_some()
-                        {
+                            || config.opacity < 1.0;
+                        if needs_processing {
                             effect_layers.push((start_idx, entry.primitive_index, config));
                         }
                     }
@@ -6311,6 +7398,7 @@ impl GpuRenderer {
                     config.blend_mode,
                     layer_clip,
                     config.transform_3d,
+                    0.0,
                 );
                 self.layer_texture_cache.release(layer_texture);
             } else {
@@ -6328,6 +7416,7 @@ impl GpuRenderer {
                     config.blend_mode,
                     layer_clip,
                     config.transform_3d,
+                    0.0,
                 );
                 self.layer_texture_cache.release(effected);
             }
@@ -7604,6 +8693,15 @@ impl GpuRenderer {
             // Use text_overlay pipeline since we're rendering to 1x sampled texture
             render_pass.set_pipeline(&self.pipelines.text_overlay);
             render_pass.set_bind_group(0, text_bind_group, &[]);
+            // Apply staged scissor (compositor v2 damage-rect path)
+            // so this dispatch only paints into the same rect that
+            // the SDF clear + redraw covered. Without this guard a
+            // text glyph emitted into a motion-bound subtree would
+            // paint outside the damaged region and stick on top of
+            // the static cache's previous-frame pixels.
+            if let Some((sx, sy, sw, sh)) = self.pending_scissor {
+                render_pass.set_scissor_rect(sx, sy, sw, sh);
+            }
             render_pass.draw(0..6, 0..glyphs.len() as u32);
         }
 
@@ -8368,6 +9466,9 @@ impl GpuRenderer {
             render_pass.set_pipeline(&image_pipeline.pipeline);
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.set_vertex_buffer(0, image_pipeline.instance_buffer.slice(..));
+            if let Some((sx, sy, sw, sh)) = self.pending_scissor {
+                render_pass.set_scissor_rect(sx, sy, sw, sh);
+            }
             render_pass.draw(0..6, 0..instances.len() as u32);
         }
 
@@ -9982,6 +11083,34 @@ impl GpuRenderer {
             needs_aux_upload = true;
         }
 
+        // Polygon-clip vertices in `aux_data` are NOT offset here.
+        // `transform_clip_shape` (in paint.rs) stores polygon
+        // vertices in ELEMENT-LOCAL coords (DPI-scaled, but no
+        // rotation / translation applied), specifically so the
+        // fragment shader's `sp - prim.bounds.xy` test ends up in
+        // local space — the same space the vertices are in. When we
+        // shift `prim.bounds.xy` to (0, 0) for the tight render, the
+        // shader's `sp - 0` is already local-space, and the vertices
+        // need no shift. Mesh-primitive aux_data above DOES need
+        // shifting because mesh vertices are stored in screen-space.
+        //
+        // HOWEVER we still need to FLAG that aux_data must be
+        // re-uploaded — without this, the tight render's polygon test
+        // reads from a stale aux_data buffer that the previous main
+        // pass populated with BG-batch data (which doesn't contain
+        // the scratch batch's polygon vertices). The shader would
+        // index aux_data at the scratch's `aux_offset` and find
+        // garbage from BG, rejecting all fragments → empty texture.
+        // The cn::spinner's arc hit this: the bordered-circle stroke
+        // has a polygon clip in its `clip_radius`, but the bake
+        // produced an invisible texture until the upload fired.
+        for op in &offset_primitives {
+            if op.type_info[2] == crate::primitives::ClipType::Polygon as u32 {
+                needs_aux_upload = true;
+                break;
+            }
+        }
+
         // Build the offset PathVertex slice + rebased index buffer.
         // Indices in the source batch reference vertices in
         // `batch.paths.vertices` directly; after slicing, the local
@@ -10022,19 +11151,21 @@ impl GpuRenderer {
         // primitive needed translation. Same `self.buffers.aux_data`
         // the main pass uses — we restore it after `queue.submit`
         // so subsequent passes see the original screen-space data.
-        // The buffer is already sized for `batch.aux_data`'s length
-        // (the main pass uploaded the same vec earlier), so the
-        // write fits without resizing or rebinding.
+        //
+        // Use the resize-aware slice path rather than a raw
+        // `write_buffer`: the comment used to claim "the buffer is
+        // already sized for batch.aux_data's length" but that's only
+        // true when the immediately-preceding main pass wrote at
+        // least as many entries as we're about to write. The bake-
+        // texture path (P4.3 composite-layer scratch batches) often
+        // carries polygon-clip vertices or mesh aux that the main
+        // pass's bg-batch didn't, so the shared aux buffer is sized
+        // for the smaller bg vec (e.g., 16 bytes / 1 vec4) while we
+        // need to write 32+ bytes — wgpu errors with "Copy of 0..N
+        // would end up overrunning the bounds of the Destination
+        // buffer of size M" (cn::spinner bake hit this).
         if needs_aux_upload {
-            if self.has_storage_buffers {
-                self.queue.write_buffer(
-                    &self.buffers.aux_data,
-                    0,
-                    bytemuck::cast_slice(&tight_aux_data),
-                );
-            } else {
-                self.update_aux_data_texture(&tight_aux_data);
-            }
+            self.update_aux_data_slice(&tight_aux_data);
         }
 
         // Upload offset path geometry to a transient buffer pair so
@@ -10141,21 +11272,57 @@ impl GpuRenderer {
 
         // Restore the screen-space `aux_data` so subsequent passes
         // (next layer's tight render, post-effect overlays, etc.)
-        // see the original mesh vertex positions instead of the
-        // tight-translated copy we wrote above.
+        // see the original mesh / polygon vertex positions instead of
+        // the tight-translated copy we wrote above. Resize-aware path
+        // for the same reason as the upload above.
         if needs_aux_upload {
-            if self.has_storage_buffers {
-                self.queue.write_buffer(
-                    &self.buffers.aux_data,
-                    0,
-                    bytemuck::cast_slice(&batch.aux_data),
-                );
-            } else {
-                self.update_aux_data_texture(&batch.aux_data);
-            }
+            self.update_aux_data_slice(&batch.aux_data);
         }
 
         (layer_texture, content_size)
+    }
+
+    /// Rasterize an entire `PrimitiveBatch` (from a walker scratch
+    /// pass) into a fresh tight `LayerTexture`. Used by the
+    /// composited-layer path for CSS-animated subtrees: the walker
+    /// peels the subtree's primitives into a per-node scratch batch
+    /// (`GpuPaintContext::push_composite_layer` /
+    /// `take_composite_layer_batches`), then this helper turns each
+    /// scratch batch into a cached texture that
+    /// `blit_tight_texture_to_target` composites per frame with the
+    /// active animation transform applied.
+    ///
+    /// `layer_pos` is the physical-pixel screen position the
+    /// primitives were emitted at (typically the screen-space AABB's
+    /// top-left from `bg_primitive_aabb`). Primitives get translated
+    /// by `-layer_pos` so they land at (0, 0) inside the texture.
+    /// `layer_size` is the texture's logical content size; the
+    /// actual texture may be larger due to `LayerTextureCache`'s
+    /// bucket rounding. Both values are returned as
+    /// `content_size`.
+    ///
+    /// Effect-expansion is zero — composite-promoted subtrees can't
+    /// carry layer effects (the promotion predicate disqualifies
+    /// `filter_blur`, `backdrop_*`, etc., and the underlying
+    /// `LayerCommand` Push/Pop pairs aren't in the scratch batch).
+    pub fn render_subtree_to_layer_texture(
+        &mut self,
+        batch: &PrimitiveBatch,
+        layer_pos: (f32, f32),
+        layer_size: (f32, f32),
+    ) -> (LayerTexture, (u32, u32)) {
+        self.render_layer_range_tight(
+            batch,
+            0,
+            batch.primitives.len(),
+            0,
+            0,
+            0,
+            0,
+            layer_pos,
+            layer_size,
+            (0.0, 0.0, 0.0, 0.0),
+        )
     }
 
     /// Blit a tight texture to the target at the correct position
@@ -10171,6 +11338,7 @@ impl GpuRenderer {
         blend_mode: blinc_core::BlendMode,
         clip: Option<([f32; 4], [f32; 4])>, // (clip_bounds, clip_radius)
         transform_3d: Option<blinc_core::Transform3DParams>,
+        rotate_z_rad: f32,
     ) {
         use crate::primitives::LayerCompositeUniforms;
 
@@ -10292,6 +11460,14 @@ impl GpuRenderer {
         } else {
             (0.0, 0.0, 1.0, 0.0, 1.0)
         };
+        // 2D in-plane rotation. The flat (non-perspective) path in
+        // LAYER_COMPOSITE_SHADER rotates `local_pos - (0.5, 0.5)`
+        // around the center, then maps into dest_rect — so motion-
+        // bound subtrees that need to spin (cn::spinner's
+        // rotate_timeline) can rotate their cached texture per-frame
+        // without re-baking.
+        let sin_rz = rotate_z_rad.sin();
+        let cos_rz = rotate_z_rad.cos();
 
         let uniforms = LayerCompositeUniforms {
             source_rect,
@@ -10307,7 +11483,8 @@ impl GpuRenderer {
             cos_rx,
             sin_ry,
             cos_ry,
-            _pad: [0.0; 2],
+            sin_rz,
+            cos_rz,
         };
 
         let uniform_buffer = self
@@ -10406,10 +11583,45 @@ impl GpuRenderer {
             let scissor_w = vis_w.max(1.0) as u32;
             let scissor_h = vis_h.max(1.0) as u32;
 
-            render_pass.set_scissor_rect(scissor_x, scissor_y, scissor_w, scissor_h);
-            render_pass.set_pipeline(&self.pipelines.layer_composite);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
+            // Phase 4d Opt 2: when a damage scissor is set,
+            // intersect it with the layer's visible bounds. The
+            // composite paints only in the overlap of (layer
+            // content area) ∩ (damage rect). Pixels outside the
+            // damage rect stay from the previous frame's render —
+            // which is what makes a scissored cache repaint
+            // correct for CSS-animated layer effects.
+            //
+            // Empty intersection ⇒ skip the draw entirely (layer
+            // doesn't touch the damage region this frame). Still
+            // submit the otherwise-empty render pass so the encoder
+            // doesn't leak — `LoadOp::Load` + no draw is a no-op
+            // on the GPU.
+            let scissor_and_draw = if let Some((dx, dy, dw, dh)) = self.pending_damage_scissor {
+                let lx0 = scissor_x;
+                let ly0 = scissor_y;
+                let lx1 = lx0 + scissor_w;
+                let ly1 = ly0 + scissor_h;
+                let dx1 = dx + dw;
+                let dy1 = dy + dh;
+                let ix0 = lx0.max(dx);
+                let iy0 = ly0.max(dy);
+                let ix1 = lx1.min(dx1);
+                let iy1 = ly1.min(dy1);
+                if ix1 <= ix0 || iy1 <= iy0 {
+                    None
+                } else {
+                    Some((ix0, iy0, ix1 - ix0, iy1 - iy0))
+                }
+            } else {
+                Some((scissor_x, scissor_y, scissor_w, scissor_h))
+            };
+
+            if let Some((sx, sy, sw, sh)) = scissor_and_draw {
+                render_pass.set_scissor_rect(sx, sy, sw, sh);
+                render_pass.set_pipeline(&self.pipelines.layer_composite);
+                render_pass.set_bind_group(0, &bind_group, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -10515,7 +11727,8 @@ impl GpuRenderer {
             cos_rx: 1.0,
             sin_ry: 0.0,
             cos_ry: 1.0,
-            _pad: [0.0; 2],
+            sin_rz: 0.0,
+            cos_rz: 1.0,
         };
 
         let uniform_buffer = self
@@ -10640,7 +11853,8 @@ impl GpuRenderer {
             cos_rx: 1.0,
             sin_ry: 0.0,
             cos_ry: 1.0,
-            _pad: [0.0; 2],
+            sin_rz: 0.0,
+            cos_rz: 1.0,
         };
 
         if let Some((bounds, radii)) = clip {

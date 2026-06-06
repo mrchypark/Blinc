@@ -120,10 +120,35 @@ impl RenderTree {
         let radius = render_node.props.border_radius;
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
 
-        // Corner shape setup — must be before draw_shadow so shadows match fill shape
-        let has_corner_shape_l = !render_node.props.corner_shape.is_round();
+        // Corner shape setup — must run before draw_shadow so shadows
+        // match the fill shape. We resolve through the theme's
+        // ShapeTokens so Universal HID variants auto-substitute their
+        // squircle `n` on rounded corners that pass the threshold
+        // check; explicit per-element overrides (`.squircle()`, CSS
+        // `corner-shape`) keep precedence. Themes that don't opt in
+        // return the trait's default off-state and the element stays
+        // circular.
+        // Tolerate an uninitialised ThemeState (snapshot / GPU
+        // integration tests render through this path without calling
+        // `ThemeState::init_*` first). Default ShapeTokens is the
+        // "off" state — no squircle substitution — and 9999.0 is the
+        // sentinel `radius_full` value used by themes whose ladder
+        // tops out at "fully circular".
+        let (theme_shape, radius_full) = match blinc_theme::ThemeState::try_get() {
+            Some(theme) => (theme.shape(), theme.radii().radius_full),
+            None => (blinc_theme::ShapeTokens::default(), 9999.0),
+        };
+        let resolved_corner_shape = super::helpers::resolve_corner_shape(
+            render_node.props.corner_shape,
+            radius,
+            (bounds.width, bounds.height),
+            &theme_shape,
+            radius_full,
+            render_node.props.corner_shape_locked,
+        );
+        let has_corner_shape_l = !resolved_corner_shape.is_round();
         if has_corner_shape_l {
-            ctx.set_corner_shape(render_node.props.corner_shape.to_array());
+            ctx.set_corner_shape(resolved_corner_shape.to_array());
         }
 
         // Check if this node has a glass material - if so, render as glass with shadow
@@ -136,15 +161,20 @@ impl RenderTree {
                 brightness: glass.brightness,
                 noise: glass.noise,
                 border_thickness: glass.border_thickness,
-                shadow: render_node.props.shadow,
+                // GlassStyle currently carries a single shadow; pass the
+                // topmost layer of the stack.
+                shadow: render_node.props.shadow.first().copied(),
                 simple: glass.simple,
                 depth: 0,
                 border_color: render_node.props.border_color,
             });
             ctx.fill_rect(rect, radius, glass_brush);
         } else {
-            // For non-glass elements, draw shadow first (renders behind the element)
-            if let Some(ref shadow) = render_node.props.shadow {
+            // For non-glass elements, draw shadow stack first (renders
+            // behind the element). Iterate back-to-front so the outermost
+            // ambient layer paints first and the tight key-light layer
+            // lands on top.
+            for shadow in render_node.props.shadow.iter().rev() {
                 ctx.draw_shadow(rect, radius, *shadow);
             }
 
@@ -354,7 +384,13 @@ impl RenderTree {
                 ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
             }
             let clip_shape = if inset_radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, inset_radius)
+                // Pass the parent's resolved corner_shape so
+                // overflow:clip on a squircle / scoop / bevel parent
+                // follows the same curve as the parent's fill —
+                // otherwise the diagonal-corner pixels between the
+                // parent's outline and a circular clip leak the
+                // parent's bg through where children would paint.
+                ClipShape::rounded_rect_shaped(clip_rect, inset_radius, resolved_corner_shape)
             } else {
                 ClipShape::rect(clip_rect)
             };

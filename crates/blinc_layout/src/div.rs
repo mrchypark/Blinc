@@ -14,17 +14,26 @@
 //! ```
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 use blinc_core::{
     BlurQuality, BlurStyle, Brush, ClipPath, Color, CornerRadius, CornerShape, LayerEffect,
     OverflowFade, Shadow, Transform,
 };
-use blinc_theme::ThemeState;
-use taffy::prelude::*;
+use blinc_theme::{ShadowTokens, ThemeState};
+
+/// Look up a theme shadow stack and convert it to `Vec<blinc_core::Shadow>`.
+fn theme_shadow_stack<F>(pick: F) -> Vec<Shadow>
+where
+    F: Fn(&ShadowTokens) -> &[blinc_theme::Shadow],
+{
+    let shadows = ThemeState::get().shadows();
+    pick(&shadows).iter().map(Shadow::from).collect()
+}
 use taffy::Overflow;
+use taffy::prelude::*;
 
 use crate::element::{
     ElementBounds, GlassMaterial, Material, MetallicMaterial, RenderLayer, RenderProps,
@@ -375,13 +384,25 @@ pub struct Div {
     /// Tracks whether border_radius was explicitly set (distinguishes "set to 0" from "not set" in merges)
     pub(crate) border_radius_explicit: bool,
     pub(crate) corner_shape: CornerShape,
+    /// Set by [`Self::lock_corner_shape`]; instructs the paint walker
+    /// not to substitute the theme's squircle exponent. Floating
+    /// overlay widgets (popovers, dropdowns, select / combobox
+    /// menus) use this to keep their chrome circular regardless of
+    /// the active theme.
+    pub(crate) corner_shape_locked: bool,
     pub(crate) border_color: Option<Color>,
     pub(crate) border_width: f32,
     pub(crate) border_sides: crate::element::BorderSides,
     pub(crate) render_layer: RenderLayer,
     pub(crate) material: Option<Material>,
-    pub(crate) shadow: Option<Shadow>,
+    pub(crate) shadow: Vec<Shadow>,
     pub(crate) transform: Option<Transform>,
+    /// Per-element transform origin in percentages `[x, y]` (0 = top-left,
+    /// 100 = bottom-right, 50 = centre on each axis). Default `None`
+    /// keeps the renderer's centre-pivot semantics. Set via
+    /// [`Self::transform_origin`] or implicitly by helpers like
+    /// [`Self::transform_width`] that need a left-edge pivot.
+    pub(crate) transform_origin: Option<[f32; 2]>,
     pub(crate) opacity: f32,
     pub(crate) cursor: Option<crate::element::CursorStyle>,
     pub(crate) pointer_events_none: bool,
@@ -389,6 +410,11 @@ pub struct Div {
     pub(crate) layer_effects: Vec<LayerEffect>,
     /// Marks this as a stack layer for z-ordering (increments z_layer for interleaved rendering)
     pub(crate) is_stack_layer: bool,
+    /// Whether this node is the root of an overlay panel that should route
+    /// its SDF + text + SVG dispatches into the dynamic batch. Set by
+    /// OverlayStack / ToastTray; the generic `Stack` widget does NOT set
+    /// this (it only uses `is_stack_layer` for z-counter bumping).
+    pub(crate) is_overlay_root: bool,
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
@@ -442,6 +468,12 @@ pub struct Div {
     /// When set, motion containers and layout animations will use this key
     /// as a prefix for auto-generated stable keys.
     pub(crate) stateful_context_key: Option<String>,
+    /// Pending signal-bound property bindings. Accumulated as `.bg(&signal)`,
+    /// `.opacity(&signal)`, etc. are called; drained in `build()` once
+    /// the `LayoutNodeId` is minted. Each entry registers itself against
+    /// the new node id in the global property-binding registry.
+    /// ([[project-reactive-architecture-v2]] Phase 2.)
+    pub(crate) pending_bindings: Vec<Box<dyn crate::binding::PendingBinding>>,
 }
 
 impl Default for Div {
@@ -460,18 +492,21 @@ impl Div {
             border_radius: CornerRadius::default(),
             border_radius_explicit: false,
             corner_shape: CornerShape::default(),
+            corner_shape_locked: false,
             border_color: None,
             border_width: 0.0,
             border_sides: crate::element::BorderSides::default(),
             render_layer: RenderLayer::default(),
             material: None,
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
+            transform_origin: None,
             opacity: 1.0,
             cursor: None,
             pointer_events_none: false,
             layer_effects: Vec::new(),
             is_stack_layer: false,
+            is_overlay_root: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
             classes: Vec::new(),
@@ -502,6 +537,7 @@ impl Div {
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
+            pending_bindings: Vec::new(),
         }
     }
 
@@ -517,18 +553,21 @@ impl Div {
             border_radius: CornerRadius::default(),
             border_radius_explicit: false,
             corner_shape: CornerShape::default(),
+            corner_shape_locked: false,
             border_color: None,
             border_width: 0.0,
             border_sides: crate::element::BorderSides::default(),
             render_layer: RenderLayer::default(),
             material: None,
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
+            transform_origin: None,
             opacity: 1.0,
             cursor: None,
             pointer_events_none: false,
             layer_effects: Vec::new(),
             is_stack_layer: false,
+            is_overlay_root: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
             classes: Vec::new(),
@@ -559,6 +598,7 @@ impl Div {
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
+            pending_bindings: Vec::new(),
         }
     }
 
@@ -785,11 +825,7 @@ impl Div {
     where
         F: FnOnce(Self) -> Self,
     {
-        if condition {
-            f(self)
-        } else {
-            self
-        }
+        if condition { f(self) } else { self }
     }
 
     /// Set the background color/brush without consuming self
@@ -814,10 +850,16 @@ impl Div {
         self.transform = Some(transform);
     }
 
-    /// Set the shadow without consuming self
+    /// Set the shadow without consuming self (replaces any existing stack).
     #[inline]
     pub fn set_shadow(&mut self, shadow: Shadow) {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+    }
+
+    /// Set a compound shadow stack without consuming self.
+    #[inline]
+    pub fn set_shadow_stack(&mut self, shadows: Vec<Shadow>) {
+        self.shadow = shadows;
     }
 
     /// Set the opacity without consuming self
@@ -953,8 +995,8 @@ impl Div {
         if let Some(fade) = style.overflow_fade {
             self.overflow_fade = fade;
         }
-        if let Some(ref shadow) = style.shadow {
-            self.shadow = Some(*shadow);
+        if !style.shadow.is_empty() {
+            self.shadow = style.shadow.clone();
         }
         if let Some(ref transform) = style.transform {
             self.transform = Some(transform.clone());
@@ -1240,8 +1282,8 @@ impl Div {
         if other.material.is_some() {
             self.material = other.material;
         }
-        if other.shadow.is_some() {
-            self.shadow = other.shadow;
+        if !other.shadow.is_empty() {
+            self.shadow = other.shadow.clone();
         }
         if other.transform.is_some() {
             self.transform = other.transform;
@@ -1252,9 +1294,27 @@ impl Div {
         if other.cursor.is_some() {
             self.cursor = other.cursor;
         }
-        if other.pointer_events_none != default.pointer_events_none {
-            self.pointer_events_none = other.pointer_events_none;
+
+        // Merge outline (used by focus rings on inputs / textareas, and
+        // anywhere `outline_*` builders are chained on a Div that then
+        // gets `merge()`d into a parent — e.g. TextInput's on_state
+        // callback builds an `inner` div with the focus outline and
+        // merges it onto the Stateful container). Without these, the
+        // outline silently vanishes mid-merge.
+        if other.outline_width != default.outline_width {
+            self.outline_width = other.outline_width;
         }
+        if other.outline_color.is_some() {
+            self.outline_color = other.outline_color;
+        }
+        if other.outline_offset != default.outline_offset {
+            self.outline_offset = other.outline_offset;
+        }
+
+        // Merge element identity (ID and CSS classes)
+        // These are critical for event routing (click-outside detection) and
+        // CSS selector matching. Without this, Stateful containers lose the
+        // element_id and classes set on the Div returned from on_state.
         if other.element_id.is_some() {
             self.element_id = other.element_id;
         }
@@ -1336,6 +1396,12 @@ impl Div {
         if !other.event_handlers.is_empty() {
             self.event_handlers.merge(other.event_handlers);
         }
+
+        // Append signal-bound property bindings. Both sides keep their
+        // subscriptions; merge concatenates rather than replaces so a
+        // cn widget that mixes its own bindings with the user's
+        // `.bg(&signal)` doesn't drop either set.
+        self.pending_bindings.extend(other.pending_bindings);
     }
 
     /// Merge taffy Style fields from other if they differ from default
@@ -1720,9 +1786,47 @@ impl Div {
     // Sizing (pixel values)
     // =========================================================================
 
-    /// Set width in pixels
-    pub fn w(mut self, px: f32) -> Self {
-        self.style.size.width = Dimension::Length(px);
+    /// Set width in pixels.
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>`
+    /// for signal-bound reactivity. Signal updates patch the taffy
+    /// `Style.size.width` directly via the property channel and trigger
+    /// `compute_layout` next frame — no `Stateful` wrap, no subtree
+    /// rebuild for visual-only ancestors.
+    /// ([[project-reactive-architecture-v2]] Phase 2.4.)
+    pub fn w(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{LayoutPendingBinding, Reactive};
+        match value.into_reactive() {
+            Reactive::Const(px) => {
+                self.style.size.width = Dimension::Length(px);
+            }
+            Reactive::Bound(state) => {
+                if let Some(px) = state.try_get() {
+                    self.style.size.width = Dimension::Length(px);
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Width,
+                        |style, px: f32| {
+                            style.size.width = Dimension::Length(px);
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(px) = computed.try_get() {
+                    self.style.size.width = Dimension::Length(px);
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Width,
+                        |style, px: f32| {
+                            style.size.width = Dimension::Length(px);
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -1757,9 +1861,43 @@ impl Div {
         self
     }
 
-    /// Set height in pixels
-    pub fn h(mut self, px: f32) -> Self {
-        self.style.size.height = Dimension::Length(px);
+    /// Set height in pixels.
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>`
+    /// for signal-bound reactivity. Same shape as [`Self::w`].
+    pub fn h(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{LayoutPendingBinding, Reactive};
+        match value.into_reactive() {
+            Reactive::Const(px) => {
+                self.style.size.height = Dimension::Length(px);
+            }
+            Reactive::Bound(state) => {
+                if let Some(px) = state.try_get() {
+                    self.style.size.height = Dimension::Length(px);
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Height,
+                        |style, px: f32| {
+                            style.size.height = Dimension::Length(px);
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(px) = computed.try_get() {
+                    self.style.size.height = Dimension::Length(px);
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Height,
+                        |style, px: f32| {
+                            style.size.height = Dimension::Length(px);
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -1850,14 +1988,64 @@ impl Div {
     // Spacing (4px base unit like Tailwind)
     // =========================================================================
 
-    /// Set gap between children (in 4px units)
-    /// gap(4) = 16px
-    pub fn gap(mut self, units: f32) -> Self {
-        let px = units * 4.0;
-        self.style.gap = taffy::Size {
-            width: LengthPercentage::Length(px),
-            height: LengthPercentage::Length(px),
-        };
+    /// Set gap between children (in 4px units).
+    /// `gap(4)` = 16 px.
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>`.
+    /// Signal updates patch the taffy `Style.gap` and trigger relayout.
+    pub fn gap(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{LayoutPendingBinding, Reactive};
+        match value.into_reactive() {
+            Reactive::Const(units) => {
+                let px = units * 4.0;
+                self.style.gap = taffy::Size {
+                    width: LengthPercentage::Length(px),
+                    height: LengthPercentage::Length(px),
+                };
+            }
+            Reactive::Bound(state) => {
+                if let Some(units) = state.try_get() {
+                    let px = units * 4.0;
+                    self.style.gap = taffy::Size {
+                        width: LengthPercentage::Length(px),
+                        height: LengthPercentage::Length(px),
+                    };
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Gap,
+                        |style, units: f32| {
+                            let px = units * 4.0;
+                            style.gap = taffy::Size {
+                                width: LengthPercentage::Length(px),
+                                height: LengthPercentage::Length(px),
+                            };
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(units) = computed.try_get() {
+                    let px = units * 4.0;
+                    self.style.gap = taffy::Size {
+                        width: LengthPercentage::Length(px),
+                        height: LengthPercentage::Length(px),
+                    };
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Gap,
+                        |style, units: f32| {
+                            let px = units * 4.0;
+                            style.gap = taffy::Size {
+                                width: LengthPercentage::Length(px),
+                                height: LengthPercentage::Length(px),
+                            };
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -1935,16 +2123,75 @@ impl Div {
     // Padding
     // -------------------------------------------------------------------------
 
-    /// Set padding on all sides (in 4px units)
-    /// p(4) = 16px padding
-    pub fn p(mut self, units: f32) -> Self {
-        let px = LengthPercentage::Length(units * 4.0);
-        self.style.padding = Rect {
-            left: px,
-            right: px,
-            top: px,
-            bottom: px,
-        };
+    /// Set padding on all sides (in 4px units).
+    /// `p(4)` = 16 px padding.
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>`.
+    /// Signal updates patch the taffy `Style.padding` and trigger
+    /// relayout.
+    pub fn p(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{LayoutPendingBinding, Reactive};
+        match value.into_reactive() {
+            Reactive::Const(units) => {
+                let px = LengthPercentage::Length(units * 4.0);
+                self.style.padding = Rect {
+                    left: px,
+                    right: px,
+                    top: px,
+                    bottom: px,
+                };
+            }
+            Reactive::Bound(state) => {
+                if let Some(units) = state.try_get() {
+                    let px = LengthPercentage::Length(units * 4.0);
+                    self.style.padding = Rect {
+                        left: px,
+                        right: px,
+                        top: px,
+                        bottom: px,
+                    };
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Padding,
+                        |style, units: f32| {
+                            let px = LengthPercentage::Length(units * 4.0);
+                            style.padding = Rect {
+                                left: px,
+                                right: px,
+                                top: px,
+                                bottom: px,
+                            };
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(units) = computed.try_get() {
+                    let px = LengthPercentage::Length(units * 4.0);
+                    self.style.padding = Rect {
+                        left: px,
+                        right: px,
+                        top: px,
+                        bottom: px,
+                    };
+                }
+                self.pending_bindings
+                    .push(Box::new(LayoutPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Padding,
+                        |style, units: f32| {
+                            let px = LengthPercentage::Length(units * 4.0);
+                            style.padding = Rect {
+                                left: px,
+                                right: px,
+                                top: px,
+                                bottom: px,
+                            };
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -2311,6 +2558,14 @@ impl Div {
         self
     }
 
+    /// Set the CSS `clip-path`. Restricts the element's painted
+    /// pixels to the supplied shape (polygon, circle, ellipse,
+    /// inset, rect, xywh, or SVG path).
+    pub fn clip_path(mut self, path: ClipPath) -> Self {
+        self.clip_path = Some(path);
+        self
+    }
+
     /// Set overflow to visible (default, content can extend beyond bounds)
     pub fn overflow_visible(mut self) -> Self {
         self.style.overflow.x = Overflow::Visible;
@@ -2320,7 +2575,9 @@ impl Div {
 
     /// Set overflow to scroll (enable scrolling with full physics)
     ///
-    /// Creates a scroll container with momentum scrolling, bounce, and scrollbar.
+    /// Creates a scroll container with momentum scrolling and a scrollbar.
+    /// Bounce is disabled by default; use an explicit scroll config/widget
+    /// when rubber-band edges are desired.
     /// This is equivalent to using the `scroll()` widget but configured via the builder API.
     pub fn overflow_scroll(mut self) -> Self {
         self.style.overflow.x = Overflow::Scroll;
@@ -2387,18 +2644,6 @@ impl Div {
             // Merge scroll handlers into existing event handlers
             self.event_handlers.merge(handlers);
             self.scroll_physics = Some(physics);
-
-            // Match `scroll()` widget defaults: lay out children at natural size
-            // by avoiding stretch/center alignment defaults when enabling scroll.
-            if self.style.align_items.is_none() {
-                self.style.align_items = Some(AlignItems::Start);
-            }
-            if self.style.justify_content.is_none() {
-                self.style.justify_content = Some(JustifyContent::Start);
-            }
-            if self.style.align_content.is_none() {
-                self.style.align_content = Some(taffy::AlignContent::Start);
-            }
         }
     }
 
@@ -2406,9 +2651,57 @@ impl Div {
     // Visual Properties
     // =========================================================================
 
-    /// Set background color
-    pub fn bg(mut self, color: Color) -> Self {
-        self.background = Some(Brush::Solid(color));
+    /// Set background colour.
+    ///
+    /// Accepts either an eager `Color` or a `&State<Color>` /
+    /// `State<Color>` for signal-bound reactivity. When passed a
+    /// signal, changes to the state fire a property-channel patch via
+    /// the global binding registry — no `Stateful` wrap, no closure
+    /// re-run, no subtree rebuild.
+    /// ([[project-reactive-architecture-v2]] Phase 2.)
+    ///
+    /// ```ignore
+    /// // Eager (compiles unchanged from pre-Phase-2 code)
+    /// div().bg(Color::RED)
+    ///
+    /// // Signal-bound — `.set()` triggers a direct field patch
+    /// let bg = State::new(...);
+    /// div().bg(&bg)
+    /// ```
+    pub fn bg(mut self, value: impl crate::binding::IntoReactive<Color>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(color) => {
+                self.background = Some(Brush::Solid(color));
+            }
+            Reactive::Bound(state) => {
+                // Seed the initial value so the first paint matches.
+                if let Some(c) = state.try_get() {
+                    self.background = Some(Brush::Solid(c));
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Background,
+                        |props, color: Color| {
+                            props.background = Some(Brush::Solid(color));
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(c) = computed.try_get() {
+                    self.background = Some(Brush::Solid(c));
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Background,
+                        |props, color: Color| {
+                            props.background = Some(Brush::Solid(color));
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -2535,10 +2828,50 @@ impl Div {
     // Corner Radius
     // -------------------------------------------------------------------------
 
-    /// Set corner radius (all corners)
-    pub fn rounded(mut self, radius: f32) -> Self {
-        self.border_radius = CornerRadius::uniform(radius);
-        self.border_radius_explicit = true;
+    /// Set corner radius (all corners).
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>` for
+    /// signal-bound reactivity. Signal updates patch the corner radius
+    /// directly via the property channel — no `Stateful` wrap.
+    /// ([[project-reactive-architecture-v2]] Phase 2.)
+    pub fn rounded(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(radius) => {
+                self.border_radius = CornerRadius::uniform(radius);
+                self.border_radius_explicit = true;
+            }
+            Reactive::Bound(state) => {
+                if let Some(r) = state.try_get() {
+                    self.border_radius = CornerRadius::uniform(r);
+                    self.border_radius_explicit = true;
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::CornerRadius,
+                        |props, r: f32| {
+                            props.border_radius = CornerRadius::uniform(r);
+                            props.border_radius_explicit = true;
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(r) = computed.try_get() {
+                    self.border_radius = CornerRadius::uniform(r);
+                    self.border_radius_explicit = true;
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::CornerRadius,
+                        |props, r: f32| {
+                            props.border_radius = CornerRadius::uniform(r);
+                            props.border_radius_explicit = true;
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -2634,6 +2967,27 @@ impl Div {
         self.corner_shape(-1.0)
     }
 
+    /// Opt out of theme-driven squircle substitution.
+    ///
+    /// When the active theme advertises a non-default
+    /// [`ShapeTokens`](blinc_theme::ShapeTokens) (e.g. any of the
+    /// Universal HID variants), the paint walker substitutes the
+    /// theme's effective `n` onto rounded corners that pass the
+    /// threshold check. Calling `lock_corner_shape()` tells the
+    /// walker to leave this element's corners alone — useful for
+    /// floating overlay widgets (popovers, dropdown panels, select
+    /// menus) whose chrome should remain circular regardless of the
+    /// theme.
+    ///
+    /// Has no effect on themes that already use circular corners
+    /// (every existing platform bundle + Catppuccin BlincTheme) —
+    /// they short-circuit the substitution before this flag is
+    /// consulted.
+    pub fn lock_corner_shape(mut self) -> Self {
+        self.corner_shape_locked = true;
+        self
+    }
+
     // =========================================================================
     // Overflow Fade
     // =========================================================================
@@ -2673,9 +3027,44 @@ impl Div {
         self
     }
 
-    /// Set border color only
-    pub fn border_color(mut self, color: Color) -> Self {
-        self.border_color = Some(color);
+    /// Set border colour only.
+    ///
+    /// Accepts either an eager `Color` or a `&State<Color>` /
+    /// `State<Color>` for signal-bound reactivity. Same pattern as
+    /// [`Self::bg`].
+    pub fn border_color(mut self, value: impl crate::binding::IntoReactive<Color>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(color) => {
+                self.border_color = Some(color);
+            }
+            Reactive::Bound(state) => {
+                if let Some(c) = state.try_get() {
+                    self.border_color = Some(c);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::BorderColor,
+                        |props, c: Color| {
+                            props.border_color = Some(c);
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(c) = computed.try_get() {
+                    self.border_color = Some(c);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::BorderColor,
+                        |props, c: Color| {
+                            props.border_color = Some(c);
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -2886,9 +3275,49 @@ impl Div {
     // Shadow
     // =========================================================================
 
-    /// Apply a drop shadow to this element
-    pub fn shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+    /// Apply a single drop shadow to this element (replaces any existing stack).
+    ///
+    /// Accepts either an eager `Shadow` or a `&State<Shadow>` /
+    /// `State<Shadow>` for signal-bound reactivity.
+    pub fn shadow(mut self, value: impl crate::binding::IntoReactive<Shadow>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(shadow) => {
+                self.shadow = vec![shadow];
+            }
+            Reactive::Bound(state) => {
+                if let Some(s) = state.try_get() {
+                    self.shadow = vec![s];
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Shadow,
+                        |props, s: Shadow| {
+                            props.shadow = vec![s];
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(s) = computed.try_get() {
+                    self.shadow = vec![s];
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Shadow,
+                        |props, s: Shadow| {
+                            props.shadow = vec![s];
+                        },
+                    )));
+            }
+        }
+        self
+    }
+
+    /// Apply a compound drop shadow stack (multiple layered shadows).
+    pub fn shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
@@ -2899,66 +3328,324 @@ impl Div {
 
     /// Apply a small drop shadow using theme colors
     pub fn shadow_sm(self) -> Self {
-        self.shadow(ThemeState::get().shadows().shadow_sm.into())
+        self.shadow_stack(theme_shadow_stack(|s| &s.shadow_sm))
     }
 
     /// Apply a medium drop shadow using theme colors
     pub fn shadow_md(self) -> Self {
-        self.shadow(ThemeState::get().shadows().shadow_md.into())
+        self.shadow_stack(theme_shadow_stack(|s| &s.shadow_md))
     }
 
     /// Apply a large drop shadow using theme colors
     pub fn shadow_lg(self) -> Self {
-        self.shadow(ThemeState::get().shadows().shadow_lg.into())
+        self.shadow_stack(theme_shadow_stack(|s| &s.shadow_lg))
     }
 
     /// Apply an extra large drop shadow using theme colors
     pub fn shadow_xl(self) -> Self {
-        self.shadow(ThemeState::get().shadows().shadow_xl.into())
+        self.shadow_stack(theme_shadow_stack(|s| &s.shadow_xl))
     }
 
     // =========================================================================
     // Transform
     // =========================================================================
 
-    /// Apply a transform to this element
-    pub fn transform(mut self, transform: Transform) -> Self {
-        self.transform = Some(transform);
+    /// Apply a transform to this element.
+    ///
+    /// Accepts either an eager `Transform` or a `&State<Transform>` /
+    /// `State<Transform>` for signal-bound reactivity. Animated
+    /// translate / rotate / scale should use this path — patches the
+    /// transform cell per frame via the property channel without
+    /// rebuilding the subtree.
+    pub fn transform(mut self, value: impl crate::binding::IntoReactive<Transform>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(transform) => {
+                self.transform = Some(transform);
+            }
+            Reactive::Bound(state) => {
+                if let Some(t) = state.try_get() {
+                    self.transform = Some(t);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Transform,
+                        |props, t: Transform| {
+                            props.transform = Some(t);
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(t) = computed.try_get() {
+                    self.transform = Some(t);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Transform,
+                        |props, t: Transform| {
+                            props.transform = Some(t);
+                        },
+                    )));
+            }
+        }
         self
     }
 
-    /// Translate this element by the given x and y offset
+    /// Set the per-element transform origin in percentages — `(0.0, 0.0)`
+    /// is the top-left corner, `(100.0, 100.0)` is the bottom-right,
+    /// `(50.0, 50.0)` is the centre (the renderer's default when no
+    /// origin is set explicitly).
+    ///
+    /// Phase 8.1 of the unified property channel
+    /// ([[project-reactive-architecture-v2]]) added this builder so
+    /// [`Self::transform_width`] can pivot a scale transform
+    /// at the left edge (origin `(0.0, 50.0)`); useful independently
+    /// for any caller that needs non-centre transforms.
+    pub fn transform_origin(mut self, x_percent: f32, y_percent: f32) -> Self {
+        self.transform_origin = Some([x_percent, y_percent]);
+        self
+    }
+
+    /// Bind a transform that's derived from an arbitrary signal type
+    /// via a caller-supplied mapper. Phase 8.1 of the unified
+    /// property channel ([[project-reactive-architecture-v2]]).
+    ///
+    /// The general primitive that [`Self::transform_width`]
+    /// sugars over. Useful when the source signal's value type isn't
+    /// `Transform` but a derivation produces one: e.g. a `State<f32>`
+    /// in `0..=100` mapped to `Transform::scale((v/100).clamp(0,1), 1.0)`,
+    /// or a `State<Pose>` mapped to a translate + rotate compound.
+    ///
+    /// Seeds the initial value via `mapper(state.try_get().unwrap_or_default())`
+    /// and subscribes to the signal so future writes patch
+    /// `props.transform` through the unified property channel —
+    /// identical wiring to [`Self::transform`] but with the inline
+    /// derivation closure.
+    pub fn bind_transform_from<T>(
+        mut self,
+        source: impl crate::binding::IntoReactive<T>,
+        mapper: impl Fn(T) -> Transform + Send + Sync + 'static,
+    ) -> Self
+    where
+        T: Clone + Default + Send + Sync + 'static,
+    {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        let mapper = std::sync::Arc::new(mapper);
+        match source.into_reactive() {
+            Reactive::Const(v) => {
+                self.transform = Some(mapper(v));
+            }
+            Reactive::Bound(state) => {
+                let initial = state.try_get().unwrap_or_default();
+                self.transform = Some(mapper(initial));
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Transform,
+                        move |props, v: T| {
+                            props.transform = Some(mapper(v));
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                let initial = computed.try_get().unwrap_or_default();
+                self.transform = Some(mapper(initial));
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Transform,
+                        move |props, v: T| {
+                            props.transform = Some(mapper(v));
+                        },
+                    )));
+            }
+        }
+        self
+    }
+
+    /// Animate the visual width of this element by scaling along the
+    /// X axis from the left edge. Phase 8.1 of the unified property
+    /// channel ([[project-reactive-architecture-v2]]).
+    ///
+    /// The element's layout slot stays full-size — only the GPU
+    /// scale transform changes per frame as the bound signal moves.
+    /// Skipping `compute_layout()` is the win: width-bound animations
+    /// previously had to either rebuild the subtree (`Stateful`) or
+    /// route through the taffy style path (`.w(&signal)` — Phase 2.4
+    /// works but triggers a relayout per signal-set). The scale-x
+    /// path is GPU-only.
+    ///
+    /// `fraction` is a 0.0..=1.0 multiplier on the element's layout
+    /// width: `0.0` collapses the element to invisible, `1.0` is the
+    /// full width, `0.5` is half. Values outside `[0.0, 1.0]` are
+    /// accepted (over-shooting / negative scales are legitimate for
+    /// spring overshoot or mirroring).
+    ///
+    /// Sets the transform origin to `(0.0, 50.0)` so the scale grows
+    /// from the left edge instead of the centre. If you've also set
+    /// a custom [`Self::transform_origin`], call
+    /// `.transform_origin(...)` AFTER this method to keep your value.
+    ///
+    /// Hit-testing is unaffected: the element still claims its full
+    /// layout-width bounding box for pointer events. This matches
+    /// the slider/progress-fill use case where the fill is a
+    /// non-interactive visual indicator clipped by a parent track.
+    pub fn transform_width(mut self, fraction: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        // Pin the pivot to the left edge so the scale visibly grows /
+        // shrinks from the start of the element rather than its centre.
+        // Caller can override afterwards via `.transform_origin(...)`.
+        self.transform_origin = Some([0.0, 50.0]);
+        match fraction.into_reactive() {
+            Reactive::Const(f) => {
+                self.transform = Some(Transform::scale(f, 1.0));
+            }
+            Reactive::Bound(state) => {
+                if let Some(f) = state.try_get() {
+                    self.transform = Some(Transform::scale(f, 1.0));
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Transform,
+                        |props, f: f32| {
+                            props.transform = Some(Transform::scale(f, 1.0));
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(f) = computed.try_get() {
+                    self.transform = Some(Transform::scale(f, 1.0));
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Transform,
+                        |props, f: f32| {
+                            props.transform = Some(Transform::scale(f, 1.0));
+                        },
+                    )));
+            }
+        }
+        self
+    }
+
+    /// Translate this element by the given x and y offset.
+    ///
+    /// Eager-only — multi-axis composition with separate reactive
+    /// signals would need a read-modify-write binding shape that
+    /// hasn't landed yet. For animated translation, build a
+    /// `State<Transform>` and bind via [`Self::transform`].
     pub fn translate(self, x: f32, y: f32) -> Self {
         self.transform(Transform::translate(x, y))
     }
 
-    /// Scale this element uniformly
-    pub fn scale(self, factor: f32) -> Self {
-        self.transform(Transform::scale(factor, factor))
+    /// Scale this element uniformly.
+    ///
+    /// Accepts an eager `f32` or a `&State<f32>` / `State<f32>` for
+    /// signal-bound reactivity — signal updates patch
+    /// `props.transform` via the unified property channel per set.
+    pub fn scale(self, factor: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::Reactive;
+        match factor.into_reactive() {
+            Reactive::Const(f) => self.transform(Transform::scale(f, f)),
+            Reactive::Bound(state) => {
+                self.bind_transform_from(state, |f: f32| Transform::scale(f, f))
+            }
+            Reactive::Computed(computed) => {
+                self.bind_transform_from(computed, |f: f32| Transform::scale(f, f))
+            }
+        }
     }
 
-    /// Scale this element with different x and y factors
+    /// Scale this element with different x and y factors.
+    ///
+    /// Eager-only — see [`Self::translate`] for the multi-axis
+    /// composition rationale.
     pub fn scale_xy(self, sx: f32, sy: f32) -> Self {
         self.transform(Transform::scale(sx, sy))
     }
 
-    /// Rotate this element by the given angle in radians
-    pub fn rotate(self, angle: f32) -> Self {
-        self.transform(Transform::rotate(angle))
+    /// Rotate this element by the given angle in radians.
+    ///
+    /// Accepts an eager `f32` or a `&State<f32>` / `State<f32>` for
+    /// signal-bound reactivity.
+    pub fn rotate(self, angle: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::Reactive;
+        match angle.into_reactive() {
+            Reactive::Const(a) => self.transform(Transform::rotate(a)),
+            Reactive::Bound(state) => {
+                self.bind_transform_from(state, |a: f32| Transform::rotate(a))
+            }
+            Reactive::Computed(computed) => {
+                self.bind_transform_from(computed, |a: f32| Transform::rotate(a))
+            }
+        }
     }
 
-    /// Rotate this element by the given angle in degrees
-    pub fn rotate_deg(self, degrees: f32) -> Self {
-        self.rotate(degrees * std::f32::consts::PI / 180.0)
+    /// Rotate this element by the given angle in degrees.
+    ///
+    /// Accepts an eager `f32` or a `&State<f32>` / `State<f32>` for
+    /// signal-bound reactivity (the value is multiplied by π/180 on
+    /// every fire to produce the radians the underlying transform
+    /// uses).
+    pub fn rotate_deg(self, degrees: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::Reactive;
+        const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0;
+        match degrees.into_reactive() {
+            Reactive::Const(d) => self.transform(Transform::rotate(d * DEG_TO_RAD)),
+            Reactive::Bound(state) => {
+                self.bind_transform_from(state, |d: f32| Transform::rotate(d * DEG_TO_RAD))
+            }
+            Reactive::Computed(computed) => {
+                self.bind_transform_from(computed, |d: f32| Transform::rotate(d * DEG_TO_RAD))
+            }
+        }
     }
 
     // =========================================================================
     // Opacity
     // =========================================================================
 
-    /// Set opacity (0.0 = transparent, 1.0 = opaque)
-    pub fn opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity.clamp(0.0, 1.0);
+    /// Set opacity (0.0 = transparent, 1.0 = opaque).
+    ///
+    /// Accepts either an eager `f32` or a `&State<f32>` / `State<f32>`
+    /// for signal-bound reactivity. Same mechanism as [`Self::bg`].
+    pub fn opacity(mut self, value: impl crate::binding::IntoReactive<f32>) -> Self {
+        use crate::binding::{Reactive, TypedPendingBinding};
+        match value.into_reactive() {
+            Reactive::Const(o) => {
+                self.opacity = o.clamp(0.0, 1.0);
+            }
+            Reactive::Bound(state) => {
+                if let Some(o) = state.try_get() {
+                    self.opacity = o.clamp(0.0, 1.0);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::new(
+                        state,
+                        crate::property::PropertyId::Opacity,
+                        |props, o: f32| {
+                            props.opacity = o.clamp(0.0, 1.0);
+                        },
+                    )));
+            }
+            Reactive::Computed(computed) => {
+                if let Some(o) = computed.try_get() {
+                    self.opacity = o.clamp(0.0, 1.0);
+                }
+                self.pending_bindings
+                    .push(Box::new(TypedPendingBinding::from_computed(
+                        computed,
+                        crate::property::PropertyId::Opacity,
+                        |props, o: f32| {
+                            props.opacity = o.clamp(0.0, 1.0);
+                        },
+                    )));
+            }
+        }
         self
     }
 
@@ -3184,6 +3871,17 @@ impl Div {
     /// render above other content.
     pub fn stack_layer(mut self) -> Self {
         self.is_stack_layer = true;
+        self
+    }
+
+    /// Mark this node as the root of an overlay panel — used by
+    /// `OverlayStack` / `ToastTray` so their content routes through the
+    /// dynamic batch (and lands in `composite_frame`'s overlay pass after
+    /// the static cache + static-SVG dispatch). The generic `Stack`
+    /// widget should NOT call this — its `is_stack_layer` is purely for
+    /// z-counter bumping within the static cache.
+    pub fn overlay_root(mut self) -> Self {
+        self.is_overlay_root = true;
         self
     }
 
@@ -3882,6 +4580,43 @@ pub trait ElementBuilder {
         None
     }
 
+    /// Whether this canvas's `render_fn` produces deterministic output
+    /// for a given bounds + closure captures, with no per-frame state
+    /// (animations, timers, live signal reads). Static canvases get
+    /// emitted to the bg batch normally but skip the per-frame
+    /// overlay re-paint that would otherwise overdraw any children
+    /// the walker layered on top of them in the static cache. They
+    /// also don't flip the `had_canvas_painted` gate, so the
+    /// compositor fast path can still engage on frames where the
+    /// only canvases are static.
+    ///
+    /// Default `false` — applies only when `element_type_id` is
+    /// [`ElementTypeId::Canvas`]; ignored otherwise.
+    fn is_static_canvas(&self) -> bool {
+        false
+    }
+
+    /// The taffy `Style` that this element actually installs on its
+    /// layout node — i.e. the style after any widget-internal
+    /// adjustments `build()` would apply. The default delegates to
+    /// `layout_style().cloned()`, which is correct for elements
+    /// whose `build()` just forwards `self.style` verbatim. Override
+    /// when `build()` mutates the style before handing it to taffy
+    /// (e.g. `Notch::build` adds `scoop.depth` to padding so children
+    /// don't render over the carved-out region).
+    ///
+    /// The layout-prop fast path in `process_pending_subtree_rebuilds`
+    /// reads this via `layout_tree.set_style(node, effective)` to
+    /// reflow a Stateful subtree without rebuilding it. If the
+    /// element's effective style diverges from `layout_style()`, the
+    /// fast path patches the wrong style onto taffy and the layout
+    /// silently shifts (Notch's bottom-dock icons jumping to y=0 was
+    /// exactly this — the scoop padding was missing from the patched
+    /// style).
+    fn effective_layout_style(&self) -> Option<taffy::Style> {
+        self.layout_style().cloned()
+    }
+
     /// Get event handlers for this element
     ///
     /// Returns a reference to the element's event handlers for registration
@@ -4070,123 +4805,123 @@ pub trait ElementBuilder {
     }
 }
 
-impl ElementBuilder for std::sync::Arc<dyn ElementBuilder> {
+/// Forwarding impl so `Box<dyn ElementBuilder>` itself satisfies
+/// `ElementBuilder`. Important for the edition-2024 HRTB workaround
+/// documented on [`crate::renderer::RenderTree::from_element`] (and on
+/// `WindowedApp::run` / `run_with_theme`): downstream crates whose
+/// `fn build_ui(ctx) -> impl Element` lacks `+ use<>` cannot satisfy
+/// the higher-ranked `FnMut` bound that runs the UI builder. The
+/// type-erased escape hatch — wrapping the call site in
+/// `|cx| -> Box<dyn ElementBuilder> { Box::new(build_ui(cx)) }` —
+/// only works if the boxed trait object itself implements
+/// `ElementBuilder`, hence this blanket. Forwards every method (incl.
+/// the two `&mut self` ones) through the box's auto-deref.
+///
+/// See [[gotcha-run-with-theme-hrtb-fnmut]] for the full reasoning.
+impl<T: ?Sized + ElementBuilder> ElementBuilder for Box<T> {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        self.as_ref().build(tree)
+        (**self).build(tree)
     }
-
     fn render_props(&self) -> RenderProps {
-        self.as_ref().render_props()
+        (**self).render_props()
     }
-
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
-        self.as_ref().children_builders()
+        (**self).children_builders()
     }
-
     fn element_type_id(&self) -> ElementTypeId {
-        self.as_ref().element_type_id()
+        (**self).element_type_id()
     }
-
     fn text_render_info(&self) -> Option<TextRenderInfo> {
-        self.as_ref().text_render_info()
+        (**self).text_render_info()
     }
-
     fn styled_text_render_info(&self) -> Option<StyledTextRenderInfo> {
-        self.as_ref().styled_text_render_info()
+        (**self).styled_text_render_info()
     }
-
     fn svg_render_info(&self) -> Option<SvgRenderInfo> {
-        self.as_ref().svg_render_info()
+        (**self).svg_render_info()
     }
-
     fn image_render_info(&self) -> Option<ImageRenderInfo> {
-        self.as_ref().image_render_info()
+        (**self).image_render_info()
     }
-
     fn canvas_render_info(&self) -> Option<crate::canvas::CanvasRenderFn> {
-        self.as_ref().canvas_render_info()
+        (**self).canvas_render_info()
     }
-
+    fn is_static_canvas(&self) -> bool {
+        (**self).is_static_canvas()
+    }
+    fn effective_layout_style(&self) -> Option<taffy::Style> {
+        (**self).effective_layout_style()
+    }
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
-        self.as_ref().event_handlers()
+        (**self).event_handlers()
     }
-
     fn scroll_info(&self) -> Option<crate::scroll::ScrollRenderInfo> {
-        self.as_ref().scroll_info()
+        (**self).scroll_info()
     }
-
     fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
-        self.as_ref().scroll_physics()
+        (**self).scroll_physics()
     }
-
+    fn viewport_cull(&self) -> bool {
+        (**self).viewport_cull()
+    }
     fn motion_animation_for_child(
         &self,
         child_index: usize,
     ) -> Option<crate::element::MotionAnimation> {
-        self.as_ref().motion_animation_for_child(child_index)
+        (**self).motion_animation_for_child(child_index)
     }
-
     fn motion_bindings(&self) -> Option<crate::motion::MotionBindings> {
-        self.as_ref().motion_bindings()
+        (**self).motion_bindings()
     }
-
     fn motion_stable_id(&self) -> Option<&str> {
-        self.as_ref().motion_stable_id()
+        (**self).motion_stable_id()
     }
-
     fn motion_should_replay(&self) -> bool {
-        self.as_ref().motion_should_replay()
+        (**self).motion_should_replay()
     }
-
     fn motion_is_suspended(&self) -> bool {
-        self.as_ref().motion_is_suspended()
+        (**self).motion_is_suspended()
     }
-
-    #[allow(deprecated)]
     fn motion_is_exiting(&self) -> bool {
-        self.as_ref().motion_is_exiting()
+        (**self).motion_is_exiting()
     }
-
     fn layout_style(&self) -> Option<&taffy::Style> {
-        self.as_ref().layout_style()
+        (**self).layout_style()
     }
-
     fn layout_bounds_storage(&self) -> Option<crate::renderer::LayoutBoundsStorage> {
-        self.as_ref().layout_bounds_storage()
+        (**self).layout_bounds_storage()
     }
-
     fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
-        self.as_ref().layout_bounds_callback()
+        (**self).layout_bounds_callback()
     }
-
     fn semantic_type_name(&self) -> Option<&'static str> {
-        self.as_ref().semantic_type_name()
+        (**self).semantic_type_name()
     }
-
     fn element_id(&self) -> Option<&str> {
-        self.as_ref().element_id()
+        (**self).element_id()
     }
-
+    fn set_auto_id(&mut self, id: String) -> bool {
+        (**self).set_auto_id(id)
+    }
+    fn children_builders_mut(&mut self) -> &mut [Box<dyn ElementBuilder>] {
+        (**self).children_builders_mut()
+    }
     fn element_classes(&self) -> &[std::sync::Arc<str>] {
-        self.as_ref().element_classes()
+        (**self).element_classes()
     }
-
     fn bound_scroll_ref(&self) -> Option<&crate::selector::ScrollRef> {
-        self.as_ref().bound_scroll_ref()
+        (**self).bound_scroll_ref()
     }
-
     fn motion_on_ready_callback(
         &self,
     ) -> Option<std::sync::Arc<dyn Fn(crate::element::ElementBounds) + Send + Sync>> {
-        self.as_ref().motion_on_ready_callback()
+        (**self).motion_on_ready_callback()
     }
-
     fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
-        self.as_ref().layout_animation_config()
+        (**self).layout_animation_config()
     }
-
     fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
-        self.as_ref().visual_animation_config()
+        (**self).visual_animation_config()
     }
 }
 
@@ -4198,6 +4933,16 @@ impl ElementBuilder for Div {
         for child in &self.children {
             let child_node = child.build(tree);
             tree.add_child(node, child_node);
+        }
+
+        // Register signal-bound property bindings against the freshly
+        // minted node id. Each pending binding installs a subscription
+        // in the global property-binding registry; subsequent
+        // `State<T>::set` calls fire writers that queue partial updates
+        // through the unified property channel.
+        // ([[project-reactive-architecture-v2]] Phase 2.)
+        for binding in &self.pending_bindings {
+            binding.register(node);
         }
 
         node
@@ -4215,16 +4960,19 @@ impl ElementBuilder for Div {
             border_radius: self.border_radius,
             border_radius_explicit: self.border_radius_explicit,
             corner_shape: self.corner_shape,
+            corner_shape_locked: self.corner_shape_locked,
             border_color: self.border_color,
             border_width: self.border_width,
             border_sides: self.border_sides,
             layer: self.render_layer,
             material: self.material.clone(),
-            shadow: self.shadow,
+            shadow: self.shadow.clone(),
             transform: self.transform.clone(),
+            transform_origin: self.transform_origin,
             opacity: self.opacity,
             clips_content,
             is_stack_layer: self.is_stack_layer,
+            is_overlay_root: self.is_overlay_root,
             pointer_events_none: self.pointer_events_none,
             cursor: self.cursor,
             layer_effects: self.layer_effects.clone(),

@@ -16,7 +16,6 @@ A minimal iOS application demonstrating Blinc UI framework integration with Meta
 ```bash
 rustup target add aarch64-apple-ios
 rustup target add aarch64-apple-ios-sim
-rustup target add x86_64-apple-ios
 ```
 
 ### 2. Build the Rust library
@@ -31,7 +30,7 @@ From the `mobile/example` directory:
 ./build-ios.sh release
 ```
 
-This compiles the Blinc Rust library for device and both simulator arches, then creates a universal simulator static library.
+This compiles the Blinc Rust library as a static library for both device and simulator.
 
 ### 3. Open in Xcode
 
@@ -58,7 +57,7 @@ platforms/ios/
 ├── libs/
 │   ├── device/                  # arm64 library (real devices)
 │   │   └── libblinc_app.a
-│   └── simulator/               # universal simulator library (arm64 + x86_64)
+│   └── simulator/               # arm64 library (Apple Silicon simulators)
 │       └── libblinc_app.a
 └── README.md
 ```
@@ -123,7 +122,7 @@ Make sure you've run `./build-ios.sh` first to compile the Rust library.
 
 ### Simulator shows black screen
 
-1. Check that you built simulator targets (`aarch64-apple-ios-sim` and `x86_64-apple-ios`)
+1. Check that you built for the simulator target (`aarch64-apple-ios-sim`)
 2. Verify the library is in `libs/simulator/`
 3. Check Xcode console for error messages
 

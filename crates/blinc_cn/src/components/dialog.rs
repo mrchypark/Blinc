@@ -33,14 +33,13 @@ use std::sync::Arc;
 
 use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
 use blinc_core::Color;
-use blinc_layout::motion::motion_derived;
-use blinc_layout::overlay_state::get_overlay_manager;
-use blinc_layout::prelude::*;
-use blinc_layout::widgets::overlay::{OverlayHandle, OverlayManagerExt};
 use blinc_layout::InstanceKey;
+use blinc_layout::overlay_state::overlay_stack;
+use blinc_layout::prelude::*;
+use blinc_layout::widgets::overlay_stack::{OverlayBuilder, OverlayHandle};
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 
-use super::button::{button, ButtonVariant};
+use super::button::{ButtonVariant, button};
 
 /// Dialog size variants
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -270,24 +269,35 @@ impl DialogBuilder {
         let show_cancel = self.show_cancel;
         let classes = self.classes;
         let user_id = self.user_id;
-        // Use grow_in/grow_out by default - gentler scale (99% → 100%) to reduce text distortion
+        // Scale-in / scale-out by default (matches router page navigation feel).
+        // The theme's `ease_sheet` slot drives the curve so the dialog
+        // reads as "substantial modal surface" rather than a generic
+        // ease-out scale. User-supplied animations still override.
+        let sheet_easing = theme.animations().ease_sheet.to_animation_easing();
         let enter_animation = self
             .enter_animation
-            .unwrap_or_else(|| AnimationPreset::grow_in(200));
+            .unwrap_or_else(|| AnimationPreset::scale_in_with(200, sheet_easing));
         let exit_animation = self
             .exit_animation
-            .unwrap_or_else(|| AnimationPreset::grow_out(150));
+            .unwrap_or_else(|| AnimationPreset::scale_out_with(150, sheet_easing));
 
-        let mgr = get_overlay_manager();
+        // Pre-allocate the handle id so the confirm/cancel buttons can capture
+        // it before show() is called (same pattern as popover). Buttons close
+        // the dialog by calling `OverlayHandle::close()` on this captured id
+        // instead of `close_top()` so they target THIS dialog even if a newer
+        // one was pushed on top.
+        let next_handle_id = overlay_stack()
+            .lock()
+            .ok()
+            .map(|s| s.peek_next_handle_id())
+            .unwrap_or(0);
+        let dialog_handle = OverlayHandle::from_raw(next_handle_id);
 
-        // Create a unique motion key for this dialog instance
-        // The motion is on the child of the wrapper div, so we need ":child:0" suffix
-        let motion_key_str = format!("dialog_{}", self.key.get());
-        let motion_key_with_child = format!("{}:child:0", motion_key_str);
-
-        mgr.modal()
-            .dismiss_on_escape(true)
-            .motion_key(&motion_key_with_child)
+        let handle = OverlayBuilder::dialog()
+            // Dialog defaults (DismissRules::default_for(Dialog)):
+            // on_escape=true, on_click_outside=true (backdrop click), backdrop=Some.
+            .motion_enter(enter_animation)
+            .motion_exit(exit_animation)
             .content(move || {
                 let mut content_div = build_dialog_content(
                     &title,
@@ -307,9 +317,7 @@ impl DialogBuilder {
                     &on_cancel,
                     confirm_destructive,
                     show_cancel,
-                    &enter_animation,
-                    &exit_animation,
-                    &motion_key_str,
+                    dialog_handle,
                 );
                 for c in &classes {
                     content_div = content_div.class(c);
@@ -319,7 +327,15 @@ impl DialogBuilder {
                 }
                 content_div
             })
-            .show()
+            .show();
+
+        debug_assert_eq!(
+            handle.raw(),
+            next_handle_id,
+            "peek_next_handle_id was stale — concurrent push?"
+        );
+
+        handle
     }
 }
 
@@ -419,7 +435,9 @@ pub fn alert_dialog() -> AlertDialogBuilder {
     AlertDialogBuilder::new()
 }
 
-/// Build the dialog content wrapped in motion for animations
+/// Build the dialog content. Enter animation is delegated to the CSS
+/// `@keyframes cn-dialog-enter` rule on `.cn-dialog` (see cn_styles.rs);
+/// the wrapping `motion_derived` lives at the `OverlayStack` layer.
 #[allow(clippy::too_many_arguments)]
 fn build_dialog_content(
     title: &Option<String>,
@@ -439,26 +457,22 @@ fn build_dialog_content(
     on_cancel: &Option<Arc<dyn Fn() + Send + Sync>>,
     confirm_destructive: bool,
     show_cancel: bool,
-    enter_animation: &MultiKeyframeAnimation,
-    exit_animation: &MultiKeyframeAnimation,
-    motion_key: &str,
+    handle: OverlayHandle,
 ) -> Div {
     // Use theme spacing tokens via helper methods (.p_6(), .gap_2(), .m_4(), etc.)
     let theme = ThemeState::get();
 
-    // Build inner content that will have its own fade animation
-    // This helps mask any visual distortion from the outer scale animation
     let mut inner_content = div().w_full().flex_col();
 
     // Header section
     if title.is_some() || description.is_some() {
         let mut header = div().w_full().flex_col().gap_2(); // 8px gap from theme
 
-        if let Some(ref title_text) = title {
+        if let Some(title_text) = title {
             header = header.child(h3(title_text).color(text_primary));
         }
 
-        if let Some(ref desc_text) = description {
+        if let Some(desc_text) = description {
             header = header.child(
                 text(desc_text)
                     .size(theme.typography().text_sm)
@@ -470,7 +484,7 @@ fn build_dialog_content(
     }
 
     // Custom content
-    if let Some(ref content_fn) = content {
+    if let Some(content_fn) = content {
         inner_content = inner_content.child(
             div()
                 .w_full()
@@ -480,7 +494,7 @@ fn build_dialog_content(
     }
 
     // Footer - either custom or default buttons
-    let footer_content = if let Some(ref footer_fn) = footer {
+    let footer_content = if let Some(footer_fn) = footer {
         footer_fn()
     } else {
         // Default footer with buttons
@@ -494,8 +508,7 @@ fn build_dialog_content(
                         if let Some(ref cb) = on_cancel {
                             cb();
                         }
-                        // Get fresh overlay manager to close
-                        get_overlay_manager().close_top();
+                        handle.close();
                     },
                 ));
         }
@@ -513,15 +526,13 @@ fn build_dialog_content(
                     if let Some(ref cb) = on_confirm {
                         cb();
                     }
-                    // Get fresh overlay manager to close
-                    get_overlay_manager().close_top();
+                    handle.close();
                 }),
         );
 
         footer_div
     };
 
-    // Add footer to inner content
     inner_content = inner_content.child(
         div()
             .w_full()
@@ -529,18 +540,10 @@ fn build_dialog_content(
             .child(footer_content),
     ); // 16px margin from theme
 
-    // Wrap inner content in a motion container with fade-in
-    // This helps mask visual distortion from the outer scale animation
-    // Use a derived key based on the outer motion key to ensure stability across rebuilds
-    let inner_motion_key = format!("{}_inner", motion_key);
-    let animated_inner = motion_derived(&inner_motion_key)
-        .enter_animation(AnimationPreset::fade_in(150))
-        .exit_animation(AnimationPreset::fade_out(100))
-        .child(inner_content);
-
-    // Build the dialog container (card styling)
-    // padding and gap from CSS: .cn-dialog { padding: 24px; gap: 16px; }
-    let dialog = div()
+    // Build the dialog container (card styling). `.cn-dialog` carries the
+    // `cn-dialog-enter` CSS @keyframes animation; OverlayStack's motion
+    // wrapper handles exit (when motion FSM lands a fix).
+    div()
         .class("cn-dialog")
         .min_w(300.0)
         .max_w(max_width)
@@ -549,16 +552,7 @@ fn build_dialog_content(
         .rounded(radius)
         .shadow_xl()
         .flex_col()
-        .child(animated_inner);
-
-    // Wrap dialog in outer motion container for scale+fade animations
-    // Use motion_derived with the key so the overlay can trigger exit animation
-    div().child(
-        motion_derived(motion_key)
-            .enter_animation(enter_animation.clone())
-            .exit_animation(exit_animation.clone())
-            .child(dialog),
-    )
+        .child(inner_content)
 }
 
 // Keep the old types for backwards compatibility but mark as deprecated

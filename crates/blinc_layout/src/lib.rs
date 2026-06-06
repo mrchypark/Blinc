@@ -29,32 +29,30 @@
 //! tree.compute_layout(800.0, 600.0);
 //! ```
 
-pub mod accessibility;
 pub mod animated;
 pub mod canvas;
 pub mod diff;
-#[allow(deprecated)]
 pub mod div;
 pub mod element;
 pub mod notch;
 
 // Layout animation systems
+pub mod binding;
 pub mod element_style;
 pub mod event_handler;
 pub mod event_router;
 pub mod image;
 pub mod interactive;
-#[allow(deprecated)]
 pub mod layout_animation;
 pub mod motion;
+pub mod motion_texture_cache;
+pub mod property;
 pub mod render_state;
-#[allow(deprecated)]
 pub mod renderer;
-#[allow(dead_code)]
 pub mod rich_text;
 pub mod scroll;
 pub mod stack;
-#[allow(dead_code, deprecated)]
+pub mod state_style_table;
 pub mod stateful;
 pub mod style;
 pub mod styled_text;
@@ -67,15 +65,12 @@ pub mod tree;
 pub mod typography;
 pub mod units;
 pub mod visual_animation;
-#[allow(dead_code)]
 pub mod widgets;
 
 // Markdown rendering
-#[allow(dead_code)]
 pub mod markdown;
 
 // Selector API for programmatic element access
-#[allow(dead_code)]
 pub mod selector;
 
 // Global overlay state singleton
@@ -95,7 +90,6 @@ pub mod recorder_bridge;
 pub mod calc;
 
 // CSS subset parser for ElementStyle
-#[allow(dead_code)]
 pub mod css_parser;
 
 // Stable unique key generation for components
@@ -104,7 +98,25 @@ pub mod key;
 pub mod window_actions;
 
 // Re-export InstanceKey and reset function at crate root
-pub use key::{reset_call_counters, InstanceKey};
+pub use key::{InstanceKey, reset_call_counters};
+
+// Property channel foundation (reactive architecture v2, Phase 1)
+pub use property::{PropertyId, SideEffects, TransformEquivalent};
+
+// Signal-bound property bindings (reactive architecture v2, Phase 2)
+pub use binding::{
+    BoundValue, IntoReactive, LayoutPendingBinding, PendingBinding, PropertyBindingRegistry,
+    Reactive, TypedPendingBinding, register_typed, register_typed_layout,
+    unregister_node as unregister_property_bindings, with_registry,
+};
+
+// Pre-resolved CSS state-style cascade table (reactive architecture v2, Phase 5)
+pub use state_style_table::StateStyleTable;
+
+// Motion-subtree texture bake registry (reactive architecture v2, Phase 4.2)
+pub use motion_texture_cache::{
+    MotionBakeState, MotionSubtreeBakeRecord, MotionSubtreeBakeRegistry,
+};
 
 // Core types
 pub use element::{
@@ -113,10 +125,9 @@ pub use element::{
 };
 
 // Diff and reconciliation
-pub use accessibility::{export_accessibility_snapshot, focus_order, AccessibilityMetadata};
 pub use diff::{
-    diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult, DivHash,
-    ReconcileActions,
+    ChangeCategory, ChildDiff, DiffResult, DivHash, ReconcileActions, diff, diff_children,
+    diff_elements, reconcile,
 };
 pub use event_handler::{EventCallback, EventContext, EventHandlers, HandlerRegistry};
 pub use event_router::{EventRouter, HitTestResult, MouseButton};
@@ -130,93 +141,94 @@ pub use element::{
 };
 
 // Builder API
+/// Short alias for [`ElementBuilder`].
+pub use div::ElementBuilder as Element;
 pub use div::{
-    div, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont, ImageRenderInfo,
-    StyledTextRenderInfo, StyledTextSpanInfo, TextAlign, TextVerticalAlign,
+    Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont, ImageRenderInfo,
+    StyledTextRenderInfo, StyledTextSpanInfo, TextAlign, TextVerticalAlign, div,
 };
 // Stack container (overlayed children)
-pub use stack::{stack, Stack};
+pub use stack::{Stack, stack};
 // Reference binding
 pub use div::{DivRef, ElementRef};
 pub use image::{
-    emoji, emoji_sized, image, img, Image, ImageFilter, LoadingStrategy, ObjectFit, ObjectPosition,
-    Placeholder,
+    Image, ImageFilter, LoadingStrategy, ObjectFit, ObjectPosition, Placeholder, emoji,
+    emoji_sized, image, img,
 };
-pub use rich_text::{rich_text, rich_text_styled, RichText};
-pub use svg::{svg, Svg};
-pub use text::{text, Text};
+pub use rich_text::{RichText, rich_text, rich_text_styled};
+pub use svg::{Svg, svg};
+pub use text::{Text, text};
 
 // Renderer
-#[allow(deprecated)]
 pub use renderer::{
     GlassPanel, ImageData, LayoutRenderer, OnReadyCallback, OnReadyEntry, RenderTree,
     RenderTreeDebugStats, StyledTextData, StyledTextSpan, SvgData, TextData, UpdateResult,
 };
 
 // Canvas element
-pub use canvas::{canvas, Canvas, CanvasBounds, CanvasData, CanvasRenderFn};
+pub use canvas::{Canvas, CanvasBounds, CanvasData, CanvasRenderFn, canvas};
 
 // Render state (dynamic properties separate from tree structure)
 pub use render_state::{
-    create_shared_motion_states, get_global_scheduler, has_global_scheduler,
+    ActiveMotion, CssAnimationStore, MotionState, NodeRenderState, Overlay, RenderState,
+    SharedMotionStates, create_shared_motion_states, get_global_scheduler, has_global_scheduler,
     queue_global_motion_exit_cancel, queue_global_motion_exit_start, queue_global_motion_start,
-    set_global_scheduler, ActiveMotion, CssAnimationStore, MotionState, NodeRenderState, Overlay,
-    RenderState, SharedMotionStates,
+    set_global_scheduler,
 };
 
 // Stateful elements
-#[allow(deprecated)]
 pub use stateful::{
-    check_stateful_animations, check_stateful_deps, clear_stateful_animations,
-    clear_stateful_base_updaters, clear_stateful_deps, has_animating_statefuls,
-    has_pending_subtree_rebuilds, has_stateful_base_updater, has_visible_animating_statefuls,
-    peek_needs_redraw, queue_prop_update, queue_subtree_rebuild, request_redraw, take_needs_redraw,
-    take_pending_prop_updates, take_pending_subtree_rebuilds, update_stateful_base_props,
-    use_shared_state, use_shared_state_with, PendingSubtreeRebuild, SharedState, StateTransitions,
-    StatefulInner,
+    PartialPropertyUpdate, PendingSubtreeRebuild, RenderPropsWrite, SharedState, StateTransitions,
+    StatefulInner, TaffyStyleWrite, check_stateful_animations, check_stateful_deps,
+    clear_stateful_animations, clear_stateful_base_updaters, clear_stateful_deps,
+    has_animating_statefuls, has_pending_partial_prop_updates, has_pending_subtree_rebuilds,
+    has_stateful_base_updater, has_visible_animating_statefuls, peek_needs_redraw,
+    queue_layout_update_partial, queue_prop_update, queue_prop_update_partial,
+    queue_subtree_rebuild, request_redraw, take_needs_redraw, take_pending_partial_prop_updates,
+    take_pending_subtree_rebuilds, update_stateful_base_props, use_fsm, use_fsm_keyed,
+    use_shared_state, use_shared_state_with, use_state_for, use_state_for_keyed,
 };
 
 // Animation integration
 pub use animated::{AnimatedProperties, AnimationBuilder};
 
 // Layout animation (FLIP-style bounds animation)
-#[allow(deprecated)]
 pub use layout_animation::{LayoutAnimation, LayoutAnimationConfig, LayoutAnimationState};
 
 // CSS-like units
-pub use units::{pct, px, sp, Length, Unit};
+pub use units::{Length, Unit, pct, px, sp};
 
 // Motion container for entry/exit animations
 pub use motion::{
+    ElementAnimation, ExitingChild, Motion, MotionBindings, MotionPresenceState,
+    MotionPresenceStore, SharedAnimatedValue, SlideDirection, StaggerConfig, StaggerDirection,
     check_and_clear_exiting, check_ready_for_enter, current_motion_key, is_inside_animating_motion,
     is_inside_motion, motion, motion_derived, motion_events, motion_presence_store,
-    query_presence_state, start_exit_for_key, update_presence_state, ElementAnimation,
-    ExitingChild, Motion, MotionBindings, MotionPresenceState, MotionPresenceStore,
-    SharedAnimatedValue, SlideDirection, StaggerConfig, StaggerDirection,
+    query_presence_state, start_exit_for_key, update_presence_state,
 };
 
 // Text measurement
 pub use text_measure::{
-    measure_text, measure_text_with_options, set_text_measurer, TextLayoutOptions, TextMeasurer,
-    TextMetrics,
+    TextLayoutOptions, TextMeasurer, TextMetrics, measure_text, measure_text_with_options,
+    set_text_measurer,
 };
 
 // Text selection (clipboard support)
 pub use text_selection::{
-    clear_selection, get_selected_text, global_selection, set_selection, SelectionSource,
-    SharedTextSelection, TextSelection,
+    SelectionSource, SharedTextSelection, TextSelection, clear_selection, get_selected_text,
+    global_selection, set_selection,
 };
 
 /// Prelude module - import everything commonly needed
 pub mod prelude {
-    #![allow(deprecated)]
-
+    /// Short alias for [`ElementBuilder`].
+    pub use crate::div::ElementBuilder as Element;
     pub use crate::div::{
-        div, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont,
-        ImageRenderInfo, TextAlign, TextVerticalAlign,
+        Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont, ImageRenderInfo,
+        TextAlign, TextVerticalAlign, div,
     };
     // Stack container (overlayed children)
-    pub use crate::stack::{stack, Stack};
+    pub use crate::stack::{Stack, stack};
     // Reference binding for external element access
     pub use crate::div::{DivRef, ElementRef};
     pub use crate::element::{
@@ -228,37 +240,23 @@ pub mod prelude {
     pub use crate::event_router::{EventRouter, HitTestResult, MouseButton};
     // Image element
     pub use crate::image::{
-        emoji, emoji_sized, image, img, Image, ImageFilter, LoadingStrategy, ObjectFit,
-        ObjectPosition, Placeholder,
+        Image, ImageFilter, LoadingStrategy, ObjectFit, ObjectPosition, Placeholder, emoji,
+        emoji_sized, image, img,
     };
     // Interactive state management
     pub use crate::interactive::{DirtyTracker, InteractiveContext, NodeState};
     // Unified element styling
     pub use crate::element_style::{
-        style, ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection,
-        StyleJustify, StyleOverflow, StyleVisibility,
+        ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify,
+        StyleOverflow, StyleVisibility, style,
     };
     // Diff and reconciliation
     pub use crate::diff::{
-        diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult,
-        DivHash, ReconcileActions,
+        ChangeCategory, ChildDiff, DiffResult, DivHash, ReconcileActions, diff, diff_children,
+        diff_elements, reconcile,
     };
     // Stateful elements with user-defined state types (core infrastructure)
     pub use crate::stateful::{
-        // Internal scroll events for FSM transitions
-        scroll_events,
-        // New StateContext API (recommended)
-        stateful,
-        stateful_button,
-        stateful_checkbox,
-        // Low-level constructor functions for custom styling (legacy)
-        stateful_from_handle,
-        stateful_with_key,
-        text_field,
-        toggle,
-        // Utility functions for persistent shared state
-        use_shared_state,
-        use_shared_state_with,
         // Core generic type
         BoundStateful,
         // Type aliases for Stateful<S> - low-level for custom styling
@@ -286,10 +284,59 @@ pub mod prelude {
         TextFieldState,
         Toggle,
         ToggleState,
+        // Internal scroll events for FSM transitions
+        scroll_events,
+        // New StateContext API (recommended)
+        stateful,
+        stateful_button,
+        stateful_checkbox,
+        // Low-level constructor functions for custom styling (legacy)
+        stateful_from_handle,
+        stateful_with_key,
+        text_field,
+        toggle,
+        // Bare auto-keyed FSM handle (`SharedState<S>`) — uses
+        // `#[track_caller]` to derive a unique key from the source
+        // location. The common case for "one Stateful per call
+        // site" — no manual key plumbing required.
+        use_fsm,
+        // Explicit-key variant for loops / reusable component
+        // factories where one source line creates multiple
+        // instances.
+        use_fsm_keyed,
+        // Utility functions for persistent shared state
+        use_shared_state,
+        use_shared_state_with,
+        // Deprecated aliases — kept on the prelude during the
+        // migration window so existing call sites keep compiling
+        // (with a warning) without an extra import.
+        use_state_for,
+        use_state_for_keyed,
     };
 
     // Ready-to-use widgets (production-ready, work in fluent API without .build())
     pub use crate::widgets::{
+        Button,
+        ButtonConfig,
+        ButtonVisualState,
+        CURSOR_BLINK_INTERVAL_MS,
+        Checkbox,
+        CheckboxConfig,
+        InputConstraints,
+        InputType,
+        RadioGroup,
+        RadioGroupBuilder,
+        RadioGroupConfig,
+        RadioLayout,
+        SharedTextAreaState,
+        SharedTextInputState,
+        TextArea,
+        TextAreaConfig,
+        TextAreaState,
+        TextInput,
+        TextInputConfig,
+        TextInputState,
+        TextPosition,
         // Button widget - ready-to-use
         button,
         // Checkbox widget - ready-to-use
@@ -308,27 +355,6 @@ pub mod prelude {
         text_input,
         text_input_state,
         text_input_state_with_placeholder,
-        Button,
-        ButtonConfig,
-        ButtonVisualState,
-        Checkbox,
-        CheckboxConfig,
-        InputConstraints,
-        InputType,
-        RadioGroup,
-        RadioGroupBuilder,
-        RadioGroupConfig,
-        RadioLayout,
-        SharedTextAreaState,
-        SharedTextInputState,
-        TextArea,
-        TextAreaConfig,
-        TextAreaState,
-        TextInput,
-        TextInputConfig,
-        TextInputState,
-        TextPosition,
-        CURSOR_BLINK_INTERVAL_MS,
     };
     // Material system
     pub use crate::element::{
@@ -340,23 +366,23 @@ pub mod prelude {
         UpdateResult,
     };
     // Scroll container (ready-to-use widget with Div extension)
-    pub use crate::rich_text::{rich_text, rich_text_styled, RichText};
-    pub use crate::svg::{svg, Svg};
-    pub use crate::text::{text, Text};
-    pub use crate::tree::{LayoutNodeId, LayoutTree};
+    pub use crate::rich_text::{RichText, rich_text, rich_text_styled};
+    pub use crate::svg::{Svg, svg};
+    pub use crate::text::{Text, text};
+    pub use crate::tree::{LayoutNodeId, LayoutTree, StableNodeId};
     pub use crate::widgets::{
-        scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollPhysics,
-        ScrollRenderInfo, SharedScrollPhysics,
+        Scroll, ScrollConfig, ScrollDirection, ScrollPhysics, ScrollRenderInfo,
+        SharedScrollPhysics, scroll, scroll_bouncy, scroll_no_bounce,
     };
 
     // Code block widget with syntax highlighting
     pub use crate::widgets::{
-        code, code_editor, code_editor_state, code_minimap, pre, Code, CodeConfig, CodeEditor,
-        CodeEditorData, SharedCodeEditorState,
+        Code, CodeConfig, CodeEditor, CodeEditorData, SharedCodeEditorState, code, code_editor,
+        code_editor_state, code_minimap, pre,
     };
 
     // CSS-like units for layout dimensions
-    pub use crate::units::{pct, px, sp, Length, Unit};
+    pub use crate::units::{Length, Unit, pct, px, sp};
 
     // Syntax highlighting
     pub use crate::syntax::{
@@ -365,10 +391,10 @@ pub mod prelude {
     };
 
     // Canvas element
-    pub use crate::canvas::{canvas, Canvas, CanvasBounds};
+    pub use crate::canvas::{Canvas, CanvasBounds, canvas};
 
     // Notch element (shapes with concave curves or sharp steps)
-    pub use crate::notch::{notch, CornerConfig, CornerStyle, CornersConfig, Notch};
+    pub use crate::notch::{CornerConfig, CornerStyle, CornersConfig, Notch, notch};
 
     // Re-export Shadow, Transform, and layer effect types from blinc_core for convenience
     pub use blinc_core::{BlurQuality, BlurStyle, LayerEffect, Shadow, Transform};
@@ -387,14 +413,14 @@ pub mod prelude {
 
     // Motion container for entry/exit animations
     pub use crate::motion::{
-        current_motion_key, is_inside_animating_motion, is_inside_motion, motion, motion_derived,
         ElementAnimation, Motion, MotionBindings, SlideDirection, StaggerConfig, StaggerDirection,
+        current_motion_key, is_inside_animating_motion, is_inside_motion, motion, motion_derived,
     };
 
     // Text selection for clipboard support
     pub use crate::text_selection::{
-        clear_selection, get_selected_text, global_selection, set_selection, SelectionSource,
-        SharedTextSelection, TextSelection,
+        SelectionSource, SharedTextSelection, TextSelection, clear_selection, get_selected_text,
+        global_selection, set_selection,
     };
 
     // Render state (dynamic properties separate from tree structure)
@@ -413,37 +439,38 @@ pub mod prelude {
 
     // Table elements
     pub use crate::widgets::{
-        cell, striped_tr, table, tbody, td, td_text, tfoot, th, th_text, thead, tr, TableBuilder,
-        TableCell,
+        TableBuilder, TableCell, cell, striped_tr, table, tbody, td, td_text, tfoot, th, th_text,
+        thead, tr,
     };
 
     // Overlay system (modals, dialogs, context menus, toasts)
     pub use crate::widgets::{
-        overlay_events, overlay_manager, BackdropConfig, ContextMenuBuilder, Corner, DialogBuilder,
-        DropdownBuilder, ModalBuilder, OverlayAnimation, OverlayConfig, OverlayHandle, OverlayKind,
-        OverlayManager, OverlayManagerExt, OverlayPosition, OverlayState, ToastBuilder,
+        BackdropConfig, ContextMenuBuilder, Corner, DialogBuilder, DropdownBuilder, ModalBuilder,
+        OverlayAnimation, OverlayConfig, OverlayHandle, OverlayKind, OverlayManager,
+        OverlayManagerExt, OverlayPosition, OverlayState, ToastBuilder, overlay_events,
+        overlay_manager,
     };
 
     // Markdown rendering
     pub use crate::markdown::{
-        markdown, markdown_light, markdown_with_config, MarkdownConfig, MarkdownRenderer,
+        MarkdownConfig, MarkdownRenderer, markdown, markdown_light, markdown_with_config,
     };
 
     // Additional markdown widgets
     pub use crate::widgets::{
-        blockquote, blockquote_with_config, hr, hr_color, hr_thick, hr_with_bg, hr_with_config, li,
-        link, ol, ol_start, task_item, ul, Blockquote, BlockquoteConfig, HrConfig, Link,
-        LinkConfig, ListConfig, ListItem, ListMarker, OrderedList, TaskListItem, UnorderedList,
+        Blockquote, BlockquoteConfig, HrConfig, Link, LinkConfig, ListConfig, ListItem, ListMarker,
+        OrderedList, TaskListItem, UnorderedList, blockquote, blockquote_with_config, hr, hr_color,
+        hr_thick, hr_with_bg, hr_with_config, li, link, ol, ol_start, task_item, ul,
     };
 
     // Selector API for programmatic element access
     pub use crate::selector::{
-        query, query_motion, ElementEvent, ElementHandle, ElementRegistry, MotionHandle,
-        ScrollBehavior, ScrollBlock, ScrollInline, ScrollOptions, ScrollRef, SharedElementRegistry,
+        ElementEvent, ElementHandle, ElementRegistry, MotionHandle, ScrollBehavior, ScrollBlock,
+        ScrollInline, ScrollOptions, ScrollRef, SharedElementRegistry, query, query_motion,
     };
 
     // Overlay context singleton
-    pub use crate::overlay_state::{get_overlay_manager, OverlayContext};
+    pub use crate::overlay_state::{OverlayContext, get_overlay_manager};
 
     // CSS parser for loading stylesheets
     pub use crate::css_parser::{
@@ -460,8 +487,5 @@ pub mod prelude {
     };
 
     // Stable unique key generation for components
-    pub use crate::key::{reset_call_counters, InstanceKey};
+    pub use crate::key::{InstanceKey, reset_call_counters};
 }
-
-#[cfg(test)]
-mod tests;

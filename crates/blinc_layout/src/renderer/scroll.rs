@@ -41,17 +41,6 @@ use crate::tree::LayoutNodeId;
 
 use super::RenderTree;
 
-#[derive(Default)]
-pub(crate) struct ScrollDispatchOutcome {
-    pub(crate) remaining_x: f32,
-    pub(crate) remaining_y: f32,
-    pub(crate) physics_consumed_x: bool,
-    pub(crate) physics_consumed_y: bool,
-    pub(crate) custom_consumed_x: bool,
-    pub(crate) custom_consumed_y: bool,
-    pub(crate) dispatched: bool,
-}
-
 impl RenderTree {
     /// Update scroll physics with content dimensions from layout
     pub(crate) fn update_scroll_content_dimensions(&mut self) {
@@ -256,9 +245,10 @@ impl RenderTree {
 
         let mut target: Option<LayoutNodeId> = None;
         for &node_id in &chain {
-            let has_handler = self
-                .handler_registry
-                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+            let has_handler = self.stable_id(node_id).is_some_and(|sid| {
+                self.handler_registry
+                    .has_handler(sid, blinc_core::events::event_types::SCROLL)
+            });
             let has_registered_physics = self.scroll_physics.contains_key(&node_id);
             if has_handler || has_registered_physics {
                 target = Some(node_id);
@@ -272,13 +262,13 @@ impl RenderTree {
 
         let direction = self.get_scroll_direction(node_id);
         let has_scroll_physics = direction.is_some();
-        let handles_x = direction.map_or(true, |d| {
+        let handles_x = direction.is_none_or(|d| {
             matches!(
                 d,
                 crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both
             )
         });
-        let handles_y = direction.map_or(true, |d| {
+        let handles_y = direction.is_none_or(|d| {
             matches!(
                 d,
                 crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
@@ -307,12 +297,15 @@ impl RenderTree {
                 }
                 self.last_scroll_target = Some((node_id, now_ms));
             } else {
-                let ctx = crate::event_handler::EventContext::new(
+                let mut ctx = crate::event_handler::EventContext::new(
                     blinc_core::events::event_types::SCROLL,
                     node_id,
                 )
                 .with_mouse_pos(mouse_x, mouse_y)
                 .with_scroll_delta(dispatch_x, dispatch_y);
+                ctx.stable_id = self
+                    .stable_id(node_id)
+                    .unwrap_or(crate::tree::StableNodeId::ROOT);
                 self.handler_registry.dispatch(&ctx);
                 self.last_scroll_target = Some((node_id, now_ms));
             }
@@ -332,109 +325,6 @@ impl RenderTree {
         }
 
         (delta_x, delta_y)
-    }
-
-    pub(crate) fn dispatch_scroll_chain_with_outcome(
-        &mut self,
-        hit_node: LayoutNodeId,
-        ancestors: &[LayoutNodeId],
-        mouse_x: f32,
-        mouse_y: f32,
-        mut delta_x: f32,
-        mut delta_y: f32,
-    ) -> ScrollDispatchOutcome {
-        let mut chain: Vec<LayoutNodeId> = vec![hit_node];
-        for &ancestor in ancestors.iter().rev() {
-            if ancestor != hit_node {
-                chain.push(ancestor);
-            }
-        }
-        let now_ms = crate::widgets::text_input::elapsed_ms() as f64;
-
-        let mut target: Option<LayoutNodeId> = None;
-        for &node_id in &chain {
-            let has_handler = self
-                .handler_registry
-                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
-            let has_registered_physics = self.scroll_physics.contains_key(&node_id);
-            if has_handler || has_registered_physics {
-                target = Some(node_id);
-                break;
-            }
-        }
-
-        let Some(node_id) = target else {
-            return ScrollDispatchOutcome {
-                remaining_x: delta_x,
-                remaining_y: delta_y,
-                ..Default::default()
-            };
-        };
-
-        let direction = self.get_scroll_direction(node_id);
-        let has_scroll_physics = direction.is_some();
-        let handles_x = direction.map_or(true, |d| {
-            matches!(
-                d,
-                crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both
-            )
-        });
-        let handles_y = direction.map_or(true, |d| {
-            matches!(
-                d,
-                crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
-            )
-        });
-
-        let dispatch_x = if handles_x { delta_x } else { 0.0 };
-        let dispatch_y = if handles_y { delta_y } else { 0.0 };
-        let dispatched = dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001;
-
-        if dispatched {
-            let has_handler = self
-                .handler_registry
-                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
-
-            if has_handler {
-                let ctx = crate::event_handler::EventContext::new(
-                    blinc_core::events::event_types::SCROLL,
-                    node_id,
-                )
-                .with_mouse_pos(mouse_x, mouse_y)
-                .with_scroll_delta(dispatch_x, dispatch_y);
-                self.handler_registry.dispatch(&ctx);
-            }
-
-            if has_scroll_physics {
-                if !has_handler {
-                    if let Some(physics) = self.scroll_physics.get(&node_id) {
-                        let mut p = physics.lock().unwrap();
-                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, now_ms);
-                        p.on_scroll_activity();
-                    }
-                }
-                self.last_scroll_target = Some((node_id, now_ms));
-            } else {
-                self.last_scroll_target = Some((node_id, now_ms));
-            }
-        }
-
-        if handles_x {
-            delta_x = 0.0;
-        }
-        if handles_y {
-            delta_y = 0.0;
-        }
-
-        ScrollDispatchOutcome {
-            remaining_x: delta_x,
-            remaining_y: delta_y,
-            physics_consumed_x: has_scroll_physics && handles_x,
-            physics_consumed_y: has_scroll_physics && handles_y,
-            custom_consumed_x: !has_scroll_physics && handles_x,
-            custom_consumed_y: !has_scroll_physics && handles_y,
-            dispatched,
-        }
     }
 
     /// Dispatch scroll with time for touch velocity tracking (mobile)
@@ -463,9 +353,10 @@ impl RenderTree {
         // cursor's current scrollable gets the delta, with no chaining.
         let mut target: Option<LayoutNodeId> = None;
         for &node_id in &chain {
-            let has_handler = self
-                .handler_registry
-                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+            let has_handler = self.stable_id(node_id).is_some_and(|sid| {
+                self.handler_registry
+                    .has_handler(sid, blinc_core::events::event_types::SCROLL)
+            });
             let has_registered_physics = self.scroll_physics.contains_key(&node_id);
             if has_handler || has_registered_physics {
                 target = Some(node_id);
@@ -479,13 +370,13 @@ impl RenderTree {
 
         let direction = self.get_scroll_direction(node_id);
         let has_scroll_physics = direction.is_some();
-        let handles_x = direction.map_or(true, |d| {
+        let handles_x = direction.is_none_or(|d| {
             matches!(
                 d,
                 crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both
             )
         });
-        let handles_y = direction.map_or(true, |d| {
+        let handles_y = direction.is_none_or(|d| {
             matches!(
                 d,
                 crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
@@ -507,13 +398,16 @@ impl RenderTree {
                 }
                 self.last_scroll_target = Some((node_id, scroll_time));
             } else {
-                let ctx = crate::event_handler::EventContext::new(
+                let mut ctx = crate::event_handler::EventContext::new(
                     blinc_core::events::event_types::SCROLL,
                     node_id,
                 )
                 .with_mouse_pos(mouse_x, mouse_y)
                 .with_scroll_delta(dispatch_x, dispatch_y)
                 .with_scroll_time(scroll_time);
+                ctx.stable_id = self
+                    .stable_id(node_id)
+                    .unwrap_or(crate::tree::StableNodeId::ROOT);
                 self.handler_registry.dispatch(&ctx);
                 self.last_scroll_target = Some((node_id, scroll_time));
             }
@@ -549,7 +443,10 @@ impl RenderTree {
         );
 
         for node_id in chain {
-            if !self.handler_registry.has_handler(node_id, event_type) {
+            let Some(stable_id) = self.stable_id(node_id) else {
+                continue;
+            };
+            if !self.handler_registry.has_handler(stable_id, event_type) {
                 continue;
             }
 
@@ -647,8 +544,15 @@ impl RenderTree {
 
         tracing::debug!(
             "Scroll bounds: viewport=({:.0}, {:.0}) content=({:.0}, {:.0}) limits_y=({:.0}, {:.0}) delta_y={:.1} current={:.1} new={:.1}",
-            viewport_width, viewport_height, content_width, content_height,
-            max_offset_y, min_offset_y, delta_y, current_y, new_y
+            viewport_width,
+            viewport_height,
+            content_width,
+            content_height,
+            max_offset_y,
+            min_offset_y,
+            delta_y,
+            current_y,
+            new_y
         );
 
         self.scroll_offsets.insert(node_id, (new_x, new_y));
@@ -830,6 +734,11 @@ impl RenderTree {
         self.scroll_physics.contains_key(&node_id)
     }
 
+    /// Check if a scroll container opted into viewport-culling descendants.
+    pub(crate) fn is_viewport_cull_scroll(&self, node_id: LayoutNodeId) -> bool {
+        self.viewport_cull_scrolls.contains(&node_id)
+    }
+
     pub fn get_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
         // Check scroll physics first (has direction-aware scroll from element)
         let (x, y) = if let Some(physics) = self.scroll_physics.get(&node_id) {
@@ -851,104 +760,6 @@ impl RenderTree {
 
         // Round to whole pixels to prevent subpixel jitter
         (x.round(), y.round())
-    }
-
-    /// Get the exact scroll offset without display rounding.
-    pub(crate) fn get_precise_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
-        if let Some(physics) = self.scroll_physics.get(&node_id) {
-            if let Ok(p) = physics.try_lock() {
-                (p.offset_x, p.offset_y)
-            } else {
-                self.scroll_offsets
-                    .get(&node_id)
-                    .copied()
-                    .unwrap_or((0.0, 0.0))
-            }
-        } else {
-            self.scroll_offsets
-                .get(&node_id)
-                .copied()
-                .unwrap_or((0.0, 0.0))
-        }
-    }
-
-    pub(crate) fn is_zero_scroll_delta(delta: f32) -> bool {
-        delta.abs() < 0.001
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_physics_handle(
-        &self,
-        node_id: LayoutNodeId,
-    ) -> Option<crate::scroll::SharedScrollPhysics> {
-        self.scroll_physics.get(&node_id).cloned()
-    }
-
-    /// Apply a programmatic scroll delta directly to a specific node.
-    ///
-    /// Returns `true` when the node's visible scroll position changed.
-    pub fn scroll_node_by(&mut self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) -> bool {
-        let before = self.get_precise_scroll_offset(node_id);
-
-        if let Some(physics) = self.scroll_physics.get(&node_id) {
-            let mut physics = physics.lock().unwrap();
-            physics.apply_scroll_delta(delta_x, delta_y);
-            if let Some(scroll_ref) = self.scroll_refs.get(&node_id) {
-                scroll_ref.update_state(
-                    (physics.offset_x.abs(), physics.offset_y.abs()),
-                    (physics.content_width, physics.content_height),
-                    (physics.viewport_width, physics.viewport_height),
-                );
-            }
-        } else {
-            self.apply_scroll_delta_with_bounds(node_id, delta_x, delta_y);
-        }
-
-        self.get_precise_scroll_offset(node_id) != before
-    }
-
-    /// Scroll the nearest scrollable ancestor until the requested element becomes visible.
-    pub fn scroll_element_into_view(
-        &mut self,
-        element_id: &str,
-        options: crate::selector::ScrollOptions,
-    ) -> bool {
-        let Some(target_node) = self.element_registry.get(element_id) else {
-            return false;
-        };
-
-        let mut current = self.element_registry.get_parent(target_node);
-        let mut handled = false;
-        while let Some(node_id) = current {
-            if let Some(physics) = self.scroll_physics.get(&node_id) {
-                handled = true;
-                if let Some(target_bounds) = self.get_bounds(target_node) {
-                    if let Some(container_bounds) = self.get_bounds(node_id) {
-                        let mut physics = physics.lock().unwrap();
-                        let relative_y = target_bounds.y - container_bounds.y;
-                        let relative_x = target_bounds.x - container_bounds.x;
-                        let target_center_y =
-                            relative_y + target_bounds.height / 2.0 - physics.viewport_height / 2.0;
-                        let target_center_x =
-                            relative_x + target_bounds.width / 2.0 - physics.viewport_width / 2.0;
-                        let target_offset_y = (-target_center_y)
-                            .clamp(physics.max_offset_y(), physics.min_offset_y());
-                        let target_offset_x = (-target_center_x)
-                            .clamp(physics.max_offset_x(), physics.min_offset_x());
-
-                        if options.behavior == crate::selector::ScrollBehavior::Smooth {
-                            physics.scroll_to_animated(target_offset_x, target_offset_y);
-                        } else {
-                            physics.offset_x = target_offset_x;
-                            physics.offset_y = target_offset_y;
-                        }
-                    }
-                }
-            }
-            current = self.element_registry.get_parent(node_id);
-        }
-
-        handled
     }
 
     /// Render scrollbar overlay for a scroll container
@@ -1206,6 +1017,26 @@ impl RenderTree {
         self.scroll_physics
             .values()
             .any(|p| p.lock().unwrap().state == crate::stateful::ScrollState::Bouncing)
+    }
+
+    /// Returns `true` if any registered scroll physics is in a state
+    /// whose per-frame `tick()` advances the offset off any input —
+    /// i.e. `Bouncing` (edge spring or programmatic `scroll_to_animated`)
+    /// or `Decelerating` (post-flick momentum).
+    ///
+    /// Used by the compositor to keep the static-cache walker honest
+    /// during these states: the cache primitives were emitted at the
+    /// pre-tick offset, so a frame whose only animation source is
+    /// scroll physics must still re-walk to reflect the new offset.
+    /// `Scrolling` (active drag / wheel) is excluded — the input
+    /// event that drove the offset change already tags the frame as
+    /// `had_scroll` and invalidates the cache through that path.
+    pub fn has_animating_scroll_physics(&self) -> bool {
+        use crate::stateful::ScrollState;
+        self.scroll_physics.values().any(|p| {
+            let s = p.lock().unwrap().state;
+            matches!(s, ScrollState::Bouncing | ScrollState::Decelerating)
+        })
     }
 
     /// Returns `true` if any registered scroll physics is currently

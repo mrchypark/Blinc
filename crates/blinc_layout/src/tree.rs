@@ -1,15 +1,95 @@
 //! Layout tree management
 
-use slotmap::{new_key_type, Key, SlotMap};
+use slotmap::{Key, SlotMap, new_key_type};
 use std::collections::HashMap;
 use taffy::prelude::*;
 
-use crate::accessibility::{AccessibilityMetadata, AccessibilityMetadataProvider};
 use crate::element::ElementBounds;
-use crate::text_measure::{measure_text_with_options, TextLayoutOptions};
+use crate::text_measure::{TextLayoutOptions, measure_text_with_options};
 
 new_key_type! {
     pub struct LayoutNodeId;
+}
+
+/// Stable identity for a layout node across tree rebuilds.
+///
+/// `LayoutNodeId` is a slotmap key — every full rebuild reconstructs the
+/// slotmap and regenerates keys, so any subsystem that holds a
+/// `LayoutNodeId` across builds (motion bindings, FLIP previous bounds,
+/// event-handler captures inside `Stateful`, …) gets a dangling key.
+/// `StableNodeId` survives those rebuilds: it's derived from the build
+/// path (parent stable id ⊕ sibling index, plus the
+/// `InstanceKey` of any source-located widget) and recomputed
+/// deterministically each frame.
+///
+/// The build mints the id and registers a two-way mapping on
+/// `RenderTree` (`stable_to_layout` / `layout_to_stable`). Subsystems
+/// that need rebuild-stable state key on `StableNodeId`; the renderer's
+/// per-frame caches (render_nodes, hashes, layout bounds) stay on
+/// `LayoutNodeId` because they're already wiped and rebuilt every pass.
+///
+/// Layout still flows through `LayoutNodeId` — `StableNodeId` is the
+/// identity bookkeeping handle, not a paint-side replacement. See
+/// `project_stable_node_id_design` (memory) for the phased migration
+/// plan and which maps move when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StableNodeId(u64);
+
+impl StableNodeId {
+    /// Root of a build pass — used as the seed when minting children
+    /// before any node has been created. The hash mixes this with the
+    /// first child's sibling index, so the actual root node gets a
+    /// non-zero id.
+    pub const ROOT: Self = Self(0);
+
+    /// Raw u64 representation. Stable across rebuilds for the same
+    /// build path; safe to store in FFI / external systems that need a
+    /// plain integer handle.
+    pub fn to_raw(self) -> u64 {
+        self.0
+    }
+
+    /// Reconstruct from a raw `u64`. Caller is responsible for the
+    /// value originating from `to_raw()` on a valid `StableNodeId`.
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// Derive a child stable id from this node's id and the child's
+    /// position (0-indexed sibling slot) and optional widget-supplied
+    /// key (e.g. an `InstanceKey` string for `Stateful` / `scroll()`).
+    ///
+    /// `widget_key` is hashed in alongside `sibling_index` so two
+    /// widgets at the same position with different keys (e.g. a
+    /// keyed-by-id list re-ordering) get distinct ids and don't drag
+    /// stale state forward.
+    pub fn derive_child(self, sibling_index: usize, widget_key: Option<&str>) -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        // `rustc_hash` is already a workspace dep (used by routes,
+        // ElementRegistry) and is the fastest non-cryptographic hash
+        // in the tree; collisions are vanishingly rare for the
+        // (u64, usize, &str) tuples we feed it.
+        //
+        // Salt is a fixed non-zero constant. Without it,
+        // `ROOT.derive_child(0, None)` hashes to 0 (the FxHasher
+        // multiplicative-XOR pipeline produces 0 when fed only
+        // zeros from a zero seed), which would collide with
+        // `StableNodeId::ROOT` itself — every node off the root
+        // would think it WAS the root, cross-contaminating
+        // handler_registry / css_anim_store entries. The salt
+        // breaks that and `if h == 0 { 1 }` covers the tiny
+        // residual chance that some other path hashes to 0.
+        const STABLE_ID_SALT: u64 = 0xa017_3b53_0c1e_9d6a;
+        let mut hasher = rustc_hash::FxBuildHasher.build_hasher();
+        hasher.write_u64(STABLE_ID_SALT);
+        hasher.write_u64(self.0);
+        hasher.write_usize(sibling_index);
+        if let Some(k) = widget_key {
+            hasher.write(k.as_bytes());
+        }
+        let h = hasher.finish();
+        Self(if h == 0 { 1 } else { h })
+    }
 }
 
 /// Context stored with text nodes for dynamic measurement during layout
@@ -63,7 +143,7 @@ fn text_measure_function(
     available_space: Size<AvailableSpace>,
     _node_id: NodeId,
     node_context: Option<&mut TextMeasureContext>,
-    style: &Style,
+    _style: &Style,
 ) -> Size<f32> {
     // If dimensions are already known, use them
     let width = known_dimensions.width;
@@ -100,48 +180,14 @@ fn text_measure_function(
     }
 
     // Determine available width for wrapping
-    let available_width_hint = match available_space.width {
+    let max_width = match available_space.width {
         AvailableSpace::Definite(w) => Some(w),
-        AvailableSpace::MaxContent | AvailableSpace::MinContent => None,
+        AvailableSpace::MaxContent => None,
+        AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word
     };
 
-    let style_width_hint = match style.size.width {
-        Dimension::Length(w) => Some(w),
-        _ => None,
-    };
-    let style_max_width_hint = match style.max_size.width {
-        Dimension::Length(w) => Some(w),
-        _ => None,
-    };
-
-    // Use the tightest definite width we know about so text measurement
-    // respects both parent constraints and explicit width/max-width styles.
-    let definite_max_width = [
-        width,
-        available_width_hint,
-        style_width_hint,
-        style_max_width_hint,
-    ]
-    .into_iter()
-    .flatten()
-    .fold(None::<f32>, |current, candidate| {
-        Some(current.map_or(candidate, |existing| existing.min(candidate)))
-    });
-
-    let max_width = definite_max_width.or_else(|| match available_space.width {
-        AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word only when width is otherwise unknown
-        _ => None,
-    });
-
-    if max_width.is_none() {
-        let content_preview: String = ctx.content.chars().take(48).collect();
-        tracing::debug!(
-            content_preview = %content_preview,
-            font_size = ctx.font_size,
-            ?available_space,
-            "wrapping text measured without definite width; falling back to intrinsic width"
-        );
-    }
+    // If we already know the width, use it as max_width
+    let max_width = width.or(max_width);
 
     // Measure text with wrapping
     let mut options = TextLayoutOptions::new();
@@ -166,7 +212,6 @@ pub struct LayoutTree {
     node_map: SlotMap<LayoutNodeId, NodeId>,
     /// Reverse mapping from Taffy NodeId to our LayoutNodeId
     reverse_map: HashMap<NodeId, LayoutNodeId>,
-    accessibility: HashMap<LayoutNodeId, AccessibilityMetadataProvider>,
 }
 
 impl LayoutTree {
@@ -175,7 +220,6 @@ impl LayoutTree {
             taffy: TaffyTree::new(),
             node_map: SlotMap::with_key(),
             reverse_map: HashMap::new(),
-            accessibility: HashMap::new(),
         }
     }
 
@@ -249,30 +293,8 @@ impl LayoutTree {
     pub fn remove_node(&mut self, id: LayoutNodeId) {
         if let Some(taffy_node) = self.node_map.remove(id) {
             self.reverse_map.remove(&taffy_node);
-            self.accessibility.remove(&id);
             let _ = self.taffy.remove(taffy_node);
         }
-    }
-
-    pub fn set_accessibility_metadata(
-        &mut self,
-        id: LayoutNodeId,
-        metadata: AccessibilityMetadata,
-    ) {
-        self.accessibility
-            .insert(id, std::sync::Arc::new(move || metadata.clone()));
-    }
-
-    pub fn set_accessibility_provider(
-        &mut self,
-        id: LayoutNodeId,
-        provider: AccessibilityMetadataProvider,
-    ) {
-        self.accessibility.insert(id, provider);
-    }
-
-    pub fn accessibility_metadata(&self, id: LayoutNodeId) -> Option<AccessibilityMetadata> {
-        self.accessibility.get(&id).map(|provider| provider())
     }
 
     /// Get children of a layout node
@@ -336,22 +358,6 @@ impl LayoutTree {
             current = parent;
         }
         result
-    }
-
-    /// Depth-first pre-order traversal including the root node.
-    pub fn descendants_preorder(&self, root: LayoutNodeId) -> Vec<LayoutNodeId> {
-        fn visit(tree: &LayoutTree, node: LayoutNodeId, out: &mut Vec<LayoutNodeId>) {
-            out.push(node);
-            for child in tree.children(node) {
-                visit(tree, child, out);
-            }
-        }
-
-        let mut ordered = Vec::new();
-        if self.node_map.contains_key(root) {
-            visit(self, root, &mut ordered);
-        }
-        ordered
     }
 
     /// Get the content size for a scrollable node
@@ -438,111 +444,5 @@ impl LayoutTree {
 impl Default for LayoutTree {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use slotmap::{DefaultKey, KeyData};
-
-    #[test]
-    fn test_text_measure_function_prefers_tightest_max_width_constraint() {
-        let mut ctx = TextMeasureContext {
-            content:
-                "This paragraph should wrap to the explicit max width instead of the parent width."
-                    .into(),
-            font_size: 14.0,
-            line_height: 1.2,
-            wrap: true,
-            font_name: None,
-            generic_font: crate::div::GenericFont::System,
-            font_weight: 400,
-            italic: false,
-        };
-
-        let style = Style {
-            max_size: Size {
-                width: Dimension::Length(80.0),
-                height: Dimension::Auto,
-            },
-            ..Default::default()
-        };
-
-        let measured = text_measure_function(
-            Size {
-                width: None,
-                height: None,
-            },
-            Size {
-                width: AvailableSpace::Definite(200.0),
-                height: AvailableSpace::MaxContent,
-            },
-            NodeId::from(DefaultKey::from(KeyData::default())),
-            Some(&mut ctx),
-            &style,
-        );
-
-        let mut expected_options = TextLayoutOptions::new();
-        expected_options.line_height = 1.2;
-        expected_options.max_width = Some(80.0);
-        let expected = measure_text_with_options(
-            "This paragraph should wrap to the explicit max width instead of the parent width.",
-            14.0,
-            &expected_options,
-        );
-
-        assert_eq!(measured.width, expected.width);
-        assert_eq!(measured.height, expected.height);
-    }
-
-    #[test]
-    fn test_text_measure_function_preserves_definite_style_width_during_min_content_pass() {
-        let mut ctx = TextMeasureContext {
-            content:
-                "This paragraph should keep its explicit width during min-content measurement."
-                    .into(),
-            font_size: 14.0,
-            line_height: 1.2,
-            wrap: true,
-            font_name: None,
-            generic_font: crate::div::GenericFont::System,
-            font_weight: 400,
-            italic: false,
-        };
-
-        let style = Style {
-            size: Size {
-                width: Dimension::Length(120.0),
-                height: Dimension::Auto,
-            },
-            ..Default::default()
-        };
-
-        let measured = text_measure_function(
-            Size {
-                width: None,
-                height: None,
-            },
-            Size {
-                width: AvailableSpace::MinContent,
-                height: AvailableSpace::MaxContent,
-            },
-            NodeId::from(DefaultKey::from(KeyData::default())),
-            Some(&mut ctx),
-            &style,
-        );
-
-        let mut expected_options = TextLayoutOptions::new();
-        expected_options.line_height = 1.2;
-        expected_options.max_width = Some(120.0);
-        let expected = measure_text_with_options(
-            "This paragraph should keep its explicit width during min-content measurement.",
-            14.0,
-            &expected_options,
-        );
-
-        assert_eq!(measured.width, expected.width);
-        assert_eq!(measured.height, expected.height);
     }
 }

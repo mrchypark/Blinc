@@ -306,13 +306,45 @@ pub fn peek_needs_redraw() -> bool {
 // Pending Prop Updates Queue
 // =========================================================================
 
-/// Queue of pending render prop updates (node_id, new_props)
+/// Closure type that mutates a node's `RenderProps`. Used by Tier-1
+/// visual-only property bindings (`.bg`, `.opacity`, `.shadow`, etc.).
+pub type RenderPropsWrite = Box<dyn FnOnce(&mut RenderProps) + Send>;
+
+/// Closure type that mutates a node's taffy `Style`. Used by Tier-2
+/// layout-affecting property bindings (`.w`, `.h`, `.padding`, etc.).
+pub type TaffyStyleWrite = Box<dyn FnOnce(&mut taffy::Style) + Send>;
+
+/// A queued property update — at least one of `render_write` /
+/// `layout_write` must be `Some`. Side-effect metadata tells the drain
+/// step whether to schedule layout / text remeasure / clip work.
 ///
-/// When a stateful element's state changes, it computes new RenderProps
-/// and queues the update here. The windowed app applies these updates
-/// directly to the RenderTree, avoiding a full tree rebuild.
+/// Foundation of the unified property channel
+/// ([[project-reactive-architecture-v2]]). Every source — stateful
+/// animation refresh, ElementHandle visual mutations, signal-bound
+/// modifiers (P2), CSS state-style table writes (P5), animation
+/// lifecycle tickers (P6) — emits through this queue.
+///
+/// Both writes are `Option<Box<dyn FnOnce>>` so a single update can
+/// target RenderProps only (Tier 1), taffy `Style` only (Tier 2 layout
+/// props that aren't mirrored in RenderProps), or both (compound props
+/// whose visual + layout cells diverge).
+pub struct PartialPropertyUpdate {
+    pub node_id: LayoutNodeId,
+    pub property: crate::property::PropertyId,
+    pub effects: crate::property::SideEffects,
+    /// Closure that mutates `RenderProps` in place. Present for
+    /// Tier-1 visual props; absent for pure layout props.
+    pub render_write: Option<RenderPropsWrite>,
+    /// Closure that mutates the live taffy `Style` in place. Present
+    /// for Tier-2 layout props; absent for visual-only props.
+    pub layout_write: Option<TaffyStyleWrite>,
+}
+
+/// Process-global queue of pending property updates. Drained by every
+/// platform runner once per frame after stateful animation ticks and
+/// before paint.
 #[allow(clippy::incompatible_msrv)]
-static PENDING_PROP_UPDATES: LazyLock<Mutex<Vec<(LayoutNodeId, RenderProps)>>> =
+static PENDING_PARTIAL_PROP_UPDATES: LazyLock<Mutex<Vec<PartialPropertyUpdate>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Queue of pending subtree rebuilds
@@ -323,15 +355,55 @@ static PENDING_PROP_UPDATES: LazyLock<Mutex<Vec<(LayoutNodeId, RenderProps)>>> =
 static PENDING_SUBTREE_REBUILDS: LazyLock<Mutex<Vec<PendingSubtreeRebuild>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// What kind of rebuild a pending entry represents.
+///
+/// Three tiers, from cheapest to most expensive:
+///
+/// - [`Visual`](RebuildKind::Visual): walk the existing layout nodes and
+///   replace `RenderProps` in place (transform / opacity / bg / etc.).
+///   No taffy work, no children teardown, no layout recompute.
+///
+/// - [`LayoutProps`](RebuildKind::LayoutProps): same as Visual, plus
+///   patch taffy `Style` on each existing layout node and recompute
+///   layout. The tree's *topology* (number/type/content of nodes) is
+///   unchanged, but dimensions / margins / inset / etc. differ. This is
+///   the path spring-animated `.w()` / `.h()` / `.left()` take after the
+///   topology-vs-structural hash split — without it, every spring tick
+///   tears down and reconstructs the subtree just to change a width by
+///   half a pixel.
+///
+/// - [`Structural`](RebuildKind::Structural): full subtree teardown,
+///   children rebuilt, stable ids re-minted, handlers re-registered.
+///   Only path that can handle children added/removed/reordered or
+///   content swaps (text changed, SVG source changed, element type
+///   changed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebuildKind {
+    Visual,
+    LayoutProps,
+    Structural,
+}
+
 /// A pending subtree rebuild operation
 pub struct PendingSubtreeRebuild {
     /// The parent node whose children should be rebuilt
     pub parent_id: LayoutNodeId,
     /// The new child element (a Div that was produced by the callback)
     pub new_child: crate::div::Div,
-    /// Whether this rebuild requires layout recomputation
-    /// False for visual-only updates (hover/press state changes)
-    pub needs_layout: bool,
+    /// What kind of rebuild this is. See [`RebuildKind`].
+    pub kind: RebuildKind,
+}
+
+impl PendingSubtreeRebuild {
+    /// True for any rebuild that needs taffy `compute_layout` to run
+    /// after processing — structural rebuilds (children changed) and
+    /// layout-prop rebuilds (style dimensions changed).
+    pub fn needs_layout(&self) -> bool {
+        matches!(
+            self.kind,
+            RebuildKind::Structural | RebuildKind::LayoutProps
+        )
+    }
 }
 
 // Safety: PendingSubtreeRebuild is only accessed from the main thread
@@ -345,7 +417,7 @@ pub fn queue_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div
         .push(PendingSubtreeRebuild {
             parent_id,
             new_child,
-            needs_layout: true,
+            kind: RebuildKind::Structural,
         });
 }
 
@@ -360,7 +432,25 @@ pub fn queue_visual_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::d
         .push(PendingSubtreeRebuild {
             parent_id,
             new_child,
-            needs_layout: false,
+            kind: RebuildKind::Visual,
+        });
+}
+
+/// Queue a layout-prop subtree rebuild: patch taffy `Style` on existing
+/// nodes + recompute layout, without tearing down children.
+///
+/// Used when only layout-affecting properties changed (size, inset,
+/// padding, margin, flex sizing) but the tree's topology is the same.
+/// Spring animations bound to `.w()` / `.h()` / `.left()` etc. land
+/// here.
+pub fn queue_layout_prop_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div) {
+    PENDING_SUBTREE_REBUILDS
+        .lock()
+        .unwrap()
+        .push(PendingSubtreeRebuild {
+            parent_id,
+            new_child,
+            kind: RebuildKind::LayoutProps,
         });
 }
 
@@ -382,6 +472,36 @@ pub fn requeue_subtree_rebuilds(rebuilds: Vec<PendingSubtreeRebuild>) {
 pub fn has_pending_subtree_rebuilds() -> bool {
     !PENDING_SUBTREE_REBUILDS.lock().unwrap().is_empty()
 }
+
+/// Test-only serialization for [`PENDING_SUBTREE_REBUILDS`].
+///
+/// The pending-rebuild queue is a process-wide static. Tests that
+/// queue rebuilds + assert against `process_pending_subtree_rebuilds`
+/// race when run in parallel: slotmap-allocated `LayoutNodeId`s
+/// frequently collide across independently-built test trees (same
+/// (index, version) pair), and `structural_rebuilds_by_node` in
+/// `process_pending_subtree_rebuilds` then collapses unrelated
+/// rebuilds onto each other — a test's own rebuild can end up
+/// "superseded" by an unrelated parallel test's rebuild, and
+/// `process_pending_subtree_rebuilds` returns `false` when the test
+/// expects `true`. Surfaces as a flaky CI failure (passes locally
+/// where macOS may parallel-schedule differently).
+///
+/// Each affected test acquires this lock for its full duration:
+///
+/// ```ignore
+/// #[test]
+/// fn my_pending_queue_test() {
+///     let _guard = crate::stateful::PENDING_QUEUE_TEST_LOCK.lock().unwrap();
+///     let _ = crate::stateful::take_pending_subtree_rebuilds();
+///     // … queue + assert …
+/// }
+/// ```
+///
+/// `Mutex<()>` rather than `RwLock` — every affected test mutates
+/// the queue, so there's no read-only path to benefit from sharing.
+#[cfg(test)]
+pub static PENDING_QUEUE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // =========================================================================
 // Stateful Base Render Props Updaters
@@ -683,24 +803,122 @@ pub fn has_visible_animating_statefuls(painted: &std::collections::HashSet<Layou
         })
 }
 
-/// Take all pending prop updates
+/// Queue a render props update for a node — full-replace form.
 ///
-/// Called by the windowed app to apply incremental updates to the RenderTree.
-/// Returns the queued updates and clears the queue.
-pub fn take_pending_prop_updates() -> Vec<(LayoutNodeId, RenderProps)> {
-    std::mem::take(&mut *PENDING_PROP_UPDATES.lock().unwrap())
-}
-
-/// Queue a render props update for a node
+/// Routes through the unified property channel tagged as
+/// `PropertyId::Compound` with `SideEffects::VISUAL`; the closure
+/// replaces `RenderProps` wholesale. Visual-only semantics are
+/// preserved (no relayout).
 ///
 /// Called by stateful elements when their state changes, or by
 /// `ElementHandle::mark_visual_dirty()` for explicit visual updates.
 ///
-/// This queues a visual-only update that skips layout recomputation.
-/// Use this for changes to background, opacity, shadows, etc.
+/// New code should prefer [`queue_prop_update_partial`] with an explicit
+/// `PropertyId` so the drain step can classify side effects per-property
+/// (background-only updates skip even the visual-only invalidation cost
+/// that the `Compound` classification implies).
 pub fn queue_prop_update(node_id: LayoutNodeId, props: RenderProps) {
-    PENDING_PROP_UPDATES.lock().unwrap().push((node_id, props));
+    queue_prop_update_partial(
+        node_id,
+        crate::property::PropertyId::Compound,
+        // Historical convention: full-replace updates are visual-only.
+        // Layout changes flow through `queue_subtree_rebuild` /
+        // `process_pending_subtree_rebuilds` separately.
+        crate::property::SideEffects::VISUAL,
+        move |p| *p = props,
+    );
+}
+
+/// Drain all queued property updates. The platform runners call this
+/// once per frame after stateful animation ticks and before paint.
+pub fn take_pending_partial_prop_updates() -> Vec<PartialPropertyUpdate> {
+    std::mem::take(&mut *PENDING_PARTIAL_PROP_UPDATES.lock().unwrap())
+}
+
+/// Queue a partial (in-place, closure-form) property update.
+///
+/// Unlike [`queue_prop_update`] (which replaces the full `RenderProps`),
+/// this writes a single field via the supplied closure and carries
+/// side-effect metadata so the drain step knows whether the change
+/// requires layout recomputation, text remeasurement, or clip-cascade
+/// invalidation.
+///
+/// Used by the Phase 1 plumbing of the unified property channel.
+/// Future phases — signal-bound modifiers (P2), CSS state-style table
+/// (P5), animation tickers' value-changed bit (P6), etc. — emit through
+/// this entry point rather than synthesising a full `RenderProps`.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::{queue_prop_update_partial, property::{PropertyId, SideEffects}};
+///
+/// queue_prop_update_partial(
+///     node_id,
+///     PropertyId::Background,
+///     SideEffects::VISUAL,
+///     move |props| {
+///         props.background = Some(new_color);
+///     },
+/// );
+/// ```
+pub fn queue_prop_update_partial<F>(
+    node_id: LayoutNodeId,
+    property: crate::property::PropertyId,
+    effects: crate::property::SideEffects,
+    write: F,
+) where
+    F: FnOnce(&mut RenderProps) + Send + 'static,
+{
+    PENDING_PARTIAL_PROP_UPDATES
+        .lock()
+        .unwrap()
+        .push(PartialPropertyUpdate {
+            node_id,
+            property,
+            effects,
+            render_write: Some(Box::new(write)),
+            layout_write: None,
+        });
     request_redraw();
+}
+
+/// Queue a partial taffy-style update.
+///
+/// Counterpart to [`queue_prop_update_partial`] for layout-affecting
+/// properties (width / height / padding / margin / gap / flex_*).
+/// The closure mutates the node's taffy `Style` in place; the drain
+/// step in each platform runner reads the live style, applies the
+/// closure, writes it back, and (because `effects.needs_layout` is
+/// set by the caller) triggers `compute_layout` on the next frame.
+///
+/// Used by Phase 2.4's Tier-2 signal-bound modifiers (`.w(&signal)`,
+/// `.h(&signal)`, etc.).
+pub fn queue_layout_update_partial<F>(
+    node_id: LayoutNodeId,
+    property: crate::property::PropertyId,
+    effects: crate::property::SideEffects,
+    write: F,
+) where
+    F: FnOnce(&mut taffy::Style) + Send + 'static,
+{
+    PENDING_PARTIAL_PROP_UPDATES
+        .lock()
+        .unwrap()
+        .push(PartialPropertyUpdate {
+            node_id,
+            property,
+            effects,
+            render_write: None,
+            layout_write: Some(Box::new(write)),
+        });
+    request_redraw();
+}
+
+/// Whether any partial-form updates are queued. Cheap check for the
+/// frame loop to short-circuit drain.
+pub fn has_pending_partial_prop_updates() -> bool {
+    !PENDING_PARTIAL_PROP_UPDATES.lock().unwrap().is_empty()
 }
 
 // =========================================================================
@@ -784,6 +1002,22 @@ pub trait StateTransitions:
     /// Default impl returns `None` (no data-guarded transitions), so
     /// existing event-only state types stay opt-out.
     fn on_tick(&self) -> Option<Self> {
+        None
+    }
+
+    /// Time-driven transition. Called by the framework once per
+    /// animation refresh while the stateful is registered for
+    /// animation ticks (i.e. while `use_keyframes` / `use_spring`
+    /// is active), with `delta_ms` = wall-clock milliseconds since
+    /// the previous call (or `0.0` on the first call).
+    ///
+    /// Use this for FPS-independent timed transitions — for example
+    /// a slider halo's enter/exit ramp that should take a fixed wall-
+    /// clock duration regardless of whether the framework is running
+    /// at 30, 60, or 120 Hz. Encode elapsed time in the state itself
+    /// (e.g. `Entering { elapsed_ms: u32 }`) and advance it here.
+    /// Default impl returns `None`.
+    fn on_next_animation_frame(&self, _delta_ms: f32) -> Option<Self> {
         None
     }
 }
@@ -1229,6 +1463,14 @@ pub struct StatefulInner<S: StateTransitions> {
     /// we skip the expensive subtree rebuild and use the fast visual-only update path.
     pub(crate) previous_structural_hash: Option<crate::diff::DivHash>,
 
+    /// Like [`previous_structural_hash`] but excludes layout style. Lets
+    /// `refresh_props_internal` discriminate "topology really changed (full
+    /// rebuild)" from "only layout dimensions shifted (patch taffy in place)".
+    /// Without the split, every spring-driven `.w()` / `.h()` / `.left()`
+    /// tick rebuilds the entire Stateful subtree just to change a width by
+    /// half a pixel.
+    pub(crate) previous_topology_hash: Option<crate::diff::DivHash>,
+
     /// Container-level CSS classes set via `.class()` on the Stateful itself
     /// (not from the on_state callback). These must survive subtree rebuilds
     /// because the rebuild path replaces the parent node's classes/style with
@@ -1239,6 +1481,14 @@ pub struct StatefulInner<S: StateTransitions> {
     /// Container-level element id set via `.id()` on the Stateful itself.
     /// Mirrors `base_classes` for the same reason.
     pub(crate) base_element_id: Option<String>,
+
+    /// Wall-clock instant of the previous `on_next_animation_frame`
+    /// invocation, used to compute the delta passed to the next call.
+    /// `None` before the first call so the very first frame sees
+    /// `delta_ms = 0.0` (the FSM gets a chance to read its just-set
+    /// initial state without being immediately advanced by a stale
+    /// time delta).
+    pub(crate) last_animation_frame: Option<web_time::Instant>,
 }
 
 impl<S: StateTransitions> StatefulInner<S> {
@@ -1257,8 +1507,28 @@ impl<S: StateTransitions> StatefulInner<S> {
             refresh_callback: None,
             animation_keys: Vec::new(),
             previous_structural_hash: None,
+            previous_topology_hash: None,
             base_classes: Vec::new(),
             base_element_id: None,
+            last_animation_frame: None,
+        }
+    }
+
+    /// In-place version of `Stateful::dispatch`. Walks the state
+    /// machine via `S::on_event`, updates `state` + marks
+    /// `needs_visual_update` when a transition fires, and returns
+    /// `true` in that case. Caller is responsible for the
+    /// surrounding lock and for calling [`request_redraw`] —
+    /// this stays mutex-agnostic so external substrates (e.g.
+    /// the DSL `default_state` FSM bridge) can hold the lock
+    /// across multiple reads/writes.
+    pub fn dispatch(&mut self, event: u32) -> bool {
+        if let Some(new_state) = self.state.on_event(event) {
+            self.state = new_state;
+            self.needs_visual_update = true;
+            true
+        } else {
+            false
         }
     }
 }
@@ -1278,84 +1548,233 @@ impl<S: StateTransitions + Default> Default for Stateful<S> {
 /// or stored for persistence across rebuilds (e.g., via `ctx.use_state()`).
 pub type SharedState<S> = Arc<Mutex<StatefulInner<S>>>;
 
-/// Get or create a persistent `SharedState<S>` for the given key.
+/// Bare auto-keyed FSM handle (`SharedState<S>`) — uses
+/// `#[track_caller]` to generate a unique key from the source
+/// location of the call, so you don't have to invent + thread a
+/// string key just to get a stable handle.
 ///
-/// This bridges `BlincContextState` (which stores arbitrary values via signals)
-/// with `SharedState<S>` (which `Stateful` needs for FSM state management).
+/// This is the bare counterpart of [`use_fsm_keyed`]; the keyed
+/// version stays for the loop / reusable-component case where one
+/// source location creates many instances.
 ///
-/// The state persists across UI rebuilds, making it safe to use in loops and closures
-/// when combined with unique keys (e.g., from `InstanceKey`).
+/// Now that layout nodes carry `StableNodeId`s that survive
+/// subtree rebuilds, the call-site key alone is enough to keep
+/// the handle pointing at the same state across rebuilds. No
+/// manual key plumbing required for the common "one Stateful per
+/// source line" case.
 ///
-/// # Type Parameters
+/// # Bounds
 ///
-/// - `S`: The state type, must implement `StateTransitions + Default + Clone + Send + Sync`
+/// - `S: StateTransitions + Clone + Send + 'static` — the FSM
+///   state type. `Sync` is not required (the value lives behind
+///   `Arc<Mutex<…>>`).
+///
+/// # Loops + reusable components
+///
+/// Two `use_fsm(...)` calls at the same source line collide
+/// (same `file:line:column` key). For loop bodies or factory
+/// functions called multiple times, use [`use_fsm_keyed`] with an
+/// explicit per-iteration key (e.g. `InstanceKey`, a numeric
+/// index, a tuple of identifying fields).
+///
+/// # Panics
+///
+/// Panics if [`blinc_core::context_state::BlincContextState::init`] hasn't been called — that
+/// happens automatically inside `WindowedApp::run` / `WebApp::run`
+/// / mobile runners.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use blinc_layout::prelude::*;
 ///
-/// // Get or create a button state for a unique key
-/// let button_state = use_shared_state::<ButtonState>("my-button");
-///
-/// // Use with Stateful
-/// Stateful::with_shared_state(button_state)
-///     .on_state(|state, div| { /* ... */ })
-///
-/// // Works with any state type
-/// let checkbox_state = use_shared_state::<CheckboxState>("my-checkbox");
+/// fn settings_panel() -> impl ElementBuilder {
+///     // No key needed — the source location is the key.
+///     let modal = use_fsm(ButtonState::Idle);
+///     let toast = use_fsm(ButtonState::Idle);
+///     // …
+/// }
 /// ```
-pub fn use_shared_state<S>(key: &str) -> SharedState<S>
+#[track_caller]
+pub fn use_fsm<S>(initial: S) -> SharedState<S>
 where
-    S: StateTransitions + Default + Clone + Send + Sync + 'static,
+    S: StateTransitions + Clone + Send + 'static,
 {
-    use blinc_core::context_state::BlincContextState;
-
-    let ctx = BlincContextState::get();
-
-    // We store the SharedState wrapped in an Option inside the signal
-    // This way it persists across rebuilds
-    let state: blinc_core::State<Option<SharedState<S>>> = ctx.use_state_keyed(key, || None);
-
-    let existing = state.get();
-    if let Some(shared) = existing {
-        shared
-    } else {
-        // First time - create the SharedState and store it
-        let shared: SharedState<S> = Arc::new(Mutex::new(StatefulInner::new(S::default())));
-        state.set(Some(shared.clone()));
-        shared
-    }
+    let loc = std::panic::Location::caller();
+    // Pack file:line:column into a tuple key. Hashing a tuple is
+    // free and skips the `format!` allocation a string key would
+    // incur on every call.
+    use_fsm_keyed((loc.file(), loc.line(), loc.column()), initial)
 }
 
-/// Get or create a persistent `SharedState<S>` with a custom initial state.
+/// Get or create a persistent FSM handle (`SharedState<S>`) keyed
+/// by anything hashable. Survives UI rebuilds — backed by the
+/// global `BlincContextState` hooks + reactive graph, so the same
+/// `(key, S)` pair returns the same handle across every call
+/// regardless of what context the caller has.
 ///
-/// Like `use_shared_state`, but allows specifying a non-default initial state.
+/// Use this when one source line creates multiple instances
+/// (loops, reusable component factories called repeatedly with
+/// different props). For the common "one Stateful per call site"
+/// case, [`use_fsm`] is the auto-keyed variant.
+///
+/// # Type Parameters
+///
+/// - `K: Hash` — the key. Any hashable type works (`&str`, `String`,
+///   `u32`, `InstanceKey`, a tuple, etc.). Two distinct keys give
+///   independent state slots; the same key + same `S` returns the
+///   same handle.
+/// - `S: StateTransitions + Clone + Send + 'static` — the FSM state
+///   type. `Sync` is not required (the value lives behind an
+///   `Arc<Mutex<…>>`).
+///
+/// # Panics
+///
+/// Panics if [`blinc_core::context_state::BlincContextState::init`] has not been called (i.e.
+/// the global context isn't set up — happens automatically inside
+/// `WindowedApp::run` / `WebApp::run` / mobile runners).
 ///
 /// # Example
 ///
 /// ```ignore
-/// // Start in a specific state
-/// let state = use_shared_state_with::<ButtonState>("my-button", ButtonState::Disabled);
+/// use blinc_layout::prelude::*;
+///
+/// // Reusable component called multiple times from the same source line —
+/// // pass a unique key so each instance gets its own slot.
+/// fn feature_card(id: &str) -> impl ElementBuilder {
+///     let handle = use_fsm_keyed(id, ButtonState::Idle);
+///     stateful_from_handle(handle).on_state(|state, div| { /* … */ })
+/// }
 /// ```
+pub fn use_fsm_keyed<K, S>(key: K, initial: S) -> SharedState<S>
+where
+    K: std::hash::Hash,
+    S: StateTransitions + Clone + Send + 'static,
+{
+    use blinc_core::context_state::{BlincContextState, StateKey};
+    use blinc_core::reactive::{Signal, SignalId};
+
+    let ctx = BlincContextState::get();
+    // Key the slot by both the call-site-provided key AND the
+    // concrete `SharedState<S>` type. Two `use_fsm_keyed(0u32, …)`
+    // calls with different `S` get distinct slots.
+    let state_key = StateKey::new::<SharedState<S>, _>(&key);
+
+    let mut hooks = ctx.hooks().lock().unwrap();
+    if let Some(raw_id) = hooks.get(&state_key) {
+        // Existing slot — recover the signal id and read the
+        // `SharedState<S>` value out of the reactive graph.
+        let signal_id = SignalId::from_raw(raw_id);
+        let signal: Signal<SharedState<S>> = Signal::from_id(signal_id);
+        ctx.reactive().lock().unwrap().get(signal).unwrap()
+    } else {
+        // First call for this key — mint the handle, stash it in a
+        // signal so subsequent calls re-find it, and record the
+        // signal id in the hooks map.
+        let shared_state: SharedState<S> = Arc::new(Mutex::new(StatefulInner::new(initial)));
+        let signal = ctx
+            .reactive()
+            .lock()
+            .unwrap()
+            .create_signal(shared_state.clone());
+        hooks.insert(state_key, signal.id().to_raw());
+        shared_state
+    }
+}
+
+// =========================================================================
+// Deprecated aliases — kept so existing callers still compile while they
+// migrate to the `use_fsm` / `use_fsm_keyed` names.
+// =========================================================================
+
+/// **Deprecated.** Renamed to [`use_fsm`] — the return type is a
+/// `SharedState<S>` (FSM handle), not a `State<T>` (reactive value),
+/// so the new name says what it actually does. The body just
+/// forwards.
+#[deprecated(
+    since = "0.5.2",
+    note = "use `use_fsm(initial)` instead — returns a SharedState<S> (FSM handle); the old name collided with `use_state` (which returns State<T>)"
+)]
+#[track_caller]
+pub fn use_state_for<S>(initial: S) -> SharedState<S>
+where
+    S: StateTransitions + Clone + Send + 'static,
+{
+    // Mirror `use_fsm`'s body verbatim rather than calling it so
+    // `Location::caller()` resolves at THIS frame's caller (the
+    // user) — chaining through another `#[track_caller]` would
+    // still give the user's frame, but inlining keeps the
+    // deprecation shim self-contained and survives any future
+    // changes to `use_fsm`'s internals.
+    let loc = std::panic::Location::caller();
+    use_fsm_keyed((loc.file(), loc.line(), loc.column()), initial)
+}
+
+/// **Deprecated.** Renamed to [`use_fsm_keyed`].
+#[deprecated(
+    since = "0.5.2",
+    note = "use `use_fsm_keyed(key, initial)` instead — returns a SharedState<S> (FSM handle)"
+)]
+#[track_caller]
+pub fn use_state_for_keyed<K, S>(key: K, initial: S) -> SharedState<S>
+where
+    K: std::hash::Hash,
+    S: StateTransitions + Clone + Send + 'static,
+{
+    use_fsm_keyed(key, initial)
+}
+
+// =========================================================================
+// Deprecated aliases — `use_shared_state` / `use_shared_state_with` were
+// the first cuts at the FSM-handle constructor; both forwarded to
+// `BlincContextState` via an `Option<SharedState<S>>` indirection that
+// `use_fsm_keyed` doesn't need. Kept here so callers compile during the
+// migration window.
+// =========================================================================
+
+/// **Deprecated.** Renamed and unified with the FSM-handle family.
+/// Use [`use_fsm_keyed`] with `S::default()`.
+///
+/// `use_shared_state` originally required `S: Default` and a string key.
+/// The replacement [`use_fsm_keyed`] takes any `Hash` key and a custom
+/// initial value, so the conversion is mechanical:
+///
+/// ```ignore
+/// // Before:
+/// let handle = use_shared_state::<ButtonState>("my-button");
+/// // After:
+/// let handle = use_fsm_keyed("my-button", ButtonState::default());
+/// ```
+#[deprecated(
+    since = "0.5.2",
+    note = "use `use_fsm_keyed(key, S::default())` instead; or `use_fsm(initial)` for the bare auto-keyed variant"
+)]
+#[track_caller]
+pub fn use_shared_state<S>(key: &str) -> SharedState<S>
+where
+    S: StateTransitions + Default + Clone + Send + Sync + 'static,
+{
+    use_fsm_keyed(key, S::default())
+}
+
+/// **Deprecated.** Renamed to [`use_fsm_keyed`].
+///
+/// The two APIs were doing the same thing — both store a
+/// `SharedState<S>` keyed by a (key, type) pair in
+/// `BlincContextState`. `use_shared_state_with` wrapped its value
+/// in an `Option<SharedState<S>>` to lazily initialise on first
+/// access; `use_fsm_keyed` stores the handle directly. Same
+/// external semantics, one less indirection.
+#[deprecated(
+    since = "0.5.2",
+    note = "use `use_fsm_keyed(key, initial)` instead — same shape, drops the `Sync` bound and the internal `Option<...>` indirection"
+)]
+#[track_caller]
 pub fn use_shared_state_with<S>(key: &str, initial: S) -> SharedState<S>
 where
     S: StateTransitions + Clone + Send + Sync + 'static,
 {
-    use blinc_core::context_state::BlincContextState;
-
-    let ctx = BlincContextState::get();
-
-    let state: blinc_core::State<Option<SharedState<S>>> = ctx.use_state_keyed(key, || None);
-
-    let existing = state.get();
-    if let Some(shared) = existing {
-        shared
-    } else {
-        let shared: SharedState<S> = Arc::new(Mutex::new(StatefulInner::new(initial)));
-        state.set(Some(shared.clone()));
-        shared
-    }
+    use_fsm_keyed(key, initial)
 }
 
 // =========================================================================
@@ -1593,11 +2012,19 @@ impl<S: StateTransitions> StateContext<S> {
     /// The signal is keyed with format: `{stateful_key}:signal:{name}`
     /// This ensures the signal persists across rebuilds.
     ///
+    /// Prefer [`Self::use_state`] when each call site holds exactly
+    /// one signal — `use_state` derives the key from
+    /// `#[track_caller]` so you don't have to invent a string. This
+    /// keyed flavour stays for loops and other cases where multiple
+    /// signals share a call site and need explicit disambiguation.
+    ///
     /// # Example
     ///
     /// ```ignore
-    /// let scroll_pos = ctx.use_signal("scroll", || 0.0);
-    /// scroll_pos.set(100.0);
+    /// for (i, item) in items.iter().enumerate() {
+    ///     // Same call site, distinct signals — name is required.
+    ///     let open = ctx.use_signal(&format!("open_{}", i), || false);
+    /// }
     /// ```
     pub fn use_signal<T, F>(&self, name: &str, init: F) -> blinc_core::State<T>
     where
@@ -1611,6 +2038,82 @@ impl<S: StateTransitions> StateContext<S> {
         self.subscribe(&state);
 
         state
+    }
+
+    /// Create / retrieve a persistent reactive `State<T>` scoped to
+    /// this stateful, auto-keyed by call site.
+    ///
+    /// Drop-in replacement for the `ctx.use_signal("name", || init)`
+    /// pattern when the name was just a workaround for "no per-call-
+    /// site identity." `#[track_caller]` captures the source
+    /// location, which is stable across rebuilds, so the signal
+    /// survives in the reactive graph between builds.
+    ///
+    /// Limitations:
+    /// - **One signal per call site.** Two `use_state` calls at the
+    ///   exact same source location (e.g. inside a loop iteration
+    ///   that re-uses the same line) collide. Use [`Self::use_signal`]
+    ///   with explicit names for loops.
+    /// - **Initialiser eager**, unlike `use_signal`'s `FnOnce` —
+    ///   the value is computed once at first registration and then
+    ///   ignored. If your initial value is expensive, use
+    ///   `use_signal` so you can defer construction.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn counter(ctx: &StateContext<()>) -> Div {
+    ///     let count = ctx.use_state(0i32);
+    ///     div().child(text(format!("{}", count.get()))).on_click({
+    ///         let count = count.clone();
+    ///         move |_| count.set(count.get() + 1)
+    ///     })
+    /// }
+    /// ```
+    #[track_caller]
+    pub fn use_state<T>(&self, initial: T) -> blinc_core::State<T>
+    where
+        T: Clone + Send + 'static,
+    {
+        let loc = std::panic::Location::caller();
+        // Format chosen to be human-readable in trace output while
+        // staying stable across rebuilds (caller location is
+        // compile-time-fixed). Different stateful instances get
+        // different `full_key()` prefixes so the same source line
+        // reused in two stateful widgets each keep their own state.
+        let signal_key = format!(
+            "{}:state@{}:{}:{}",
+            self.full_key(),
+            loc.file(),
+            loc.line(),
+            loc.column()
+        );
+        let state = blinc_core::context_state::use_state_keyed(&signal_key, || initial);
+        self.subscribe(&state);
+        state
+    }
+
+    /// Create a derived/computed value scoped to this stateful's
+    /// reactive graph (Phase 8 follow-up: `Derived<T>` ↔ property-binding
+    /// bridge, [[project-reactive-architecture-v2]]).
+    ///
+    /// Pass `&computed` to any reactive `Div` builder
+    /// (`div().transform(&computed)`, `cn::progress(&computed)`, etc.)
+    /// to bind through the unified property channel — fires when any
+    /// signal touched inside `compute` sets, reads the recomputed
+    /// value lazily on each fire.
+    ///
+    /// Each call mints a fresh [`blinc_core::Derived`]; persistence
+    /// across rebuilds is not yet handled (a future
+    /// `use_computed_keyed` would mirror `use_signal`'s keyed-by-name
+    /// shape). For most cases the recreation cost is negligible — the
+    /// recompute closure runs lazily on first read regardless.
+    pub fn use_computed<T, F>(&self, compute: F) -> blinc_core::Computed<T>
+    where
+        T: Clone + Send + 'static,
+        F: Fn(&blinc_core::ReactiveGraph) -> T + Send + 'static,
+    {
+        blinc_core::context_state::use_computed(compute)
     }
 
     /// Derive a stable key for a child element
@@ -2199,6 +2702,12 @@ pub struct StatefulBuilder<S: StateTransitions> {
     initial_state: Option<S>,
     /// Parent context key (for nested statefuls)
     parent_key: Option<Arc<String>>,
+    /// Externally-owned `SharedState` to bind to. Takes
+    /// precedence over the builder's key-derived storage —
+    /// useful when the state cell is owned by a substrate
+    /// (e.g. `blinc_runtime::fsm::default_state`) that other
+    /// dispatchers also mutate.
+    shared_state: Option<SharedState<S>>,
 }
 
 impl<S: StateTransitions + Default> StatefulBuilder<S> {
@@ -2210,6 +2719,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
             deps: Vec::new(),
             initial_state: None,
             parent_key: None,
+            shared_state: None,
         }
     }
 
@@ -2233,6 +2743,20 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         self
     }
 
+    /// Bind the builder to an externally-owned `SharedState<S>`.
+    ///
+    /// Skips the builder's normal key-derived
+    /// `use_shared_state_with` call so the resulting `Stateful`
+    /// shares the exact `Arc<Mutex<StatefulInner<S>>>` callers
+    /// pass in — letting substrates that mutate the state cell
+    /// from outside the widget tree (e.g.
+    /// `blinc_runtime::fsm::default_state`) drive widget
+    /// refresh through the same shared cell.
+    pub fn with_shared_state(mut self, shared: SharedState<S>) -> Self {
+        self.shared_state = Some(shared);
+        self
+    }
+
     /// Build the stateful element with a StateContext callback
     ///
     /// The callback receives a `&StateContext<S>` and returns a `Div`.
@@ -2246,8 +2770,12 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let parent_key = self.parent_key;
         let deps = self.deps;
 
-        // Get or create persistent SharedState using the key
-        let shared_state = use_shared_state_with::<S>(&key_str, initial);
+        // Reuse an externally-supplied `SharedState` when one was
+        // bound via `with_shared_state` — otherwise fall back to
+        // the key-derived storage.
+        let shared_state = self
+            .shared_state
+            .unwrap_or_else(|| use_fsm_keyed::<_, S>(&key_str, initial));
 
         // Get the reactive graph from context
         let reactive = blinc_core::context_state::BlincContextState::get()
@@ -2439,6 +2967,7 @@ pub fn stateful_with_key<S: StateTransitions + Default>(
         deps: Vec::new(),
         initial_state: None,
         parent_key: None,
+        shared_state: None,
     }
 }
 
@@ -2446,16 +2975,51 @@ pub fn stateful_with_key<S: StateTransitions + Default>(
 ///
 /// This re-runs the `on_state` callback and queues a prop update.
 /// Called internally by the reactive system when dependencies change.
-pub(crate) fn refresh_stateful<S: StateTransitions>(shared: &SharedState<S>) {
+/// Manually push a refresh through a `Stateful<S>` by its
+/// `SharedState<S>`. Re-runs the on_state callback and queues the
+/// resulting prop / subtree updates against the layout tree.
+///
+/// Internal widget code uses this to rebuild after an event-driven
+/// state mutation (e.g. `text_input` after a keystroke). Widget
+/// authors who need to react to an external signal that the Stateful
+/// itself isn't watching can also call this — see
+/// [`crate::widgets::text_input::refresh_text_input`] for an example.
+pub fn refresh_stateful<S: StateTransitions>(shared: &SharedState<S>) {
     // Data-guarded transition path. Before rebuilding the subtree,
     // give the state machine a chance to transition based on the
     // newly-arrived signal data — the dep change that brought us
     // here may have crossed a guard condition that warrants a state
     // change without a discrete event. Default `on_tick` returns
     // `None`, so event-only state types stay no-op.
+    //
+    // Then the time-driven transition path. `on_next_animation_frame`
+    // gets the wall-clock delta since the previous refresh, so FSMs
+    // that encode elapsed time in their state (e.g. a halo with
+    // `Entering { elapsed_ms }`) can advance themselves FPS-
+    // independently. First call sees `delta_ms = 0.0` so the FSM
+    // gets to observe the just-set initial state before any time
+    // advances.
     {
         let mut inner = shared.lock().unwrap();
         if let Some(new_state) = inner.state.on_tick() {
+            inner.state = new_state;
+            inner.needs_visual_update = true;
+        }
+        let now = web_time::Instant::now();
+        let delta_ms = inner
+            .last_animation_frame
+            .map(|prev| now.duration_since(prev).as_secs_f32() * 1000.0)
+            .unwrap_or(0.0);
+        // Clamp to one frame at 30 Hz. A GC pause or long off-thread
+        // task can stall a frame for hundreds of ms; without this
+        // cap the FSM jumps the full stall ahead in one call and a
+        // running animation completes (or overshoots) in a single
+        // tick. Clamping keeps the animation pace bounded to the
+        // expected per-frame budget at the cost of stretching the
+        // animation a bit when the host is under load.
+        let delta_ms = delta_ms.clamp(0.0, 33.0);
+        inner.last_animation_frame = Some(now);
+        if let Some(new_state) = inner.state.on_next_animation_frame(delta_ms) {
             inner.state = new_state;
             inner.needs_visual_update = true;
         }
@@ -2506,6 +3070,7 @@ impl<S: StateTransitions> Stateful<S> {
             // Log children count after callback
             let children_count = self.inner.borrow().children.len();
             tracing::trace!("After callback: {} children in inner Div", children_count);
+            self.update_previous_structural_hash();
         }
     }
 
@@ -2526,8 +3091,10 @@ impl<S: StateTransitions> Stateful<S> {
                 refresh_callback: None,
                 animation_keys: Vec::new(),
                 previous_structural_hash: None,
+                previous_topology_hash: None,
                 base_classes: Vec::new(),
                 base_element_id: None,
+                last_animation_frame: None,
             })),
             children_cache: RefCell::new(Vec::new()),
             event_handlers_cache: RefCell::new(crate::event_handler::EventHandlers::new()),
@@ -2861,6 +3428,15 @@ impl<S: StateTransitions> Stateful<S> {
         guard.state = new_state;
         guard.needs_visual_update = true;
         guard.current_event = event_context;
+        // Reset the animation-frame anchor to *now* (not None) so
+        // the first `on_next_animation_frame` after this transition
+        // sees a real one-frame delta (~16 ms) instead of either
+        // (a) a stale delta from a possibly-seconds-old previous
+        // refresh — which would skip the whole animation in one
+        // tick — or (b) `delta_ms = 0`, which would waste an extra
+        // frame at `elapsed_ms = 0` and read as a perceptible delay
+        // before the animation visibly starts.
+        guard.last_animation_frame = Some(web_time::Instant::now());
 
         // Compute new props via callback and queue the update
         if let Some(ref callback) = guard.state_callback {
@@ -3006,24 +3582,38 @@ impl<S: StateTransitions> Stateful<S> {
         let style_changed = temp_div.layout_style() != base_style_clone.as_ref();
 
         if !children.is_empty() || style_changed {
-            // Compute structural hash (excludes visual-only props like transform, opacity, bg).
-            // If structure hasn't changed, use fast visual-only update path.
-            let new_structural_hash = crate::diff::DivHash::compute_structural_tree(
-                &temp_div as &dyn crate::div::ElementBuilder,
-            );
-            let prev_hash = shared.lock().unwrap().previous_structural_hash;
+            // Three-tier discrimination via paired hashes:
+            //   topology changed         → full structural rebuild
+            //   structural changed only  → patch taffy `Style` in place
+            //   neither                  → visual-only prop update
+            //
+            // The middle path is what keeps spring-driven `.w()` / `.h()` /
+            // `.left()` cheap. Without it, every spring tick rebuilds the
+            // entire Stateful subtree just to change a width by half a
+            // pixel — see `RebuildKind` for the full rationale.
+            let element_ref = &temp_div as &dyn crate::div::ElementBuilder;
+            let new_topology_hash = crate::diff::DivHash::compute_topology_tree(element_ref);
+            let new_structural_hash = crate::diff::DivHash::compute_structural_tree(element_ref);
 
-            let structure_changed = prev_hash != Some(new_structural_hash);
+            let (prev_topology, prev_structural) = {
+                let g = shared.lock().unwrap();
+                (g.previous_topology_hash, g.previous_structural_hash)
+            };
 
-            // Store new hash for next comparison
-            shared.lock().unwrap().previous_structural_hash = Some(new_structural_hash);
+            let topology_changed = prev_topology != Some(new_topology_hash);
+            let structural_changed = prev_structural != Some(new_structural_hash);
 
-            if structure_changed {
-                // Full structural rebuild (children added/removed/reordered, or layout changed)
+            {
+                let mut g = shared.lock().unwrap();
+                g.previous_topology_hash = Some(new_topology_hash);
+                g.previous_structural_hash = Some(new_structural_hash);
+            }
+
+            if topology_changed {
                 queue_subtree_rebuild(cached_node_id, temp_div);
+            } else if structural_changed {
+                queue_layout_prop_subtree_rebuild(cached_node_id, temp_div);
             } else {
-                // Visual-only change (transform, opacity, bg, etc.) — skip expensive rebuild.
-                // Just update render props of existing children in-place.
                 queue_visual_subtree_rebuild(cached_node_id, temp_div);
             }
         }
@@ -3106,7 +3696,22 @@ impl<S: StateTransitions> Stateful<S> {
                     self.event_handlers_cache.borrow_mut().merge(handlers_clone);
                 }
             }
+
+            self.update_previous_structural_hash();
         }
+    }
+
+    fn update_previous_structural_hash(&self) {
+        let (structural_hash, topology_hash) = {
+            let inner = self.inner.borrow();
+            (
+                crate::diff::DivHash::compute_structural_tree(&*inner),
+                crate::diff::DivHash::compute_topology_tree(&*inner),
+            )
+        };
+        let mut g = self.shared_state.lock().unwrap();
+        g.previous_structural_hash = Some(structural_hash);
+        g.previous_topology_hash = Some(topology_hash);
     }
 
     pub fn id(self, id: &str) -> Self {
@@ -4792,5 +5397,73 @@ mod tests {
 
         // State should still be ()
         assert_eq!(elem.state(), ());
+    }
+
+    /// Bare `use_fsm` derives its key from the source location.
+    /// Two calls from the same line must return the same handle so
+    /// state survives across rebuilds.
+    #[test]
+    fn use_fsm_bare_returns_same_handle_across_calls() {
+        // Set up the global context state the free function needs.
+        // Idempotent guard — multiple tests in this module run
+        // serially under the `PENDING_QUEUE_TEST_LOCK` already, and
+        // `init` panics on second call, so use the test-friendly
+        // initializer.
+        ensure_context_state_for_tests();
+
+        let _guard = PENDING_QUEUE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // `#[track_caller]` derives the key from the caller's
+        // source position (file, line, column). To verify that the
+        // same call site returns the same handle on repeat calls,
+        // both invocations must come from literally the same
+        // position — which is only true inside a loop body (each
+        // iteration runs the same line of code) or via a fixed
+        // closure body called twice.
+        #[track_caller]
+        fn get_handle() -> SharedState<ButtonState> {
+            use_fsm(ButtonState::Idle)
+        }
+
+        let mut handles = Vec::with_capacity(2);
+        for _ in 0..2 {
+            // SAME source line on each iteration → same forwarded
+            // Location::caller() inside use_state_for → same key.
+            handles.push(get_handle());
+        }
+
+        let handle_a = &handles[0];
+        let handle_b = &handles[1];
+
+        assert!(
+            Arc::ptr_eq(handle_a, handle_b),
+            "bare use_fsm must reuse the slot across calls from the same source line"
+        );
+
+        // And a state mutation through one handle must be visible
+        // through the other (since they're both views into the
+        // same `Arc<Mutex<StatefulInner<…>>>`).
+        handle_a.lock().unwrap().state = ButtonState::Hovered;
+        assert_eq!(
+            handle_b.lock().unwrap().state,
+            ButtonState::Hovered,
+            "the state mutation through handle_a should be visible through handle_b"
+        );
+    }
+
+    /// Lazily initialise `BlincContextState` for tests that exercise
+    /// the global hooks + reactive graph. No-op on subsequent calls.
+    fn ensure_context_state_for_tests() {
+        use blinc_core::context_state::BlincContextState;
+        use blinc_core::reactive::ReactiveGraph;
+        if BlincContextState::is_initialized() {
+            return;
+        }
+        let reactive = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let hooks = Arc::new(Mutex::new(blinc_core::context_state::HookState::new()));
+        let dirty_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        BlincContextState::init(reactive, hooks, dirty_flag);
     }
 }

@@ -3,7 +3,9 @@
 //! Provides methods to simulate user input events by converting
 //! recorded events back into UI-consumable form.
 
-use crate::capture::{Key, Modifiers, MouseButton, Point, RecordedEvent, TimestampedEvent};
+use crate::capture::{
+    Key, KeyEvent, Modifiers, MouseButton, MouseMoveEvent, Point, RecordedEvent, TimestampedEvent,
+};
 
 /// Simulates recorded events by converting them to input actions.
 pub struct EventSimulator {
@@ -300,7 +302,6 @@ impl SimulatedInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{KeyEvent, MouseMoveEvent};
 
     #[test]
     fn test_simulator_creation() {

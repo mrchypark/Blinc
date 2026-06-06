@@ -10,7 +10,7 @@ use blinc_animation::{AnimatedValue, AnimationScheduler, SchedulerHandle, Spring
 use blinc_core::Color;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, atomic::AtomicBool, atomic::Ordering};
 
 /// Global theme state instance
 static THEME_STATE: OnceLock<ThemeState> = OnceLock::new();
@@ -47,8 +47,13 @@ struct ThemeTransition {
 
 /// Global theme state - accessed directly by widgets during render
 pub struct ThemeState {
-    /// The current theme bundle (light/dark pair)
-    bundle: ThemeBundle,
+    /// The current theme bundle (light/dark pair).
+    ///
+    /// Wrapped in `RwLock` so [`Self::init`] can swap it when the user
+    /// calls `init` after the framework's automatic platform-theme
+    /// init has already populated `THEME_STATE`. Read by
+    /// [`Self::set_scheme`] to derive light/dark token sets.
+    bundle: RwLock<ThemeBundle>,
 
     /// Current color scheme
     scheme: RwLock<ColorScheme>,
@@ -59,9 +64,6 @@ pub struct ThemeState {
     /// Current shadow tokens (can be animated)
     shadows: RwLock<ShadowTokens>,
 
-    /// Current opacity tokens
-    opacities: RwLock<OpacityTokens>,
-
     /// Current spacing tokens
     spacing: RwLock<SpacingTokens>,
 
@@ -71,8 +73,13 @@ pub struct ThemeState {
     /// Current radius tokens
     radii: RwLock<RadiusTokens>,
 
-    /// Current semantic component tokens
-    components: RwLock<ComponentTokens>,
+    /// Current corner-shape tokens (squircle / superellipse policy).
+    /// Read by the paint walker to substitute the effective `n` on
+    /// rounded corners when the element doesn't carry an explicit
+    /// `corner_shape` override. Existing themes return the default
+    /// `ShapeTokens::default()` (off) via the trait default impl, so
+    /// they keep their circular-arc behaviour.
+    shape: RwLock<ShapeTokens>,
 
     /// Current animation tokens
     animations: RwLock<AnimationTokens>,
@@ -82,9 +89,6 @@ pub struct ThemeState {
 
     /// Dynamic spacing overrides
     spacing_overrides: RwLock<FxHashMap<SpacingToken, f32>>,
-
-    /// Dynamic opacity overrides
-    opacity_overrides: RwLock<FxHashMap<OpacityToken, f32>>,
 
     /// Dynamic radius overrides
     radius_overrides: RwLock<FxHashMap<RadiusToken, f32>>,
@@ -103,92 +107,88 @@ pub struct ThemeState {
 }
 
 impl ThemeState {
-    fn effective_spacing_tokens(&self) -> SpacingTokens {
-        let mut spacing = self.spacing.read().unwrap().clone();
-        for (token, value) in self.spacing_overrides.read().unwrap().iter() {
-            match token {
-                SpacingToken::Space0 => spacing.space_0 = *value,
-                SpacingToken::Space0_5 => spacing.space_0_5 = *value,
-                SpacingToken::Space1 => spacing.space_1 = *value,
-                SpacingToken::Space1_5 => spacing.space_1_5 = *value,
-                SpacingToken::Space2 => spacing.space_2 = *value,
-                SpacingToken::Space2_5 => spacing.space_2_5 = *value,
-                SpacingToken::Space3 => spacing.space_3 = *value,
-                SpacingToken::Space3_5 => spacing.space_3_5 = *value,
-                SpacingToken::Space4 => spacing.space_4 = *value,
-                SpacingToken::Space5 => spacing.space_5 = *value,
-                SpacingToken::Space6 => spacing.space_6 = *value,
-                SpacingToken::Space7 => spacing.space_7 = *value,
-                SpacingToken::Space8 => spacing.space_8 = *value,
-                SpacingToken::Space9 => spacing.space_9 = *value,
-                SpacingToken::Space10 => spacing.space_10 = *value,
-                SpacingToken::Space11 => spacing.space_11 = *value,
-                SpacingToken::Space12 => spacing.space_12 = *value,
-                SpacingToken::Space14 => spacing.space_14 = *value,
-                SpacingToken::Space16 => spacing.space_16 = *value,
-                SpacingToken::Space20 => spacing.space_20 = *value,
-                SpacingToken::Space24 => spacing.space_24 = *value,
-                SpacingToken::Space28 => spacing.space_28 = *value,
-                SpacingToken::Space32 => spacing.space_32 = *value,
-            }
-        }
-        spacing
-    }
-
-    fn effective_radius_tokens(&self) -> RadiusTokens {
-        let mut radii = self.radii.read().unwrap().clone();
-        for (token, value) in self.radius_overrides.read().unwrap().iter() {
-            match token {
-                RadiusToken::None => radii.radius_none = *value,
-                RadiusToken::Sm => radii.radius_sm = *value,
-                RadiusToken::Default => radii.radius_default = *value,
-                RadiusToken::Md => radii.radius_md = *value,
-                RadiusToken::Lg => radii.radius_lg = *value,
-                RadiusToken::Xl => radii.radius_xl = *value,
-                RadiusToken::Xxl => radii.radius_2xl = *value,
-                RadiusToken::Xxxl => radii.radius_3xl = *value,
-                RadiusToken::Full => radii.radius_full = *value,
-            }
-        }
-        radii
-    }
-
-    fn recompute_component_tokens(&self) {
-        let spacing = self.effective_spacing_tokens();
-        let radii = self.effective_radius_tokens();
-        let typography = self.typography.read().unwrap().clone();
-        let shadows = self.shadows.read().unwrap().clone();
-
-        *self.components.write().unwrap() =
-            ComponentTokens::from_primitives(&spacing, &radii, &typography, &shadows);
-    }
-
-    /// Initialize the global theme state (call once at app startup)
+    /// Initialize (or replace) the global theme state.
+    ///
+    /// Safe to call after the framework's auto-initialization. The
+    /// windowed / mobile runtimes call [`Self::init_default`] before
+    /// the user's UI builder runs, which means a user calling `init`
+    /// from inside their builder would previously hit `OnceLock::set`
+    /// returning `Err` and have their theme silently dropped. This
+    /// path now swaps the bundle and re-derives every token set on
+    /// the existing state, then triggers the registered redraw
+    /// callback so CSS re-parses against the new theme variables.
     pub fn init(bundle: ThemeBundle, scheme: ColorScheme) {
         let theme = bundle.for_scheme(scheme);
 
-        let state = ThemeState {
-            bundle,
-            scheme: RwLock::new(scheme),
-            colors: RwLock::new(theme.colors().clone()),
-            shadows: RwLock::new(theme.shadows().clone()),
-            opacities: RwLock::new(OpacityTokens::default()),
-            spacing: RwLock::new(theme.spacing().clone()),
-            typography: RwLock::new(theme.typography().clone()),
-            radii: RwLock::new(theme.radii().clone()),
-            components: RwLock::new(theme.components()),
-            animations: RwLock::new(theme.animations().clone()),
-            color_overrides: RwLock::new(FxHashMap::default()),
-            spacing_overrides: RwLock::new(FxHashMap::default()),
-            opacity_overrides: RwLock::new(FxHashMap::default()),
-            radius_overrides: RwLock::new(FxHashMap::default()),
-            needs_repaint: AtomicBool::new(false),
-            needs_layout: AtomicBool::new(false),
-            scheduler_handle: RwLock::new(None),
-            transition: Mutex::new(ThemeTransition::default()),
-        };
+        // Hand any CSS the bundle carries off to the module-level
+        // pending queue so the windowed runner registers it via
+        // `ctx.add_css` on the next frame — after this init has
+        // updated the theme variables. The queue is a
+        // `Mutex<Vec<String>>` static in `blinc_core::context_state`,
+        // so init order doesn't matter: `run_with_theme` calls
+        // `ThemeState::init` before the runner constructs
+        // `BlincContextState`, but the runner's
+        // `drain_stylesheets()` reads from the same place once it
+        // exists.
+        for css in &bundle.css_sources {
+            blinc_core::context_state::queue_pending_stylesheet(css.clone());
+        }
 
-        let _ = THEME_STATE.set(state);
+        // Track whether this call is creating the state or mutating
+        // an existing one, so we can skip the redraw trigger on the
+        // very first install (no UI exists to redraw yet — firing
+        // the callback then is harmless, but the trace log it
+        // produces would be misleading).
+        let mut first_time = false;
+        let state = THEME_STATE.get_or_init(|| {
+            first_time = true;
+            ThemeState {
+                bundle: RwLock::new(bundle.clone()),
+                scheme: RwLock::new(scheme),
+                colors: RwLock::new(theme.colors().clone()),
+                shadows: RwLock::new(theme.shadows().clone()),
+                spacing: RwLock::new(theme.spacing().clone()),
+                typography: RwLock::new(theme.typography().clone()),
+                radii: RwLock::new(theme.radii().clone()),
+                shape: RwLock::new(*theme.shape()),
+                animations: RwLock::new(theme.animations().clone()),
+                color_overrides: RwLock::new(FxHashMap::default()),
+                spacing_overrides: RwLock::new(FxHashMap::default()),
+                radius_overrides: RwLock::new(FxHashMap::default()),
+                needs_repaint: AtomicBool::new(false),
+                needs_layout: AtomicBool::new(false),
+                scheduler_handle: RwLock::new(None),
+                transition: Mutex::new(ThemeTransition::default()),
+            }
+        });
+
+        if first_time {
+            // `get_or_init`'s closure already populated every field
+            // from the bundle we own; nothing left to do.
+            return;
+        }
+
+        // Replace path — `get_or_init` returned a previously-built
+        // state (the runner's platform default, or an earlier user
+        // bundle). Swap the bundle and re-derive each token set so
+        // existing readers see the new values, then trigger the
+        // redraw callback so cached stylesheets reparse against the
+        // new CSS variables.
+        *state.bundle.write().unwrap() = bundle;
+        *state.scheme.write().unwrap() = scheme;
+        *state.colors.write().unwrap() = theme.colors().clone();
+        *state.shadows.write().unwrap() = theme.shadows().clone();
+        *state.spacing.write().unwrap() = theme.spacing().clone();
+        *state.typography.write().unwrap() = theme.typography().clone();
+        *state.radii.write().unwrap() = theme.radii().clone();
+        *state.shape.write().unwrap() = *theme.shape();
+        *state.animations.write().unwrap() = theme.animations().clone();
+        state.color_overrides.write().unwrap().clear();
+        state.spacing_overrides.write().unwrap().clear();
+        state.radius_overrides.write().unwrap().clear();
+        state.needs_repaint.store(true, Ordering::SeqCst);
+        state.needs_layout.store(true, Ordering::SeqCst);
+        trigger_redraw();
     }
 
     /// Set the animation scheduler for theme transitions
@@ -250,7 +250,7 @@ impl ThemeState {
             drop(current);
 
             // Get new theme tokens
-            let theme = self.bundle.for_scheme(scheme);
+            let theme = self.bundle.read().unwrap().for_scheme(scheme);
             let new_colors = theme.colors().clone();
 
             // Update non-color tokens immediately (they don't animate)
@@ -258,7 +258,7 @@ impl ThemeState {
             *self.spacing.write().unwrap() = theme.spacing().clone();
             *self.typography.write().unwrap() = theme.typography().clone();
             *self.radii.write().unwrap() = theme.radii().clone();
-            *self.components.write().unwrap() = theme.components();
+            *self.shape.write().unwrap() = *theme.shape();
             *self.animations.write().unwrap() = theme.animations().clone();
 
             // Try to animate colors if scheduler handle is available
@@ -324,7 +324,7 @@ impl ThemeState {
         );
 
         // Interpolate colors based on progress
-        if let (Some(ref from), Some(ref to)) = (&transition.from_colors, &transition.to_colors) {
+        if let (Some(from), Some(to)) = (&transition.from_colors, &transition.to_colors) {
             let interpolated = interpolate_color_tokens(from, to, progress);
             drop(transition);
             *self.colors.write().unwrap() = interpolated;
@@ -396,11 +396,26 @@ impl ThemeState {
 
     // ========== CSS Variable Generation ==========
 
-    /// Generate a CSS variable map from all color tokens.
+    /// Generate a CSS variable map from every token family on the
+    /// active theme.
     ///
-    /// Returns a `HashMap<String, String>` where keys are variable names
-    /// (without `--` prefix) and values are hex color strings.
-    /// Variable names match the `theme()` CSS function token names.
+    /// Emits ~100 variables covering colour, radius, spacing,
+    /// typography (family / size / weight / line-height / tracking)
+    /// and motion (durations / easings). Keys are kebab-case
+    /// without the `--` prefix. Values are CSS-ready strings:
+    ///
+    /// - Colour tokens — `#rrggbb` or `rgba(r,g,b,a)`.
+    /// - Lengths (radius / spacing / type sizes) — `Npx`.
+    /// - Letter-spacing (tracking) — `Nem`.
+    /// - Durations — `Nms`.
+    /// - Font families — comma-separated CSS family stack.
+    /// - Easings — `linear` keyword or `cubic-bezier(...)`.
+    /// - Font weights and line-heights — unitless numerics.
+    ///
+    /// The CN component stylesheet (`blinc_cn::cn_styles::CN_STYLES`)
+    /// consumes these via `var(--radius-default)` etc., so the
+    /// active theme's ladder flows through to every cn widget
+    /// without per-widget Rust glue.
     ///
     /// # Example
     ///
@@ -408,6 +423,10 @@ impl ThemeState {
     /// let vars = ThemeState::get().to_css_variable_map();
     /// // vars["text-primary"] == "#1a1a2e"
     /// // vars["surface"] == "#ffffff"
+    /// // vars["radius-xl"] == "18px"      (Hybrid)
+    /// // vars["text-sm"] == "13px"        (Universal HID)
+    /// // vars["duration-fast"] == "180ms" (Hybrid)
+    /// // vars["font-sans"] == "\"Noto Sans\", system-ui, …"
     /// ```
     pub fn to_css_variable_map(&self) -> HashMap<String, String> {
         fn hex(c: Color) -> String {
@@ -428,8 +447,55 @@ impl ThemeState {
                 )
             }
         }
+        fn px(v: f32) -> String {
+            // Strip trailing `.0` so `12.0` becomes `"12px"`, matching
+            // hand-written CSS conventions. Fractional values keep
+            // the decimal (`2.5px`).
+            if (v - v.round()).abs() < f32::EPSILON {
+                format!("{}px", v as i64)
+            } else {
+                format!("{}px", v)
+            }
+        }
+        fn em(v: f32) -> String {
+            // tracking values are emitted as em; keep the decimal so
+            // a value like `-0.025` reads naturally.
+            format!("{}em", v)
+        }
+        fn ms(v: u64) -> String {
+            format!("{}ms", v)
+        }
+        fn family(f: &crate::tokens::FontFamily) -> String {
+            // Quote names that contain whitespace (matches the
+            // canonical CSS convention `"Noto Sans", system-ui, …`).
+            fn quote(s: &str) -> String {
+                if s.contains(char::is_whitespace) {
+                    format!("\"{}\"", s)
+                } else {
+                    s.to_string()
+                }
+            }
+            let mut out = quote(&f.name);
+            for fb in &f.fallbacks {
+                out.push_str(", ");
+                out.push_str(&quote(fb));
+            }
+            out
+        }
+        fn easing(e: crate::tokens::Easing) -> String {
+            use crate::tokens::Easing;
+            match e {
+                Easing::Linear => "linear".to_string(),
+                Easing::EaseIn => "cubic-bezier(0.4, 0, 1, 1)".to_string(),
+                Easing::EaseOut => "cubic-bezier(0, 0, 0.2, 1)".to_string(),
+                Easing::EaseInOut => "cubic-bezier(0.4, 0, 0.2, 1)".to_string(),
+                Easing::CubicBezier(a, b, c, d) => {
+                    format!("cubic-bezier({}, {}, {}, {})", a, b, c, d)
+                }
+            }
+        }
 
-        let mut vars = HashMap::with_capacity(70);
+        let mut vars = HashMap::with_capacity(110);
 
         // Use self.color() which checks overrides first
         vars.insert("primary".into(), hex(self.color(ColorToken::Primary)));
@@ -498,10 +564,34 @@ impl ThemeState {
             "border-focus".into(),
             hex(self.color(ColorToken::BorderFocus)),
         );
+        // Faded variant of `--border-focus` for the focus *ring* —
+        // the outer `outline` that sits 2 px out from the input
+        // edge. Using the same solid colour as the border makes the
+        // ring read as a second hard stroke; ~35 % alpha gives it
+        // the soft halo the HID expects while keeping the input's
+        // own border the clear, solid focus indicator.
+        let focus_ring = {
+            let c = self.color(ColorToken::BorderFocus);
+            blinc_core::Color::rgba(c.r, c.g, c.b, 0.35)
+        };
+        vars.insert("focus-ring".into(), hex(focus_ring));
         vars.insert(
             "border-error".into(),
             hex(self.color(ColorToken::BorderError)),
         );
+        // Same trick for the error focus state.
+        let error_ring = {
+            let c = self.color(ColorToken::BorderError);
+            blinc_core::Color::rgba(c.r, c.g, c.b, 0.35)
+        };
+        vars.insert("focus-ring-error".into(), hex(error_ring));
+        // …and for any "success-state" widget that wants a green
+        // affirmative ring.
+        let success_ring = {
+            let c = self.color(ColorToken::Success);
+            blinc_core::Color::rgba(c.r, c.g, c.b, 0.35)
+        };
+        vars.insert("focus-ring-success".into(), hex(success_ring));
         vars.insert("input-bg".into(), hex(self.color(ColorToken::InputBg)));
         vars.insert(
             "input-bg-hover".into(),
@@ -534,165 +624,118 @@ impl ThemeState {
             hex(self.color(ColorToken::TooltipText)),
         );
 
-        let components = self.components();
-        vars.insert("control-height-sm".into(), px(components.control.height_sm));
-        vars.insert("control-height-md".into(), px(components.control.height_md));
-        vars.insert("control-height-lg".into(), px(components.control.height_lg));
-        vars.insert("control-px-sm".into(), px(components.control.padding_x_sm));
-        vars.insert("control-px-md".into(), px(components.control.padding_x_md));
-        vars.insert("control-px-lg".into(), px(components.control.padding_x_lg));
-        vars.insert("control-py-sm".into(), px(components.control.padding_y_sm));
-        vars.insert("control-py-md".into(), px(components.control.padding_y_md));
-        vars.insert("control-py-lg".into(), px(components.control.padding_y_lg));
-        vars.insert("control-radius-sm".into(), px(components.control.radius_sm));
-        vars.insert("control-radius-md".into(), px(components.control.radius_md));
-        vars.insert("control-radius-lg".into(), px(components.control.radius_lg));
-        vars.insert(
-            "control-corner-shape".into(),
-            components.control.corner_shape_rest.to_string(),
-        );
-        vars.insert(
-            "control-corner-shape-hover".into(),
-            components.control.corner_shape_hover.to_string(),
-        );
-        vars.insert("container-radius".into(), px(components.container.radius));
-        vars.insert("container-padding".into(), px(components.container.padding));
-        vars.insert(
-            "container-padding-compact".into(),
-            px(components.container.padding_compact),
-        );
-        vars.insert(
-            "container-header-gap".into(),
-            px(components.container.header_gap),
-        );
-        vars.insert(
-            "container-footer-gap".into(),
-            px(components.container.footer_gap),
-        );
-        vars.insert(
-            "container-section-gap".into(),
-            px(components.container.section_gap),
-        );
-        vars.insert(
-            "container-corner-shape".into(),
-            components.container.corner_shape.to_string(),
-        );
-        vars.insert("overlay-radius".into(), px(components.overlay.radius));
-        vars.insert("overlay-px".into(), px(components.overlay.padding_x));
-        vars.insert("overlay-py".into(), px(components.overlay.padding_y));
-        vars.insert(
-            "overlay-item-px".into(),
-            px(components.overlay.item_padding_x),
-        );
-        vars.insert(
-            "overlay-item-py".into(),
-            px(components.overlay.item_padding_y),
-        );
-        vars.insert("overlay-gap".into(), px(components.overlay.gap));
-        vars.insert(
-            "overlay-shadow".into(),
-            css_shadow(&components.overlay.shadow),
-        );
-        vars.insert(
-            "overlay-corner-shape".into(),
-            components.overlay.corner_shape.to_string(),
-        );
-        vars.insert("type-action-sm".into(), px(components.typography.action_sm));
-        vars.insert("type-action-md".into(), px(components.typography.action_md));
-        vars.insert("type-action-lg".into(), px(components.typography.action_lg));
-        vars.insert("type-body-sm".into(), px(components.typography.body_sm));
-        vars.insert("type-body-md".into(), px(components.typography.body_md));
-        vars.insert("type-body-lg".into(), px(components.typography.body_lg));
-        vars.insert("type-label-sm".into(), px(components.typography.label_sm));
-        vars.insert("type-label-md".into(), px(components.typography.label_md));
-        vars.insert("type-label-lg".into(), px(components.typography.label_lg));
-        vars.insert("type-helper".into(), px(components.typography.helper));
-        vars.insert("type-badge".into(), px(components.typography.badge));
-        vars.insert("type-title".into(), px(components.typography.title));
-        vars.insert(
-            "compact-badge-radius".into(),
-            px(components.compact.badge_radius),
-        );
-        vars.insert(
-            "compact-badge-px".into(),
-            px(components.compact.badge_padding_x),
-        );
-        vars.insert(
-            "compact-badge-py".into(),
-            px(components.compact.badge_padding_y),
-        );
-        vars.insert(
-            "compact-kbd-radius".into(),
-            px(components.compact.kbd_radius),
-        );
-        vars.insert(
-            "compact-kbd-px".into(),
-            px(components.compact.kbd_padding_x),
-        );
-        vars.insert(
-            "compact-kbd-py".into(),
-            px(components.compact.kbd_padding_y),
-        );
-        vars.insert(
-            "compact-cluster-gap-sm".into(),
-            px(components.compact.cluster_gap_sm),
-        );
-        vars.insert(
-            "compact-cluster-gap-md".into(),
-            px(components.compact.cluster_gap_md),
-        );
-        vars.insert(
-            "compact-progress-height-sm".into(),
-            px(components.compact.progress_height_sm),
-        );
-        vars.insert(
-            "compact-progress-height-md".into(),
-            px(components.compact.progress_height_md),
-        );
-        vars.insert(
-            "compact-progress-height-lg".into(),
-            px(components.compact.progress_height_lg),
-        );
-        vars.insert(
-            "compact-switch-inset".into(),
-            px(components.compact.switch_inset),
-        );
+        // ===== Radius tokens =====
+        {
+            let r = self.radii.read().unwrap();
+            vars.insert("radius-none".into(), px(r.radius_none));
+            vars.insert("radius-sm".into(), px(r.radius_sm));
+            vars.insert("radius-default".into(), px(r.radius_default));
+            vars.insert("radius-md".into(), px(r.radius_md));
+            vars.insert("radius-lg".into(), px(r.radius_lg));
+            vars.insert("radius-xl".into(), px(r.radius_xl));
+            vars.insert("radius-2xl".into(), px(r.radius_2xl));
+            vars.insert("radius-3xl".into(), px(r.radius_3xl));
+            vars.insert("radius-full".into(), px(r.radius_full));
+        }
+
+        // ===== Spacing tokens (4-px scale) =====
+        {
+            let s = self.spacing.read().unwrap();
+            vars.insert("space-0".into(), px(s.space_0));
+            vars.insert("space-0-5".into(), px(s.space_0_5));
+            vars.insert("space-1".into(), px(s.space_1));
+            vars.insert("space-1-5".into(), px(s.space_1_5));
+            vars.insert("space-2".into(), px(s.space_2));
+            vars.insert("space-2-5".into(), px(s.space_2_5));
+            vars.insert("space-3".into(), px(s.space_3));
+            vars.insert("space-3-5".into(), px(s.space_3_5));
+            vars.insert("space-4".into(), px(s.space_4));
+            vars.insert("space-5".into(), px(s.space_5));
+            vars.insert("space-6".into(), px(s.space_6));
+            vars.insert("space-7".into(), px(s.space_7));
+            vars.insert("space-8".into(), px(s.space_8));
+            vars.insert("space-9".into(), px(s.space_9));
+            vars.insert("space-10".into(), px(s.space_10));
+            vars.insert("space-11".into(), px(s.space_11));
+            vars.insert("space-12".into(), px(s.space_12));
+            vars.insert("space-14".into(), px(s.space_14));
+            vars.insert("space-16".into(), px(s.space_16));
+            vars.insert("space-20".into(), px(s.space_20));
+            vars.insert("space-24".into(), px(s.space_24));
+            vars.insert("space-28".into(), px(s.space_28));
+            vars.insert("space-32".into(), px(s.space_32));
+        }
+
+        // ===== Typography tokens =====
+        {
+            let t = self.typography.read().unwrap();
+            // Font families — emitted as full CSS family stacks so a
+            // single `font-family: var(--font-sans);` declaration in
+            // CN_STYLES picks up the theme's "Noto Sans, system-ui, …"
+            // (Universal HID) or "system-ui, …" (BlincTheme default).
+            vars.insert("font-sans".into(), family(&t.font_sans));
+            vars.insert("font-mono".into(), family(&t.font_mono));
+            vars.insert("font-serif".into(), family(&t.font_serif));
+            // Sizes
+            vars.insert("text-xs".into(), px(t.text_xs));
+            vars.insert("text-sm".into(), px(t.text_sm));
+            vars.insert("text-base".into(), px(t.text_base));
+            vars.insert("text-lg".into(), px(t.text_lg));
+            vars.insert("text-xl".into(), px(t.text_xl));
+            vars.insert("text-2xl".into(), px(t.text_2xl));
+            vars.insert("text-3xl".into(), px(t.text_3xl));
+            vars.insert("text-4xl".into(), px(t.text_4xl));
+            vars.insert("text-5xl".into(), px(t.text_5xl));
+            // Weights (numeric 100..900)
+            vars.insert("font-thin".into(), (t.font_thin.as_u16()).to_string());
+            vars.insert("font-light".into(), (t.font_light.as_u16()).to_string());
+            vars.insert("font-normal".into(), (t.font_normal.as_u16()).to_string());
+            vars.insert("font-medium".into(), (t.font_medium.as_u16()).to_string());
+            vars.insert(
+                "font-semibold".into(),
+                (t.font_semibold.as_u16()).to_string(),
+            );
+            vars.insert("font-bold".into(), (t.font_bold.as_u16()).to_string());
+            vars.insert("font-black".into(), (t.font_black.as_u16()).to_string());
+            // Line heights (unitless multipliers — CSS `line-height` accepts these directly)
+            vars.insert("leading-none".into(), t.leading_none.to_string());
+            vars.insert("leading-tight".into(), t.leading_tight.to_string());
+            vars.insert("leading-snug".into(), t.leading_snug.to_string());
+            vars.insert("leading-normal".into(), t.leading_normal.to_string());
+            vars.insert("leading-relaxed".into(), t.leading_relaxed.to_string());
+            vars.insert("leading-loose".into(), t.leading_loose.to_string());
+            // Letter-spacing (em)
+            vars.insert("tracking-tighter".into(), em(t.tracking_tighter));
+            vars.insert("tracking-tight".into(), em(t.tracking_tight));
+            vars.insert("tracking-normal".into(), em(t.tracking_normal));
+            vars.insert("tracking-wide".into(), em(t.tracking_wide));
+            vars.insert("tracking-wider".into(), em(t.tracking_wider));
+        }
+
+        // ===== Motion tokens =====
+        {
+            let a = self.animations.read().unwrap();
+            vars.insert("duration-fastest".into(), ms(a.duration_fastest));
+            vars.insert("duration-faster".into(), ms(a.duration_faster));
+            vars.insert("duration-fast".into(), ms(a.duration_fast));
+            vars.insert("duration-normal".into(), ms(a.duration_normal));
+            vars.insert("duration-slow".into(), ms(a.duration_slow));
+            vars.insert("duration-slower".into(), ms(a.duration_slower));
+            vars.insert("duration-slowest".into(), ms(a.duration_slowest));
+            vars.insert("ease-default".into(), easing(a.ease_default));
+            vars.insert("ease-in".into(), easing(a.ease_in));
+            vars.insert("ease-out".into(), easing(a.ease_out));
+            vars.insert("ease-in-out".into(), easing(a.ease_in_out));
+            // Semantic easing slots — intent-shaped curves so CSS
+            // animations / transitions can read `var(--ease-state)`
+            // etc. instead of hard-coding cubic-beziers.
+            vars.insert("ease-state".into(), easing(a.ease_state));
+            vars.insert("ease-nav".into(), easing(a.ease_nav));
+            vars.insert("ease-spring".into(), easing(a.ease_spring));
+            vars.insert("ease-sheet".into(), easing(a.ease_sheet));
+        }
 
         vars
-    }
-
-    /// Get semantic component tokens
-    pub fn components(&self) -> ComponentTokens {
-        self.components.read().unwrap().clone()
-    }
-
-    // ========== Opacity Access ==========
-
-    /// Get an opacity token value (checks override first)
-    pub fn opacity_value(&self, token: OpacityToken) -> f32 {
-        if let Some(value) = self.opacity_overrides.read().unwrap().get(&token) {
-            return *value;
-        }
-        self.opacities.read().unwrap().get(token)
-    }
-
-    /// Get all opacity tokens
-    pub fn opacities(&self) -> OpacityTokens {
-        self.opacities.read().unwrap().clone()
-    }
-
-    /// Set an opacity override (triggers repaint only)
-    pub fn set_opacity_override(&self, token: OpacityToken, value: f32) {
-        self.opacity_overrides.write().unwrap().insert(token, value);
-        self.needs_repaint.store(true, Ordering::SeqCst);
-        trigger_redraw();
-    }
-
-    /// Remove an opacity override
-    pub fn remove_opacity_override(&self, token: OpacityToken) {
-        self.opacity_overrides.write().unwrap().remove(&token);
-        self.needs_repaint.store(true, Ordering::SeqCst);
-        trigger_redraw();
     }
 
     // ========== Spacing Access ==========
@@ -713,7 +756,6 @@ impl ThemeState {
     /// Set a spacing override (triggers layout)
     pub fn set_spacing_override(&self, token: SpacingToken, value: f32) {
         self.spacing_overrides.write().unwrap().insert(token, value);
-        self.recompute_component_tokens();
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
@@ -721,7 +763,6 @@ impl ThemeState {
     /// Remove a spacing override
     pub fn remove_spacing_override(&self, token: SpacingToken) {
         self.spacing_overrides.write().unwrap().remove(&token);
-        self.recompute_component_tokens();
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
@@ -751,17 +792,25 @@ impl ThemeState {
     /// Set a radius override (triggers repaint - radii don't affect layout)
     pub fn set_radius_override(&self, token: RadiusToken, value: f32) {
         self.radius_overrides.write().unwrap().insert(token, value);
-        self.recompute_component_tokens();
         self.needs_repaint.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
 
-    /// Remove a radius override
-    pub fn remove_radius_override(&self, token: RadiusToken) {
-        self.radius_overrides.write().unwrap().remove(&token);
-        self.recompute_component_tokens();
-        self.needs_repaint.store(true, Ordering::SeqCst);
-        trigger_redraw();
+    // ========== Shape Access ==========
+
+    /// Get the active corner-shape tokens.
+    ///
+    /// `ShapeTokens` is 12 bytes (`Copy`), so this hands out a value
+    /// rather than a borrowed reference — the paint walker reads
+    /// it once per frame and the cost is negligible compared to
+    /// locking the `RwLock`.
+    pub fn shape(&self) -> ShapeTokens {
+        *self.shape.read().unwrap()
+    }
+
+    /// Get a single shape token value.
+    pub fn shape_token(&self, token: ShapeToken) -> f32 {
+        self.shape.read().unwrap().get(token)
     }
 
     // ========== Shadow Access ==========
@@ -806,9 +855,7 @@ impl ThemeState {
     pub fn clear_overrides(&self) {
         self.color_overrides.write().unwrap().clear();
         self.spacing_overrides.write().unwrap().clear();
-        self.opacity_overrides.write().unwrap().clear();
         self.radius_overrides.write().unwrap().clear();
-        self.recompute_component_tokens();
         self.needs_repaint.store(true, Ordering::SeqCst);
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
@@ -820,28 +867,103 @@ fn interpolate_color_tokens(from: &ColorTokens, to: &ColorTokens, t: f32) -> Col
     ColorTokens::lerp(from, to, t)
 }
 
-fn px(value: f32) -> String {
-    if value.fract() == 0.0 {
-        format!("{value:.0}px")
-    } else {
-        format!("{value:.2}px")
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::themes::universal::HybridTheme;
 
-fn css_shadow(shadow: &Shadow) -> String {
-    if shadow.color.a == 0.0 {
-        return "none".into();
+    /// Spot-check that `to_css_variable_map` emits keys from every
+    /// token family the cn stylesheet relies on. Without these the
+    /// CN_STYLES `var(...)` references would dead-resolve.
+    #[test]
+    fn css_variable_map_emits_every_token_family() {
+        // Use a known bundle so values are predictable.
+        ThemeState::init(HybridTheme::bundle(), ColorScheme::Light);
+        let vars = ThemeState::get().to_css_variable_map();
+
+        // Colour
+        assert!(vars.contains_key("primary"), "missing --primary");
+        assert!(vars.contains_key("surface"), "missing --surface");
+        assert!(vars.contains_key("surface-elevated"));
+        // Radius
+        assert!(vars.contains_key("radius-sm"));
+        assert!(vars.contains_key("radius-default"));
+        assert!(vars.contains_key("radius-xl"));
+        assert!(vars.contains_key("radius-full"));
+        // Spacing
+        assert!(vars.contains_key("space-0"));
+        assert!(vars.contains_key("space-4"));
+        assert!(vars.contains_key("space-32"));
+        // Typography — family
+        assert!(vars.contains_key("font-sans"));
+        assert!(vars.contains_key("font-mono"));
+        // Typography — size
+        assert!(vars.contains_key("text-xs"));
+        assert!(vars.contains_key("text-sm"));
+        assert!(vars.contains_key("text-base"));
+        // Typography — weight
+        assert!(vars.contains_key("font-medium"));
+        assert!(vars.contains_key("font-bold"));
+        // Typography — leading + tracking
+        assert!(vars.contains_key("leading-normal"));
+        assert!(vars.contains_key("tracking-tight"));
+        // Motion
+        assert!(vars.contains_key("duration-fast"));
+        assert!(vars.contains_key("duration-slowest"));
+        assert!(vars.contains_key("ease-default"));
     }
 
-    format!(
-        "{} {} {} {} rgba({},{},{},{})",
-        px(shadow.offset_x),
-        px(shadow.offset_y),
-        px(shadow.blur),
-        px(shadow.spread),
-        (shadow.color.r * 255.0) as u8,
-        (shadow.color.g * 255.0) as u8,
-        (shadow.color.b * 255.0) as u8,
-        shadow.color.a
-    )
+    #[test]
+    fn css_variable_values_are_well_formed() {
+        ThemeState::init(HybridTheme::bundle(), ColorScheme::Light);
+        let vars = ThemeState::get().to_css_variable_map();
+
+        // Lengths carry `px`.
+        assert!(
+            vars["radius-default"].ends_with("px"),
+            "radius-default = {}",
+            vars["radius-default"]
+        );
+        assert!(vars["text-sm"].ends_with("px"));
+        assert!(vars["space-4"].ends_with("px"));
+
+        // Durations carry `ms`.
+        assert!(vars["duration-fast"].ends_with("ms"));
+
+        // Letter-spacing carries `em`.
+        assert!(vars["tracking-tight"].ends_with("em"));
+
+        // Font weights are numeric and unitless.
+        let w: u16 = vars["font-medium"]
+            .parse()
+            .expect("font-medium should be numeric");
+        assert!((100..=900).contains(&w));
+
+        // Easings parse to a CSS function or a keyword.
+        let ease = &vars["ease-default"];
+        assert!(
+            ease.starts_with("cubic-bezier(") || ease == "linear",
+            "ease-default = {}",
+            ease
+        );
+
+        // Font family contains the canonical name and a comma-
+        // separated stack.
+        assert!(
+            vars["font-sans"].contains("Noto Sans"),
+            "Hybrid promotes Noto Sans to canonical sans; got {}",
+            vars["font-sans"]
+        );
+    }
+
+    /// Universal HID variants differ on `text_sm` (13 vs default 14)
+    /// and `radius_xl` (varies per variant). Confirm the css map
+    /// picks up the active theme's value, not a fallback constant.
+    #[test]
+    fn css_variable_map_reflects_active_theme() {
+        ThemeState::init(HybridTheme::bundle(), ColorScheme::Light);
+        let vars = ThemeState::get().to_css_variable_map();
+        assert_eq!(vars["radius-xl"], "18px"); // Hybrid: 18
+        assert_eq!(vars["text-sm"], "13px"); // Universal HID: 13 (vs default 14)
+    }
 }

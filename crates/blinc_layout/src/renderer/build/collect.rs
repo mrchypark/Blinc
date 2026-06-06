@@ -40,16 +40,75 @@ use super::super::{
 impl RenderTree {
     /// Recursively build elements into the tree
     ///
-    /// This builds the layout tree first (via element.build()), then walks the
-    /// element tree again to collect render properties for each node.
+    /// Three-phase walk per build pass: layout-build, mint stable
+    /// ids, then collect render props.
+    ///
+    /// `element.build(layout_tree)` materialises all layout nodes
+    /// and parent/child relationships. `root` is set so
+    /// `mint_stable_ids_walk` can find its seed.
+    /// `mint_stable_ids_walk` walks the freshly-built layout tree
+    /// and assigns each node a `StableNodeId` derived from
+    /// `(parent_stable, sibling_index, element_id_if_set)`.
+    /// `collect_render_props` runs last so every collect site has
+    /// `self.stable_id(node_id)` available — handler / scroll
+    /// physics / motion bindings register under stable keys and
+    /// survive subsequent rebuilds. See
+    /// `project_stable_node_id_design` (memory) for the migration
+    /// plan.
     pub(crate) fn build_element<E: ElementBuilder>(&mut self, element: &E) -> LayoutNodeId {
-        // First, build the entire layout tree (this creates all nodes and parent-child relationships)
         let root_id = element.build(&mut self.layout_tree);
-
-        // Now walk the element tree to collect render props for each node
+        self.root = Some(root_id);
+        // CRITICAL ordering: `mint_stable_ids_walk` derives each
+        // stable id from `(parent_stable, sibling_index,
+        // widget_key)` where `widget_key` is the node's
+        // `element_id` as looked up from `element_registry`. If we
+        // mint BEFORE registering ids, every node with `.id()` is
+        // derived with `widget_key=None` the first time but with
+        // `widget_key=Some("...")` on every subsequent mint — so
+        // its stable id (and every descendant's, since `derive_child`
+        // recurses on `parent_stable`) changes between the initial
+        // build and the next subtree rebuild. Handlers registered
+        // under the initial stable id end up orphaned and the
+        // post-rebuild `sweep_stale_handlers` evicts them, leaving
+        // the live node with no handler — click handlers stop
+        // firing on whole subtrees rooted at any `.id()`'d node.
+        // Pre-walk the subtree so `element_registry.get_id(node)`
+        // returns the same value on every mint pass.
+        self.register_element_ids_walk(element, root_id);
+        self.build_generation = self.build_generation.wrapping_add(1);
+        self.mint_stable_ids_walk();
         self.collect_render_props(element, root_id);
-
+        self.auto_fill_animation_stable_keys();
+        // Evict handler entries whose stable id didn't survive this
+        // build pass — replacement for the destructive wipe pattern
+        // that used to live in `update_if_changed`.
+        self.sweep_stale_handlers();
         root_id
+    }
+
+    /// Pre-register `element_id`s for the subtree rooted at
+    /// `node_id` so `mint_stable_ids_walk` reads consistent
+    /// `widget_key`s on every pass.
+    ///
+    /// Walks the `ElementBuilder` tree and the layout tree in
+    /// lockstep — both have identical shape after `build()`, so
+    /// `child_builders[i]` corresponds to `layout_tree.children(node)[i]`.
+    /// Registers ids in `element_registry` only; render props,
+    /// handlers, classes, and the rest of `collect_render_props_boxed`
+    /// run later (after mint).
+    pub(crate) fn register_element_ids_walk(
+        &mut self,
+        element: &dyn ElementBuilder,
+        node_id: LayoutNodeId,
+    ) {
+        if let Some(id) = element.element_id() {
+            self.element_registry.register(id, node_id);
+        }
+        let child_node_ids = self.layout_tree.children(node_id);
+        let child_builders = element.children_builders();
+        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+            self.register_element_ids_walk(child_builder.as_ref(), child_node_id);
+        }
     }
 
     /// Collect render properties from an element and its children
@@ -98,7 +157,8 @@ impl RenderTree {
 
         // Register event handlers if present
         if let Some(handlers) = element.event_handlers() {
-            self.handler_registry.register(node_id, handlers.clone());
+            let stable_id = self.stable_id_or_warn(node_id);
+            self.handler_registry.register(stable_id, handlers.clone());
         }
 
         // Store scroll physics if this is a scroll element
@@ -140,10 +200,10 @@ impl RenderTree {
             self.register_visual_animation_config(node_id, config);
         }
 
-        // Register element ID if present (for selector API)
-        if let Some(id) = element.element_id() {
-            self.element_registry.register(id, node_id);
-        }
+        // Element IDs are pre-registered by `register_element_ids_walk`
+        // before mint runs, so mint reads consistent `widget_key`s on
+        // every pass. Re-registering here would just trip the duplicate
+        // warning — skip.
 
         // Register CSS classes for complex selector matching
         let classes = element.element_classes();
@@ -171,7 +231,9 @@ impl RenderTree {
         if child_node_ids.len() != child_builders.len() && !child_node_ids.is_empty() {
             tracing::warn!(
                 "collect_render_props: node {:?} has {} layout children but {} builder children (mismatch!)",
-                node_id, child_node_ids.len(), child_builders.len()
+                node_id,
+                child_node_ids.len(),
+                child_builders.len()
             );
         }
 
@@ -274,6 +336,7 @@ impl RenderTree {
             }
             ElementTypeId::Canvas => ElementType::Canvas(CanvasData {
                 render_fn: element.canvas_render_info(),
+                is_static: element.is_static_canvas(),
             }),
             ElementTypeId::StyledText => {
                 if let Some(info) = element.styled_text_render_info() {
@@ -326,7 +389,8 @@ impl RenderTree {
 
         // Register event handlers if present
         if let Some(handlers) = element.event_handlers() {
-            self.handler_registry.register(node_id, handlers.clone());
+            let stable_id = self.stable_id_or_warn(node_id);
+            self.handler_registry.register(stable_id, handlers.clone());
         }
 
         // Store scroll physics if this is a scroll element
@@ -368,10 +432,10 @@ impl RenderTree {
             self.register_visual_animation_config(node_id, config);
         }
 
-        // Register element ID if present (for selector API)
-        if let Some(id) = element.element_id() {
-            self.element_registry.register(id, node_id);
-        }
+        // Element IDs are pre-registered by `register_element_ids_walk`
+        // before mint runs, so mint reads consistent `widget_key`s on
+        // every pass. Re-registering here would just trip the duplicate
+        // warning — skip.
 
         // Register CSS classes for complex selector matching
         let classes = element.element_classes();
@@ -577,6 +641,7 @@ impl RenderTree {
             }
             ElementTypeId::Canvas => ElementType::Canvas(CanvasData {
                 render_fn: element.canvas_render_info(),
+                is_static: element.is_static_canvas(),
             }),
             ElementTypeId::StyledText => {
                 if let Some(info) = element.styled_text_render_info() {
@@ -629,7 +694,8 @@ impl RenderTree {
 
         // Register event handlers if present
         if let Some(handlers) = element.event_handlers() {
-            self.handler_registry.register(node_id, handlers.clone());
+            let stable_id = self.stable_id_or_warn(node_id);
+            self.handler_registry.register(stable_id, handlers.clone());
         }
 
         // Store scroll physics if this is a scroll element
@@ -662,10 +728,10 @@ impl RenderTree {
             self.register_visual_animation_config(node_id, config);
         }
 
-        // Register element ID if present (for selector API)
-        if let Some(id) = element.element_id() {
-            self.element_registry.register(id, node_id);
-        }
+        // Element IDs are pre-registered by `register_element_ids_walk`
+        // before mint runs, so mint reads consistent `widget_key`s on
+        // every pass. Re-registering here would just trip the duplicate
+        // warning — skip.
 
         // Register CSS classes for complex selector matching
         let classes = element.element_classes();

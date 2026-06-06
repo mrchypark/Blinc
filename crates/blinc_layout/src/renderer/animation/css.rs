@@ -44,14 +44,62 @@ impl RenderTree {
 
         // Resolve the full keyframe animation
         if let Some(animation) = stylesheet.resolve_keyframe_animation(&element_id) {
+            let stable_id = self.stable_id_or_warn(node_id);
             self.css_anim_store.lock().unwrap().animations.insert(
-                node_id,
+                stable_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
             return true;
         }
 
         false
+    }
+
+    /// Start a CSS keyframe animation for a node driven by a class rule.
+    ///
+    /// `start_css_animation_for_element` only looks up `#id` rules,
+    /// so class-only animations like `.cn-popover-content {
+    /// animation: cn-popover-enter ... }` never started even though
+    /// the rule existed in the stylesheet. This helper bridges the
+    /// gap: given a `node_id` whose class has an `animation` rule,
+    /// it resolves the keyframes block and registers the
+    /// `ActiveCssAnimation` against the node's stable id.
+    pub fn start_css_animation_for_class(&mut self, node_id: LayoutNodeId, class: &str) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+        let Some(style) = stylesheet.get_class(class) else {
+            return false;
+        };
+        let Some(anim_config) = style.animation.as_ref() else {
+            return false;
+        };
+        let Some(keyframes) = stylesheet.get_keyframes(&anim_config.name) else {
+            return false;
+        };
+
+        let mut animation = keyframes
+            .to_multi_keyframe_animation(anim_config.duration_ms, anim_config.timing.to_easing());
+        let iterations = if anim_config.iteration_count == 0 {
+            -1
+        } else {
+            anim_config.iteration_count as i32
+        };
+        animation.set_iterations(iterations);
+        animation.set_delay(anim_config.delay_ms);
+        animation.set_direction(anim_config.direction.to_play_direction());
+        animation.set_fill_mode(anim_config.fill_mode.to_fill_mode());
+        if anim_config.direction.starts_reversed() {
+            animation.set_reversed(true);
+        }
+
+        let stable_id = self.stable_id_or_warn(node_id);
+        self.css_anim_store.lock().unwrap().animations.insert(
+            stable_id,
+            crate::render_state::ActiveCssAnimation::new(animation),
+        );
+        true
     }
 
     /// Start a CSS keyframe animation for a node with a specific state
@@ -77,8 +125,9 @@ impl RenderTree {
         if let Some(animation) =
             stylesheet.resolve_keyframe_animation_with_state(&element_id, state)
         {
+            let stable_id = self.stable_id_or_warn(node_id);
             self.css_anim_store.lock().unwrap().animations.insert(
-                node_id,
+                stable_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
             return true;
@@ -91,8 +140,11 @@ impl RenderTree {
     ///
     /// Call this during rendering to apply animated values.
     pub fn apply_css_animation_to_props(&self, node_id: LayoutNodeId, props: &mut RenderProps) {
+        let Some(stable_id) = self.stable_id(node_id) else {
+            return;
+        };
         let store = self.css_anim_store.lock().unwrap();
-        if let Some(active_anim) = store.animations.get(&node_id) {
+        if let Some(active_anim) = store.animations.get(&stable_id) {
             let anim_props = &active_anim.current_properties;
 
             // Apply animated opacity
@@ -146,30 +198,37 @@ impl RenderTree {
         &self,
         node_id: LayoutNodeId,
     ) -> Option<blinc_animation::KeyframeProperties> {
+        let stable_id = self.stable_id(node_id)?;
         let store = self.css_anim_store.lock().unwrap();
         store
             .animations
-            .get(&node_id)
+            .get(&stable_id)
             .map(|a| a.current_properties.clone())
     }
 
     /// Check if a node has an active CSS animation
     pub fn has_css_animation(&self, node_id: LayoutNodeId) -> bool {
+        let Some(stable_id) = self.stable_id(node_id) else {
+            return false;
+        };
         let store = self.css_anim_store.lock().unwrap();
         store
             .animations
-            .get(&node_id)
+            .get(&stable_id)
             .map(|a| a.is_playing)
             .unwrap_or(false)
     }
 
     /// Stop CSS animation for a node
     pub fn stop_css_animation(&mut self, node_id: LayoutNodeId) {
+        let Some(stable_id) = self.stable_id(node_id) else {
+            return;
+        };
         self.css_anim_store
             .lock()
             .unwrap()
             .animations
-            .remove(&node_id);
+            .remove(&stable_id);
     }
 
     /// Check if there are no active CSS animations
@@ -181,6 +240,103 @@ impl RenderTree {
     pub fn css_has_active(&self) -> bool {
         let store = self.css_anim_store.lock().unwrap();
         store.has_active_animations() || store.has_active_transitions()
+    }
+
+    /// Whether every currently-playing CSS animation / transition on
+    /// a *visible* node is composite-promotable per
+    /// [`blinc_animation::KeyframeProperties::is_composite_promotable`].
+    ///
+    /// Used by the windowed frame loop's fast-path gate: when this is
+    /// true and there's no other dynamic activity, the walker can be
+    /// skipped — the cached layer textures already hold the subtree
+    /// pixels at base state, and the per-frame composite step
+    /// (`composite_css_layers_overlay`) blits them with the current
+    /// translate / scale / opacity applied at compose time.
+    ///
+    /// **Viewport gating**: animations on nodes that didn't paint
+    /// during the most recent walker pass (i.e. were scrolled
+    /// off-screen or otherwise culled) are ignored. The CSS animation
+    /// store keeps ticking them — their `current_properties` keep
+    /// advancing and `apply_all_css_animation_props` keeps mutating
+    /// `render_node.props` — but their pixel output isn't on the
+    /// surface this frame, so they don't block the fast path. The
+    /// moment one scrolls back into view, the scroll input
+    /// invalidates the cache (see `windowed::Event::Input` ->
+    /// `app.invalidate_render_cache_tagged("had_scroll")`), forcing
+    /// a slow paint that re-walks the now-visible node.
+    ///
+    /// Returns `true` when no visible animation is playing (vacuously
+    /// satisfied) so callers can use it as a single predicate without
+    /// also checking `css_has_active`.
+    pub fn css_active_all_composite_promotable(&self) -> bool {
+        let painted = self.painted_node_ids.borrow();
+        let store = self.css_anim_store.lock().unwrap();
+        for (stable, anim) in store.animations.iter() {
+            if !anim.is_playing {
+                continue;
+            }
+            let Some(layout) = self.stable_to_layout.get(stable).copied() else {
+                continue;
+            };
+            if !painted.contains(&layout) {
+                continue;
+            }
+            // Layout-affecting animations on a *visible* node force
+            // the slow path: `apply_animated_layout_props` will write
+            // to taffy and `compute_layout` will shift bounds the
+            // cache hasn't captured. Off-screen layout animations
+            // (e.g. styling_demo's `grow-shrink` / `constraint-pulse`
+            // ticking in unrelated sections) are tolerated — their
+            // bounds shift affects only their own off-screen flex
+            // container, and a scroll input invalidates the cache
+            // before the user can see the discrepancy.
+            if Self::keyframe_props_affect_layout(&anim.current_properties) {
+                return false;
+            }
+            if !anim.current_properties.is_composite_promotable() {
+                return false;
+            }
+        }
+        for (stable, trans) in store.transitions.iter() {
+            if !trans.is_playing {
+                continue;
+            }
+            let Some(layout) = self.stable_to_layout.get(stable).copied() else {
+                continue;
+            };
+            if !painted.contains(&layout) {
+                continue;
+            }
+            if Self::keyframe_props_affect_layout(&trans.current_properties) {
+                return false;
+            }
+            if !trans.current_properties.is_composite_promotable() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// True iff the keyframe properties touch any taffy style that
+    /// would force a `compute_layout` (and therefore potentially
+    /// reshuffle visible nodes via flex / grid). Mirrors the
+    /// `has_layout_props` check inside `apply_animated_layout_props`.
+    fn keyframe_props_affect_layout(p: &blinc_animation::KeyframeProperties) -> bool {
+        p.width.is_some()
+            || p.height.is_some()
+            || p.padding.is_some()
+            || p.margin.is_some()
+            || p.gap.is_some()
+            || p.min_width.is_some()
+            || p.max_width.is_some()
+            || p.min_height.is_some()
+            || p.max_height.is_some()
+            || p.flex_grow.is_some()
+            || p.flex_shrink.is_some()
+            || p.inset_top.is_some()
+            || p.inset_right.is_some()
+            || p.inset_bottom.is_some()
+            || p.inset_left.is_some()
     }
 
     /// Start CSS animations for all registered elements that have animations defined
@@ -201,12 +357,15 @@ impl RenderTree {
 
         for (element_id, node_id) in &registered_ids {
             // Skip if already has an active animation (lock briefly, release before calling start)
+            let Some(stable_id) = self.stable_id(*node_id) else {
+                continue;
+            };
             let already_has = self
                 .css_anim_store
                 .lock()
                 .unwrap()
                 .animations
-                .contains_key(node_id);
+                .contains_key(&stable_id);
             if already_has {
                 continue;
             }
@@ -219,6 +378,50 @@ impl RenderTree {
                 );
             }
         }
+
+        // Class-based animations: iterate the registry's class index and
+        // start any class style that carries an `animation:` rule.
+        // Without this, `.cn-popover-content { animation: ... }` and the
+        // other cn overlay/toast keyframes would never fire on nodes
+        // that don't also have a matching `#id` rule. Skip nodes that
+        // already have an animation (id-based path wins, matching CSS
+        // specificity).
+        let class_to_nodes = self.element_registry.class_to_nodes_index();
+        for (class, node_ids) in &class_to_nodes {
+            // Cheap pre-check: the stylesheet has no class rule for this
+            // class name — skip the inner loop entirely.
+            let has_animation = self
+                .stylesheet
+                .as_ref()
+                .and_then(|s| s.get_class(class))
+                .and_then(|st| st.animation.as_ref())
+                .is_some();
+            if !has_animation {
+                continue;
+            }
+            for &node_id in node_ids {
+                let Some(stable_id) = self.stable_id(node_id) else {
+                    continue;
+                };
+                let already_has = self
+                    .css_anim_store
+                    .lock()
+                    .unwrap()
+                    .animations
+                    .contains_key(&stable_id);
+                if already_has {
+                    continue;
+                }
+                let started = self.start_css_animation_for_class(node_id, class);
+                if started {
+                    tracing::debug!(
+                        "CSS animation started for class '.{}' (node={:?})",
+                        class,
+                        node_id
+                    );
+                }
+            }
+        }
     }
 
     /// Apply all active CSS animation values to their respective render props
@@ -226,16 +429,50 @@ impl RenderTree {
     /// This mutates render props in-place with current animation values (opacity, transform).
     /// The background thread ticks animations; this reads the latest values and applies them.
     pub fn apply_all_css_animation_props(&mut self) {
-        // Collect animation data under the lock, then release before modifying render_nodes
-        let anim_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+        // Collect animation data (stable-keyed) under the lock, then
+        // release before resolving back to layout ids for the
+        // render_nodes write. Filter on `is_playing`: settled
+        // animations sit in the store forever (the same-target
+        // guard keeps them) but their `current_properties` no longer
+        // change frame-to-frame, so re-applying them every frame is
+        // wasted work — and the heavy `KeyframeProperties::clone`
+        // (dozens of `Option<...>` fields) was running for every
+        // ever-played animation on `styling_demo` at idle.
+        // `apply_stylesheet_state_styles` resets base props to base
+        // before this runs, so skipping settled animations here means
+        // the element shows the base style — which matches the CSS
+        // default (no `animation-fill-mode: forwards`).
+        let anim_data: Vec<(
+            crate::tree::StableNodeId,
+            blinc_animation::KeyframeProperties,
+        )> = {
             let store = self.css_anim_store.lock().unwrap();
             store
                 .animations
                 .iter()
-                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .filter(|(_, a)| a.is_playing)
+                .map(|(sid, a)| (*sid, a.current_properties.clone()))
                 .collect()
         };
-        for (node_id, anim_props) in anim_data {
+        for (stable_id, anim_props) in anim_data {
+            let Some(node_id) = self.layout_id(stable_id) else {
+                continue;
+            };
+            // Composite-promotable animations (only opacity / 2D
+            // transform) skip the per-frame property apply — the
+            // composite-layer path rasterizes the subtree at BASE
+            // state into a `LayerTexture` and applies the animated
+            // values at composite time via
+            // `blit_tight_texture_to_target` (dest_pos / dest_size /
+            // opacity). Writing animated values onto
+            // `render_node.props` here would bake them into the
+            // texture and double-apply at composite time. Mixed
+            // animations (any non-promotable property) keep the
+            // existing apply because `is_composite_promotable`
+            // returns false for them.
+            if anim_props.is_composite_promotable() {
+                continue;
+            }
             if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
                 Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
             }
@@ -249,23 +486,39 @@ impl RenderTree {
         use taffy::prelude::*;
         let mut needs_layout = false;
 
-        // Collect all nodes with active animations or transitions that have layout properties
-        let anim_nodes: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+        // Collect all stable ids with ACTIVE animations or transitions
+        // that have layout properties. Settled entries stay in the
+        // store for the same-target guard but their values don't
+        // change frame-to-frame, and `apply_animated_layout_props` is
+        // the most expensive of the three per-frame applies — it
+        // potentially triggers `compute_layout()` whenever `changed`
+        // flips true, which would happen every frame for any settled
+        // size / padding / margin / inset value reapplied on top of
+        // the base style. Filter on `is_playing` to skip them.
+        let anim_nodes: Vec<(
+            crate::tree::StableNodeId,
+            blinc_animation::KeyframeProperties,
+        )> = {
             let store = self.css_anim_store.lock().unwrap();
             store
                 .animations
                 .iter()
-                .map(|(nid, anim)| (*nid, anim.current_properties.clone()))
+                .filter(|(_, anim)| anim.is_playing)
+                .map(|(sid, anim)| (*sid, anim.current_properties.clone()))
                 .chain(
                     store
                         .transitions
                         .iter()
-                        .map(|(nid, anim)| (*nid, anim.current_properties.clone())),
+                        .filter(|(_, anim)| anim.is_playing)
+                        .map(|(sid, anim)| (*sid, anim.current_properties.clone())),
                 )
                 .collect()
         };
 
-        for (node_id, anim_props) in anim_nodes {
+        for (stable_id, anim_props) in anim_nodes {
+            let Some(node_id) = self.layout_id(stable_id) else {
+                continue;
+            };
             let has_layout_props = anim_props.width.is_some()
                 || anim_props.height.is_some()
                 || anim_props.padding.is_some()
@@ -396,6 +649,11 @@ impl RenderTree {
             FillMode, KeyframeProperties, MultiKeyframe, MultiKeyframeAnimation,
         };
 
+        // Resolve once at the top so every `store.transitions[&_]`
+        // access below uses the stable id (the store migrated to
+        // stable keys in Phase 5).
+        let stable_id = self.stable_id_or_warn(node_id);
+
         // Lock the shared store for the duration of this method
         let mut store = self.css_anim_store.lock().unwrap();
 
@@ -413,7 +671,7 @@ impl RenderTree {
                 if before.$field != after.$field {
                     if let Some(t) = transition_set.get($prop_name) {
                         // If a transition is already active, use current interpolated value as "from"
-                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
+                        let from_val = if let Some(active) = store.transitions.get(&stable_id) {
                             if active.current_properties.$field.is_some() {
                                 active.current_properties.$field.clone()
                             } else {
@@ -436,7 +694,7 @@ impl RenderTree {
             ($field:ident, $prop_name:expr, default $def:expr) => {
                 if before.$field != after.$field {
                     if let Some(t) = transition_set.get($prop_name) {
-                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
+                        let from_val = if let Some(active) = store.transitions.get(&stable_id) {
                             if active.current_properties.$field.is_some() {
                                 active.current_properties.$field.clone()
                             } else {
@@ -475,6 +733,7 @@ impl RenderTree {
         check_transition!(overflow_fade, "overflow-fade");
         check_transition!(shadow_params, "box-shadow");
         check_transition!(shadow_color, "box-shadow");
+        check_transition!(shadow_stack, "box-shadow");
         check_transition!(clip_inset, "clip-path");
         check_transition!(clip_circle_radius, "clip-path");
         check_transition!(clip_ellipse_radii, "clip-path");
@@ -539,7 +798,7 @@ impl RenderTree {
         if has_any && duration_ms > 0 {
             // If a transition already exists heading to the same target, let it continue
             // rather than restarting with a fresh duration each frame
-            if let Some(existing) = store.transitions.get(&node_id) {
+            if let Some(existing) = store.transitions.get(&stable_id) {
                 if let Some(last_kf) = existing.animation.last_keyframe() {
                     if last_kf.properties == to {
                         return; // Same target — let existing transition finish
@@ -551,9 +810,10 @@ impl RenderTree {
                 .keyframe(1.0, to, easing)
                 .delay(delay_ms)
                 .fill_mode(FillMode::Forwards);
-            store
-                .transitions
-                .insert(node_id, crate::render_state::ActiveCssAnimation::new(anim));
+            store.transitions.insert(
+                stable_id,
+                crate::render_state::ActiveCssAnimation::new(anim),
+            );
         }
     }
 
@@ -561,16 +821,39 @@ impl RenderTree {
     ///
     /// The background thread ticks transitions; this reads the latest values and applies them.
     pub fn apply_all_css_transition_props(&mut self) {
-        // Collect transition data under the lock, then release before modifying render_nodes
-        let trans_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+        // Collect transition data (stable-keyed) under the lock,
+        // then release before resolving back to layout ids. Filter
+        // on `is_playing`: settled transitions stay in the store for
+        // the same-target restart guard, but their final value also
+        // matches the post-transition base/state-style value that
+        // `apply_stylesheet_state_styles` already set this frame.
+        // Re-applying them every frame is wasted work + a per-entry
+        // `KeyframeProperties::clone` (large struct of Options) for
+        // each ever-hovered widget on cn_demo / styling_demo, which
+        // accumulated linearly with interaction history.
+        let trans_data: Vec<(
+            crate::tree::StableNodeId,
+            blinc_animation::KeyframeProperties,
+        )> = {
             let store = self.css_anim_store.lock().unwrap();
             store
                 .transitions
                 .iter()
-                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .filter(|(_, a)| a.is_playing)
+                .map(|(sid, a)| (*sid, a.current_properties.clone()))
                 .collect()
         };
-        for (node_id, anim_props) in trans_data {
+        for (stable_id, anim_props) in trans_data {
+            let Some(node_id) = self.layout_id(stable_id) else {
+                continue;
+            };
+            // See `apply_all_css_animation_props` above — composite-
+            // promotable transitions skip the apply for the same
+            // reason (texture rasterizes at base, composite applies
+            // animated values).
+            if anim_props.is_composite_promotable() {
+                continue;
+            }
             if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
                 Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
             }
@@ -907,25 +1190,45 @@ impl RenderTree {
             props.outline_offset = offset;
         }
 
-        // Shadow
-        if let Some([ox, oy, blur, spread]) = anim_props.shadow_params {
+        // Shadow — prefer the full compound stack when the snapshot
+        // carried one; fall back to the single-layer fields for
+        // animations that originated from `shadow_params/shadow_color`
+        // alone (older snapshots, programmatic Spring/Tween drivers
+        // that don't populate the stack).
+        if let Some(ref stack) = anim_props.shadow_stack {
+            props.shadow = stack
+                .iter()
+                .map(|l| blinc_core::Shadow {
+                    offset_x: l[0],
+                    offset_y: l[1],
+                    blur: l[2],
+                    spread: l[3],
+                    color: blinc_core::Color::rgba(l[4], l[5], l[6], l[7]),
+                })
+                .collect();
+        } else if let Some([ox, oy, blur, spread]) = anim_props.shadow_params {
             let color = if let Some([r, g, b, a]) = anim_props.shadow_color {
                 blinc_core::Color::rgba(r, g, b, a)
-            } else if let Some(ref existing) = props.shadow {
+            } else if let Some(existing) = props.shadow.first() {
                 existing.color
             } else {
                 blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5)
             };
-            props.shadow = Some(blinc_core::Shadow {
+            let layer = blinc_core::Shadow {
                 offset_x: ox,
                 offset_y: oy,
                 blur,
                 spread,
                 color,
-            });
+            };
+            if let Some(first) = props.shadow.first_mut() {
+                *first = layer;
+            } else {
+                props.shadow = vec![layer];
+            }
         } else if let Some([r, g, b, a]) = anim_props.shadow_color {
-            if let Some(ref mut shadow) = props.shadow {
-                shadow.color = blinc_core::Color::rgba(r, g, b, a);
+            if let Some(first) = props.shadow.first_mut() {
+                first.color = blinc_core::Color::rgba(r, g, b, a);
             }
         }
 
@@ -1236,16 +1539,28 @@ impl RenderTree {
         }
         kp.outline_offset = Some(props.outline_offset);
 
-        // Shadow
-        if let Some(shadow) = &props.shadow {
-            kp.shadow_params = Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
-            kp.shadow_color = Some([
-                shadow.color.r,
-                shadow.color.g,
-                shadow.color.b,
-                shadow.color.a,
-            ]);
+        // Shadow — snapshot the whole compound stack into
+        // `shadow_stack` and mirror the first layer into the
+        // single-layer fast-path fields (the composite-promoted
+        // CssAnimPaintMeta only samples layer 0). Empty Vec is the
+        // canonical "no shadow" marker, distinct from `None` (which
+        // means "don't animate this property").
+        if let Some(first) = props.shadow.first() {
+            kp.shadow_params = Some([first.offset_x, first.offset_y, first.blur, first.spread]);
+            kp.shadow_color = Some([first.color.r, first.color.g, first.color.b, first.color.a]);
         }
+        kp.shadow_stack = Some(
+            props
+                .shadow
+                .iter()
+                .map(|s| {
+                    [
+                        s.offset_x, s.offset_y, s.blur, s.spread, s.color.r, s.color.g, s.color.b,
+                        s.color.a,
+                    ]
+                })
+                .collect(),
+        );
 
         // 3D lighting
         kp.light_intensity = props.light_intensity;

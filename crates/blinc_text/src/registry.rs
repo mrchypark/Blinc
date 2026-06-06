@@ -13,19 +13,9 @@
 use crate::font::{FontData, FontFace};
 use crate::{Result, TextError};
 use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
-use lru::LruCache;
 use rustc_hash::FxHashMap;
-use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
-
-/// Capacity for per-codepoint fallback caching.
-///
-/// This prevents pathological "bucket cache thrash" (e.g., alternating characters that require
-/// different fallback fonts within the same script bucket) from repeatedly re-scanning fontdb.
-const FALLBACK_CODEPOINT_CACHE_CAPACITY: usize = 2048;
-const FALLBACK_BUCKET_CACHE_CAPACITY: usize = 1024;
-const FACE_LOOKUP_CACHE_CAPACITY: usize = 512;
 
 /// Generic font category for fallback
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -113,43 +103,56 @@ const KNOWN_FONT_PATHS: &[&str] = &[
     target_os = "ios"
 )))]
 const KNOWN_FONT_PATHS: &[&str] = &[
-    // Linux common paths
+    // Debian/Ubuntu
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    // Noto fonts
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+    // Arch/openSUSE
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSerif.ttf",
+    "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/noto/NotoMono-Regular.ttf",
+    // Fedora/RHEL package paths
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif.ttf",
+    "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif-Bold.ttf",
+    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation-mono/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/google-noto-sans/NotoSans-Regular.ttf",
+    "/usr/share/fonts/google-noto-sans/NotoSans-Bold.ttf",
+    "/usr/share/fonts/google-noto-mono/NotoMono-Regular.ttf",
 ];
-
-fn is_symbolish_family_name(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.contains("symbol")
-        || name.contains("dingbat")
-        || name.contains("wingding")
-        || name.contains("webding")
-        || name.contains("icon")
-        || name.contains("emoji")
-}
 
 /// Font registry that discovers and caches system fonts
 pub struct FontRegistry {
     /// fontdb database containing system fonts
     db: Database,
     /// Cached FontFace instances (Some = found, None = not found)
-    faces: LruCache<String, Option<Arc<FontFace>>>,
-    /// Cache loaded faces by fontdb ID (avoids re-parsing the same face repeatedly)
-    faces_by_id: FxHashMap<fontdb::ID, Arc<FontFace>>,
-    /// Script-bucket -> best fallback face id cache (None = no supporting face found)
-    ///
-    /// Key includes requested weight/italic so style-sensitive lookups can be cached.
-    fallback_char_cache: LruCache<(u32, u16, bool), Option<fontdb::ID>>,
-    /// Codepoint -> best fallback face id cache (None = no supporting face found).
-    ///
-    /// This is an LRU to keep memory bounded while preventing bucket-cache thrash.
-    fallback_codepoint_cache: LruCache<(u32, u16, bool), Option<fontdb::ID>>,
+    faces: FxHashMap<String, Option<Arc<FontFace>>>,
     /// Whether full system font scan has been performed
     system_fonts_loaded: bool,
 }
@@ -187,14 +190,7 @@ impl FontRegistry {
 
         Self {
             db,
-            faces: LruCache::new(NonZeroUsize::new(FACE_LOOKUP_CACHE_CAPACITY).unwrap()),
-            faces_by_id: FxHashMap::default(),
-            fallback_char_cache: LruCache::new(
-                NonZeroUsize::new(FALLBACK_BUCKET_CACHE_CAPACITY).unwrap(),
-            ),
-            fallback_codepoint_cache: LruCache::new(
-                NonZeroUsize::new(FALLBACK_CODEPOINT_CACHE_CAPACITY).unwrap(),
-            ),
+            faces: FxHashMap::default(),
             system_fonts_loaded: false,
         }
         // Note: We don't preload generic fonts here anymore.
@@ -215,197 +211,8 @@ impl FontRegistry {
         let loaded = after - before;
         if loaded > 0 {
             tracing::debug!("Loaded {} font faces from data", loaded);
-            // New faces can change fallback resolution; clear caches so we can discover them.
-            self.fallback_char_cache.clear();
-            self.fallback_codepoint_cache.clear();
-            // `faces` also caches misses; drop only cached misses so dynamically loaded fonts
-            // can become visible without blowing away hot successful lookups.
-            let missing_keys: Vec<String> = self
-                .faces
-                .iter()
-                .filter_map(|(k, v)| if v.is_none() { Some(k.clone()) } else { None })
-                .collect();
-            for key in missing_keys {
-                self.faces.pop(&key);
-            }
         }
         loaded
-    }
-
-    fn load_face_by_id_arc(&mut self, id: fontdb::ID) -> Result<Arc<FontFace>> {
-        if let Some(face) = self.faces_by_id.get(&id) {
-            return Ok(Arc::clone(face));
-        }
-        let face = Arc::new(self.load_face_by_id(id)?);
-        self.faces_by_id.insert(id, Arc::clone(&face));
-        Ok(face)
-    }
-
-    fn face_supports_char(&self, id: fontdb::ID, c: char) -> bool {
-        // Use fontdb's with_face_data to avoid loading/caching the whole FontFace for probes.
-        // This is still fairly fast (ttf-parser reads tables lazily).
-        self.db
-            .with_face_data(id, |data, face_index| {
-                let Ok(face) = ttf_parser::Face::parse(data, face_index) else {
-                    return false;
-                };
-                match face.glyph_index(c) {
-                    Some(gid) => gid.0 != 0, // glyph 0 is ".notdef"
-                    None => false,
-                }
-            })
-            .unwrap_or(false)
-    }
-
-    /// Find a best-effort system fallback font for a codepoint.
-    ///
-    /// This is a pragmatic implementation of "system fallback":
-    /// - Prefer an exact style match (italic/non-italic) and closest weight.
-    /// - Avoid emoji fonts for non-emoji characters.
-    /// - Cache results per (codepoint, weight, italic).
-    ///
-    /// Note: this may trigger a full system font scan on first use.
-    pub fn load_fallback_for_char(
-        &mut self,
-        c: char,
-        weight: u16,
-        italic: bool,
-    ) -> Option<Arc<FontFace>> {
-        // Don't try to fallback for control chars (including '\n'); layout uses these for breaks.
-        if c.is_control() {
-            return None;
-        }
-
-        // First consult per-codepoint cache to avoid bucket-cache thrash for mixed inputs.
-        let cp_key = (c as u32, weight, italic);
-        if let Some(&cached) = self.fallback_codepoint_cache.get(&cp_key) {
-            match cached {
-                None => return None,
-                Some(id) => {
-                    if let Ok(face) = self.load_face_by_id_arc(id) {
-                        if face.has_glyph(c) {
-                            return Some(face);
-                        }
-                    }
-
-                    // Cached face doesn't actually cover this codepoint; invalidate and re-resolve.
-                    self.fallback_codepoint_cache.pop(&cp_key);
-                }
-            }
-        }
-
-        // Use a script-ish "bucket" key to avoid O(unique-codepoints) font scans for scripts
-        // with lots of unique characters (CJK/Hangul/etc). We still validate cached faces
-        // cover the specific codepoint and re-resolve if they don't.
-        let key = (crate::fallback::fallback_bucket_key(c), weight, italic);
-        if let Some(&cached) = self.fallback_char_cache.get(&key) {
-            match cached {
-                None => return None,
-                Some(id) => {
-                    if let Ok(face) = self.load_face_by_id_arc(id) {
-                        if face.has_glyph(c) {
-                            return Some(face);
-                        }
-                    }
-
-                    // Cached face doesn't actually cover this codepoint; invalidate and re-resolve.
-                    self.fallback_char_cache.pop(&key);
-                }
-            }
-        }
-
-        // Do not prefer the generic symbol font here.
-        //
-        // Some symbol faces report broad cmap coverage but render script codepoints
-        // (for example Hangul/CJK) as placeholder tofu glyphs. If we pick Symbol first,
-        // fallback can lock onto that placeholder face and display broken squares.
-        //
-        // Symbol fallback is still available in FallbackResolver candidate ordering
-        // (system -> symbol for non-emoji, emoji -> symbol -> system for emoji).
-        // Here we only resolve the best "system/script" fallback for the actual codepoint.
-
-        // Score faces that *actually* cover the character.
-        // Lower score is better.
-        fn style_mismatch_score(face_style: Style, italic: bool) -> u32 {
-            if italic {
-                match face_style {
-                    Style::Italic | Style::Oblique => 0,
-                    Style::Normal => 10_000,
-                }
-            } else {
-                match face_style {
-                    Style::Normal => 0,
-                    Style::Italic | Style::Oblique => 10_000,
-                }
-            }
-        }
-
-        fn pick_best_face_id(
-            reg: &FontRegistry,
-            c: char,
-            weight: u16,
-            italic: bool,
-        ) -> Option<fontdb::ID> {
-            let mut best: Option<(u32, fontdb::ID)> = None;
-            for face in reg.db.faces() {
-                let family_name = face
-                    .families
-                    .first()
-                    .map(|(name, _)| name.as_str())
-                    .unwrap_or("");
-
-                // Avoid selecting symbol/dingbat/icon/emoji faces for regular script fallback.
-                // Symbol fallback remains available as a separate candidate path.
-                if is_symbolish_family_name(family_name)
-                    && !crate::fallback::should_try_symbol_fallback(c)
-                {
-                    continue;
-                }
-
-                if !reg.face_supports_char(face.id, c) {
-                    continue;
-                }
-
-                let weight_dist = face.weight.0.abs_diff(weight) as u32;
-                let score = style_mismatch_score(face.style, italic) + weight_dist;
-
-                match best {
-                    Some((best_score, _)) if score >= best_score => {}
-                    _ => {
-                        best = Some((score, face.id));
-                        if score == 0 {
-                            break; // Can't do better than exact style + exact weight.
-                        }
-                    }
-                }
-            }
-            best.map(|(_, id)| id)
-        }
-
-        // First try only fonts that are already loaded (KNOWN_FONT_PATHS + any app-loaded fonts).
-        // If that fails and we haven't scanned the whole system font set yet, do the slow scan and retry.
-        let mut best_id = pick_best_face_id(self, c, weight, italic);
-        if best_id.is_none() && !self.system_fonts_loaded {
-            self.ensure_system_fonts_loaded();
-            best_id = pick_best_face_id(self, c, weight, italic);
-        }
-
-        let result = match best_id {
-            Some(id) => {
-                let loaded = self.load_face_by_id_arc(id).ok();
-                self.fallback_char_cache
-                    .put(key, loaded.as_ref().map(|_| id));
-                self.fallback_codepoint_cache
-                    .put(cp_key, loaded.as_ref().map(|_| id));
-                loaded
-            }
-            None => {
-                self.fallback_char_cache.put(key, None);
-                self.fallback_codepoint_cache.put(cp_key, None);
-                None
-            }
-        };
-        result
     }
 
     /// Ensure all system fonts are loaded (lazy initialization)
@@ -427,7 +234,6 @@ impl FontRegistry {
     ///
     /// Emoji and Symbol fonts are NOT preloaded - they're loaded lazily on first use.
     /// This saves ~180MB of memory if emoji aren't used (Apple Color Emoji is huge).
-    #[allow(dead_code)]
     fn preload_generic_fonts(&mut self) {
         // Only preload essential text fonts - NOT emoji/symbol
         // Emoji font is 180MB+ on macOS, so lazy loading saves significant memory
@@ -504,7 +310,7 @@ impl FontRegistry {
                 match self.find_font_id(name, weight, italic) {
                     Some(id) => id,
                     None => {
-                        self.faces.put(cache_key.clone(), None);
+                        self.faces.insert(cache_key.clone(), None);
                         return Err(TextError::FontLoadError(format!(
                             "Font '{}' (weight={}, italic={}) not found",
                             name, weight, italic
@@ -513,7 +319,7 @@ impl FontRegistry {
                 }
             }
             None => {
-                self.faces.put(cache_key.clone(), None);
+                self.faces.insert(cache_key.clone(), None);
                 return Err(TextError::FontLoadError(format!(
                     "Font '{}' (weight={}, italic={}) not found",
                     name, weight, italic
@@ -526,7 +332,7 @@ impl FontRegistry {
         let face = Arc::new(face);
 
         // Cache it
-        self.faces.put(cache_key, Some(Arc::clone(&face)));
+        self.faces.insert(cache_key, Some(Arc::clone(&face)));
 
         Ok(face)
     }
@@ -697,7 +503,8 @@ impl FontRegistry {
         for font_name in emoji_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic emoji key
-                self.faces.put(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces
+                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded emoji font: {}", font_name);
                 return Ok(face);
             }
@@ -714,7 +521,7 @@ impl FontRegistry {
         // beyond the dependency line. By that point `load_font`
         // above has already resolved the plugin's fonts out of the
         // `Noto Color Emoji` family.
-        self.faces.put(cache_key, None);
+        self.faces.insert(cache_key, None);
         Err(TextError::FontLoadError(
             "No emoji font found on system".to_string(),
         ))
@@ -779,14 +586,15 @@ impl FontRegistry {
         for font_name in symbol_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic symbol key
-                self.faces.put(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces
+                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded symbol font: {}", font_name);
                 return Ok(face);
             }
         }
 
         // No symbol font found
-        self.faces.put(cache_key, None);
+        self.faces.insert(cache_key, None);
         Err(TextError::FontLoadError(
             "No symbol font found on system".to_string(),
         ))
@@ -905,7 +713,7 @@ impl FontRegistry {
                 match self.find_generic_font_id(family, weight, italic) {
                     Some(id) => id,
                     None => {
-                        self.faces.put(cache_key.clone(), None);
+                        self.faces.insert(cache_key.clone(), None);
                         return Err(TextError::FontLoadError(format!(
                             "Generic font {:?} (weight={}, italic={}) not found",
                             generic, weight, italic
@@ -914,7 +722,7 @@ impl FontRegistry {
                 }
             }
             None => {
-                self.faces.put(cache_key.clone(), None);
+                self.faces.insert(cache_key.clone(), None);
                 return Err(TextError::FontLoadError(format!(
                     "Generic font {:?} (weight={}, italic={}) not found",
                     generic, weight, italic
@@ -926,7 +734,7 @@ impl FontRegistry {
         let face = Arc::new(face);
 
         // Cache it
-        self.faces.put(cache_key, Some(Arc::clone(&face)));
+        self.faces.insert(cache_key, Some(Arc::clone(&face)));
 
         Ok(face)
     }
@@ -937,16 +745,8 @@ impl FontRegistry {
     /// `None` entries from before the font was loaded would otherwise
     /// prevent the newly-loaded font from being found.
     pub fn invalidate_generic_cache(&mut self) {
-        let keys_to_remove: Vec<String> = self
-            .faces
-            .iter()
-            .filter(|(key, val)| key.starts_with("__generic_") && val.is_none())
-            .map(|(key, _)| key.clone())
-            .collect();
-
-        for key in keys_to_remove {
-            self.faces.pop(&key);
-        }
+        self.faces
+            .retain(|key, val| !key.starts_with("__generic_") || val.is_some());
     }
 
     /// Load a font with fallback to generic category
@@ -970,7 +770,7 @@ impl FontRegistry {
         if let Some(name) = name {
             // Check if we've already tried this font (avoid repeated warnings)
             let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
-            let already_tried = self.faces.contains(&cache_key);
+            let already_tried = self.faces.contains_key(&cache_key);
 
             tracing::trace!(
                 "load_with_fallback_styled: name={}, weight={}, italic={}, already_tried={}, cache_size={}",
@@ -1002,7 +802,7 @@ impl FontRegistry {
     }
 
     /// Get cached font by name (doesn't load - for use during render)
-    pub fn get_cached(&mut self, name: &str) -> Option<Arc<FontFace>> {
+    pub fn get_cached(&self, name: &str) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("{}:w400:n", name);
         self.faces.get(&cache_key).and_then(|opt| opt.clone())
@@ -1010,7 +810,7 @@ impl FontRegistry {
 
     /// Get cached font by name with specific weight and style
     pub fn get_cached_with_style(
-        &mut self,
+        &self,
         name: &str,
         weight: u16,
         italic: bool,
@@ -1020,7 +820,7 @@ impl FontRegistry {
     }
 
     /// Get cached generic font (doesn't load - for use during render)
-    pub fn get_cached_generic(&mut self, generic: GenericFont) -> Option<Arc<FontFace>> {
+    pub fn get_cached_generic(&self, generic: GenericFont) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("__generic_{:?}:w400:n", generic);
         self.faces.get(&cache_key).and_then(|opt| opt.clone())
@@ -1028,7 +828,7 @@ impl FontRegistry {
 
     /// Get cached generic font with specific weight and style
     pub fn get_cached_generic_with_style(
-        &mut self,
+        &self,
         generic: GenericFont,
         weight: u16,
         italic: bool,
@@ -1045,7 +845,7 @@ impl FontRegistry {
     /// Fast font lookup for rendering - only uses cache, never loads
     /// Returns the requested font if cached, or None if loading is needed
     pub fn get_for_render(
-        &mut self,
+        &self,
         name: Option<&str>,
         generic: GenericFont,
     ) -> Option<Arc<FontFace>> {
@@ -1054,7 +854,7 @@ impl FontRegistry {
 
     /// Fast font lookup for rendering with specific weight and style
     pub fn get_for_render_with_style(
-        &mut self,
+        &self,
         name: Option<&str>,
         generic: GenericFont,
         weight: u16,
@@ -1076,7 +876,7 @@ impl FontRegistry {
     ///
     /// Returns the cached emoji font if it was successfully loaded during
     /// initialization, or None if no emoji font is available.
-    pub fn get_emoji_font(&mut self) -> Option<Arc<FontFace>> {
+    pub fn get_emoji_font(&self) -> Option<Arc<FontFace>> {
         self.get_cached_generic(GenericFont::Emoji)
     }
 
@@ -1154,18 +954,18 @@ impl FontRegistry {
             let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
 
             // Skip if already cached
-            if self.faces.contains(&cache_key) {
+            if self.faces.contains_key(&cache_key) {
                 continue;
             }
 
             // Load the face
             match self.load_face_by_id(id) {
                 Ok(face) => {
-                    self.faces.put(cache_key, Some(Arc::new(face)));
+                    self.faces.insert(cache_key, Some(Arc::new(face)));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load font variant {}: {:?}", cache_key, e);
-                    self.faces.put(cache_key, None);
+                    self.faces.insert(cache_key, None);
                 }
             }
         }
@@ -1285,58 +1085,6 @@ mod tests {
             }
             println!();
         }
-    }
-
-    #[test]
-    fn test_hangul_fallback_prefers_script_font_over_symbol() {
-        let mut registry = FontRegistry::new();
-        let ch = '한';
-        registry.ensure_system_fonts_loaded();
-
-        // Skip in minimal environments with no Hangul-supporting non-symbol fonts.
-        let has_non_symbol_hangul = registry.db.faces().any(|face| {
-            let family = face
-                .families
-                .first()
-                .map(|(name, _)| name.to_ascii_lowercase())
-                .unwrap_or_default();
-            if family.contains("symbol") || family.contains("emoji") || family.contains("dingbat") {
-                return false;
-            }
-            registry.face_supports_char(face.id, ch)
-        });
-        if !has_non_symbol_hangul {
-            println!("No non-symbol Hangul font available - skipping test");
-            return;
-        }
-
-        let symbol_font = registry.load_generic(GenericFont::Symbol).ok();
-        let symbol_family = symbol_font
-            .as_ref()
-            .map(|f| f.family_name().to_ascii_lowercase());
-        let fallback = registry
-            .load_fallback_for_char(ch, 400, false)
-            .expect("expected Hangul fallback font");
-        let fallback_family = fallback.family_name().to_ascii_lowercase();
-
-        if let Some(symbol_face) = symbol_font.as_ref() {
-            assert!(
-                !Arc::ptr_eq(symbol_face, &fallback),
-                "Hangul fallback should not resolve to generic Symbol face"
-            );
-        }
-        if let Some(symbol_family) = symbol_family.as_deref() {
-            if fallback_family != "unknown" && symbol_family != "unknown" {
-                assert_ne!(
-                    fallback_family, symbol_family,
-                    "Hangul fallback should not resolve to generic Symbol font"
-                );
-            }
-        }
-        assert!(
-            !fallback_family.contains("symbol"),
-            "Hangul fallback should avoid symbol-family fonts, got {fallback_family}"
-        );
     }
 
     #[test]
@@ -1498,9 +1246,18 @@ mod tests {
             Ok(prepared) => {
                 println!("Prepared {} glyphs for 'SF Mono':", prepared.glyphs.len());
                 for (i, glyph) in prepared.glyphs.iter().enumerate() {
-                    println!("  [{}] bounds=[{:.1}, {:.1}, {:.1}, {:.1}], uv=[{:.4}, {:.4}, {:.4}, {:.4}]",
-                        i, glyph.bounds[0], glyph.bounds[1], glyph.bounds[2], glyph.bounds[3],
-                        glyph.uv_bounds[0], glyph.uv_bounds[1], glyph.uv_bounds[2], glyph.uv_bounds[3]);
+                    println!(
+                        "  [{}] bounds=[{:.1}, {:.1}, {:.1}, {:.1}], uv=[{:.4}, {:.4}, {:.4}, {:.4}]",
+                        i,
+                        glyph.bounds[0],
+                        glyph.bounds[1],
+                        glyph.bounds[2],
+                        glyph.bounds[3],
+                        glyph.uv_bounds[0],
+                        glyph.uv_bounds[1],
+                        glyph.uv_bounds[2],
+                        glyph.uv_bounds[3]
+                    );
                 }
             }
             Err(e) => {

@@ -9,7 +9,7 @@
 //! - [`checkbox()`] - Toggle checkbox with label support
 //! - [`text_input()`] - Single-line text input with validation
 //! - [`text_area()`] - Multi-line text area
-//! - [`scroll()`] - Scrollable container with bounce physics
+//! - [`scroll()`] - Scrollable container with optional bounce physics
 //! - [`code()`] - Code block with syntax highlighting and line numbers
 //!
 //! # Example
@@ -42,7 +42,9 @@ pub mod link;
 pub mod list;
 #[cfg(feature = "media")]
 pub mod media;
+pub mod number_input;
 pub mod overlay;
+pub mod overlay_stack;
 pub mod radio;
 pub mod rich_text_editor;
 pub mod scroll;
@@ -50,34 +52,47 @@ pub mod table;
 pub mod text_area;
 pub mod text_edit;
 pub mod text_input;
+pub mod toast_tray;
+pub mod toggle;
 pub mod virtual_list;
 
 // Re-export button widget
-pub use button::{button, button_with, Button, ButtonConfig, ButtonVisualState};
+pub use button::{Button, ButtonConfig, ButtonVisualState, button, button_with};
 
 // Re-export checkbox widget
-pub use checkbox::{checkbox, checkbox_labeled, Checkbox, CheckboxBuilder, CheckboxConfig};
+pub use checkbox::{Checkbox, CheckboxBuilder, CheckboxConfig, checkbox, checkbox_labeled};
 
 // Re-export radio widget
-pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioGroupConfig, RadioLayout};
+pub use radio::{RadioGroup, RadioGroupBuilder, RadioGroupConfig, RadioLayout, radio_group};
+
+// Re-export toggle widget
+pub use toggle::{Toggle, ToggleBuilder, ToggleConfig, toggle};
+
+// Re-export number_input widget
+pub use number_input::{
+    NumberInput, NumberInputBuilder, NumberInputConfig, number_input, step_down, step_up,
+};
 
 // Re-export text input widget
 pub use text_input::{
+    CURSOR_BLINK_INTERVAL_MS,
+    InputConstraints,
+    InputType,
+    SharedTextInputState,
+    TextInput,
+    TextInputConfig,
+    TextInputState,
     // Blur function for click-outside handling
     blur_all_text_inputs,
     // Cursor blink timing utilities
     elapsed_ms,
-    focused_text_widget_ime_area,
     has_focused_text_input,
-    has_live_focused_text_widget,
     request_css_reparse,
     // Rebuild/relayout request functions
     request_full_rebuild,
     request_rebuild,
-    reset_text_widget_test_state,
     // Continuous redraw callback for animation scheduler integration
     set_continuous_redraw_callback,
-    set_focused_text_widget_composition,
     take_needs_continuous_redraw,
     take_needs_css_reparse,
     take_needs_rebuild,
@@ -85,64 +100,57 @@ pub use text_input::{
     text_input,
     text_input_state,
     text_input_state_with_placeholder,
-    InputConstraints,
-    InputType,
-    SharedTextInputState,
-    TextInput,
-    TextInputConfig,
-    TextInputState,
-    CURSOR_BLINK_INTERVAL_MS,
 };
 
 // Re-export text area widget
 pub use text_area::{
-    text_area, text_area_state, text_area_state_with_placeholder, SharedTextAreaState, TextArea,
-    TextAreaConfig, TextAreaState, TextPosition,
+    SharedTextAreaState, TextArea, TextAreaConfig, TextAreaState, TextPosition, text_area,
+    text_area_state, text_area_state_with_placeholder,
 };
 
 // Re-export scroll widget
 pub use scroll::{
-    scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollPhysics,
-    ScrollRenderInfo, ScrollbarConfig, ScrollbarRenderInfo, ScrollbarSize, ScrollbarState,
-    ScrollbarVisibility, SharedScrollPhysics,
+    Scroll, ScrollConfig, ScrollDirection, ScrollPhysics, ScrollRenderInfo, ScrollbarConfig,
+    ScrollbarRenderInfo, ScrollbarSize, ScrollbarState, ScrollbarVisibility, SharedScrollPhysics,
+    scroll, scroll_bouncy, scroll_no_bounce,
 };
 
 // Re-export cursor widget (canvas-based smooth cursor)
 pub use cursor::{
-    cursor_canvas, cursor_canvas_absolute, cursor_state, CursorAnimation, CursorState,
-    SharedCursorState,
+    CursorAnimation, CursorState, SharedCursorState, cursor_canvas, cursor_canvas_absolute,
+    cursor_state,
 };
 
 // Re-export code widget
 pub use code::{
-    code, code_editor, code_editor_state, code_minimap, pre, Code, CodeConfig, CodeEditor,
-    CodeEditorData, SharedCodeEditorState,
+    Code, CodeConfig, CodeEditor, CodeEditorData, SharedCodeEditorState, code, code_editor,
+    code_editor_state, code_minimap, pre,
 };
 
 // Re-export overlay widget
 pub use overlay::{
-    overlay_events, overlay_manager, BackdropConfig, ContextMenuBuilder, Corner, DialogBuilder,
-    DropdownBuilder, ModalBuilder, OverlayAnimation, OverlayConfig, OverlayHandle, OverlayKind,
-    OverlayManager, OverlayManagerExt, OverlayPosition, OverlayState, ToastBuilder,
+    BackdropConfig, ContextMenuBuilder, Corner, DialogBuilder, DropdownBuilder, ModalBuilder,
+    OverlayAnimation, OverlayConfig, OverlayHandle, OverlayKind, OverlayManager, OverlayManagerExt,
+    OverlayPosition, OverlayState, ToastBuilder, overlay_events, overlay_manager,
 };
 
 // Re-export table widget
 pub use table::{
-    cell, striped_tr, table, tbody, td, td_text, tfoot, th, th_text, thead, tr, TableBuilder,
-    TableCell,
+    TableBuilder, TableCell, cell, striped_tr, table, tbody, td, td_text, tfoot, th, th_text,
+    thead, tr,
 };
 
 // Re-export blockquote widget
-pub use blockquote::{blockquote, blockquote_with_config, Blockquote, BlockquoteConfig};
+pub use blockquote::{Blockquote, BlockquoteConfig, blockquote, blockquote_with_config};
 
 // Re-export horizontal rule widget
-pub use hr::{hr, hr_color, hr_thick, hr_with_bg, hr_with_config, HrConfig};
+pub use hr::{HrConfig, hr, hr_color, hr_thick, hr_with_bg, hr_with_config};
 
 // Re-export link widget
-pub use link::{link, open_url, Link, LinkConfig};
+pub use link::{Link, LinkConfig, link, open_url};
 
 // Re-export list widgets
 pub use list::{
-    li, ol, ol_start, ol_start_with_config, ol_with_config, task_item, task_item_with_config, ul,
-    ul_with_config, ListConfig, ListItem, ListMarker, OrderedList, TaskListItem, UnorderedList,
+    ListConfig, ListItem, ListMarker, OrderedList, TaskListItem, UnorderedList, li, ol, ol_start,
+    ol_start_with_config, ol_with_config, task_item, task_item_with_config, ul, ul_with_config,
 };

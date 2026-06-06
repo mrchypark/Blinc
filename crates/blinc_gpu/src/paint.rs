@@ -156,6 +156,36 @@ pub struct PendingMesh {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pending Custom GPU Pass
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A user-defined GPU pass captured inside a canvas closure via
+/// [`blinc_core::draw::DrawContext::run_gpu_pass`].
+///
+/// Same lifecycle pattern as [`PendingMesh`]: the paint context can't
+/// dispatch directly (it has no renderer handle), so the override
+/// records the pass + the canvas viewport here and the outer render
+/// loop drains the list after `take_batch` and invokes each pass with
+/// the frame's real device / queue / target.
+///
+/// `pass` carries an `Arc<Mutex<_>>` internally, so cloning + dispatch
+/// don't fight the user's `Fn` canvas closure.
+#[derive(Clone)]
+pub struct PendingGpuPass {
+    /// The wrapped pass. Cloning is cheap (Arc bump). The dispatch site
+    /// calls [`crate::GpuPass::initialize_and_render`] which lazy-inits
+    /// on first frame.
+    pub pass: crate::custom_pass::GpuPass,
+    /// Canvas viewport rect in physical pixels `[x, y, w, h]`. `Some`
+    /// when the pass was scheduled inside a canvas with bounds (the
+    /// typical case via `set_3d_viewport_bounds`); `None` for full-frame
+    /// dispatch. The renderer plumbs this through `RenderPassContext::viewport`
+    /// so the pass can `set_viewport` + `set_scissor_rect` to clip to
+    /// the canvas region.
+    pub viewport: Option<[f32; 4]>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GPU Paint Context
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -164,8 +194,64 @@ pub struct PendingMesh {
 /// This translates high-level drawing commands into GPU primitives that can
 /// be efficiently rendered by the `GpuRenderer`.
 pub struct GpuPaintContext<'a> {
-    /// Batched primitives ready for GPU rendering
+    /// Batched primitives ready for GPU rendering. Holds the STATIC
+    /// content of the scene — everything not inside a motion-bound
+    /// subtree. Painted into the compositor's static cache; survives
+    /// across motion-binding frames untouched.
     batch: PrimitiveBatch,
+    /// Batched primitives for motion-bound subtrees. Emit destination
+    /// switches to this batch when `motion_subtree_depth > 0`. Not
+    /// painted into the static cache — dispatched per-frame as an
+    /// overlay after the cache blit so apply_binding_deltas can patch
+    /// it in-place without invalidating the cache.
+    dynamic_batch: PrimitiveBatch,
+    /// How deep the walker currently is inside motion-bound subtrees.
+    /// Incremented on `push_motion_subtree`, decremented on
+    /// `pop_motion_subtree`. While > 0, emit methods route to
+    /// `dynamic_batch` instead of `batch`. Counter rather than bool
+    /// so nested motion bindings (rare but possible) still route
+    /// correctly.
+    motion_subtree_depth: u32,
+    /// Per-node scratch batches for composite-promotable CSS-animated
+    /// subtrees. When [`Self::push_composite_layer`] sets
+    /// `active_composite_layer = Some(node)`, every subsequent emit
+    /// (until the matching `pop`) routes into
+    /// `composite_layer_batches[node]` instead of the bg batch.
+    ///
+    /// Each batch is rasterized at full paint into its own
+    /// `LayerTexture` (Phase 3) and composited per frame with the
+    /// active CSS animation transform (Phase 4) — the texture is
+    /// the cached pixel-form of the subtree at scale=1, no animation
+    /// transform applied.
+    composite_layer_batches: std::collections::HashMap<u64, PrimitiveBatch>,
+    /// Active composite-layer routing target. `Some(node_id)` while
+    /// the walker is inside a composite-promoted CSS subtree;
+    /// `None` outside. For now, nesting is not supported — we treat
+    /// the outermost promoted subtree as authoritative and any
+    /// nested promotion's emits also route there (acceptable for
+    /// first cut because the CSS animation values are evaluated
+    /// at each visit during full paint regardless).
+    active_composite_layer: Option<u64>,
+    /// Stack of clip-stack depths captured by each active
+    /// [`Self::push_composite_layer`]. The outermost active push
+    /// determines the "ancestor clip base" — `clip_stack[..base]`
+    /// were inherited from ancestors and are EXCLUDED from per-
+    /// primitive clip computation while emission is routed to the
+    /// outer scratch batch. Inner pushes for nested promoted
+    /// subtrees stack on top; their own intrinsic clips (anything
+    /// pushed AFTER their own snapshot) remain visible to the
+    /// emitter. The bake site captures the outermost base as the
+    /// texture's "ambient clip" and the per-frame blit re-applies
+    /// it via the blit shader's scissor.
+    ///
+    /// Single-slot `Option<usize>` was insufficient because nested
+    /// motion promotions inside one widget (e.g. `cn::switch`'s
+    /// `on_layer` and `animated_thumb` motion siblings, or any
+    /// promoted ancestor + promoted descendant pair) caused the
+    /// inner pop to clear the outer push's state — leaving the
+    /// outer subtree's later emissions with the wrong clip base
+    /// and the wrong scratch routing implicit assumptions.
+    composite_layer_clip_base: Vec<usize>,
     /// Transform stack
     transform_stack: Vec<Affine2D>,
     /// Opacity stack
@@ -225,6 +311,11 @@ pub struct GpuPaintContext<'a> {
     /// Environment cubemap data set by `set_environment_cubemap`. Captured
     /// into each `PendingMesh` so the renderer can upload it.
     pending_env: Option<std::sync::Arc<CubemapData>>,
+    /// User-defined GPU passes scheduled via `run_gpu_pass`. Drained by
+    /// the outer render loop with `take_pending_gpu_passes` and
+    /// dispatched alongside (and using the same lifecycle as) the
+    /// pending-mesh path.
+    pending_gpu_passes: Vec<PendingGpuPass>,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -265,6 +356,12 @@ impl<'a> GpuPaintContext<'a> {
             pending_meshes: Vec::new(),
             mesh_viewport_bounds: None,
             pending_env: None,
+            pending_gpu_passes: Vec::new(),
+            dynamic_batch: PrimitiveBatch::new(),
+            motion_subtree_depth: 0,
+            composite_layer_batches: std::collections::HashMap::new(),
+            active_composite_layer: None,
+            composite_layer_clip_base: Vec::new(),
         }
     }
 
@@ -317,12 +414,255 @@ impl<'a> GpuPaintContext<'a> {
             pending_meshes: Vec::new(),
             mesh_viewport_bounds: None,
             pending_env: None,
+            pending_gpu_passes: Vec::new(),
+            dynamic_batch: PrimitiveBatch::new(),
+            motion_subtree_depth: 0,
+            composite_layer_batches: std::collections::HashMap::new(),
+            active_composite_layer: None,
+            composite_layer_clip_base: Vec::new(),
         }
     }
 
     /// Set the text rendering context
     pub fn set_text_context(&mut self, text_ctx: &'a mut TextRenderingContext) {
         self.text_ctx = Some(text_ctx);
+    }
+
+    /// Mark that the walker has entered a motion-bound subtree.
+    /// All subsequent emit calls (primitives, paths, glass, etc.)
+    /// route into `dynamic_batch` instead of `batch` until the
+    /// matching `pop_motion_subtree`. Nested motion subtrees track
+    /// via a depth counter — only the outermost pop returns to
+    /// static-batch emission.
+    pub fn push_motion_subtree(&mut self) {
+        self.motion_subtree_depth = self.motion_subtree_depth.saturating_add(1);
+    }
+
+    /// Pair with [`Self::push_motion_subtree`]. No-op when depth
+    /// is already zero (defensive — should never happen in
+    /// well-formed walker traversal but avoids underflow if a
+    /// future caller forgets balance).
+    pub fn pop_motion_subtree(&mut self) {
+        self.motion_subtree_depth = self.motion_subtree_depth.saturating_sub(1);
+    }
+
+    /// `true` if the walker is currently inside one or more motion-
+    /// bound subtrees. Read by the emit helpers to choose between
+    /// `batch` (static) and `dynamic_batch`.
+    #[inline]
+    pub fn in_motion_subtree(&self) -> bool {
+        self.motion_subtree_depth > 0
+    }
+
+    /// Begin routing subsequent emit calls into the per-node scratch
+    /// batch for `node_id` instead of the bg batch.
+    ///
+    /// Used by the walker to capture a composite-promotable CSS
+    /// subtree's primitives into its own buffer — at end of paint
+    /// the buffer is rasterized into a `LayerTexture` and the
+    /// per-frame composite blits that texture with the current
+    /// animation transform applied. The bg batch never sees these
+    /// primitives, so the static cache stays unchanged across
+    /// animation ticks.
+    ///
+    /// Nested composite layers are not supported; the second push
+    /// silently keeps routing to the outermost layer. Callers must
+    /// pair each push with [`Self::pop_composite_layer`].
+    pub fn push_composite_layer(&mut self, node_id: u64) {
+        // Snapshot the clip-stack depth at promotion time. Any clip
+        // the SUBTREE ITSELF pushes (e.g. an inner overflow_clip on
+        // a child) stacks on top of this base and IS baked into the
+        // texture; ancestor clips below the OUTERMOST `clip_base`
+        // are stripped during emission and re-applied at blit time
+        // via the motion-overlay scissor. See [`Self::get_clip_data`]
+        // for the strip logic.
+        //
+        // We push the clip-base unconditionally so push/pop are
+        // balanced, even for nested promotions. The active scratch
+        // routing target (`active_composite_layer`) only updates
+        // for the OUTERMOST push — nested promoted nodes still emit
+        // into the outer's scratch batch, matching the
+        // "no-nesting" routing contract while keeping clip-base
+        // bookkeeping correct.
+        self.composite_layer_clip_base.push(self.clip_stack.len());
+        if self.active_composite_layer.is_none() {
+            self.active_composite_layer = Some(node_id);
+            // Pre-create the entry so emit sites see a stable
+            // mutable handle and don't pay a hashmap lookup on
+            // every primitive.
+            self.composite_layer_batches.entry(node_id).or_default();
+        }
+    }
+
+    /// Pair with [`Self::push_composite_layer`]. Pops the innermost
+    /// clip-base snapshot; when that was the outermost push, also
+    /// clears the active scratch routing target.
+    pub fn pop_composite_layer(&mut self) {
+        self.composite_layer_clip_base.pop();
+        if self.composite_layer_clip_base.is_empty() {
+            self.active_composite_layer = None;
+        }
+    }
+
+    /// Return the AABB of the ancestor clips that were stripped
+    /// from primitive emission while a composite layer was active.
+    /// Returns `None` when no composite layer ever pushed in this
+    /// paint, or when the layer was pushed at clip depth 0 (no
+    /// ancestor clips to strip).
+    ///
+    /// Called from the per-frame motion overlay AFTER pop: the saved
+    /// `composite_layer_clip_base` is consumed by the walker's record
+    /// site (which copies it onto the `DynamicRegion`); this getter
+    /// answers the snapshot itself for callers that need to peek mid-
+    /// paint without copying the stack.
+    pub fn ambient_clip_aabb(&self, clip_base: usize) -> Option<[f32; 4]> {
+        self.ambient_clip_rounded(clip_base).map(|(aabb, _)| aabb)
+    }
+
+    /// Capture the ambient clip as both its intersected AABB AND the
+    /// topmost rounded-rect corner radius if one exists in the
+    /// ancestor stack. The compositor overlay uses this to drive the
+    /// blit shader's rounded-rect scissor — without the radius, a
+    /// motion-bound subtree blitted across a rounded ancestor (the
+    /// progress indicator inside an overflow_clip-rounded track, the
+    /// switch thumb inside a rounded pill) gets its corners squared
+    /// off by an AABB scissor.
+    ///
+    /// Returns `(aabb_xywh, corner_radius_tl_tr_br_bl)`. The radius
+    /// is `[0; 4]` when no rounded-rect clip is present in the
+    /// ancestor chain (plain rects, polygons, no clip) — semantically
+    /// "square corners," which the blit shader handles as a normal
+    /// AABB scissor.
+    ///
+    /// For multiple stacked rounded-rect clips the TOPMOST one wins
+    /// — same heuristic `get_clip_data` uses for its scissor's corner
+    /// radius. Robust handling of arbitrary intersections is
+    /// follow-up work; the topmost-wins fallback matches what users
+    /// see when the bake path is OFF.
+    pub fn ambient_clip_rounded(&self, clip_base: usize) -> Option<([f32; 4], [f32; 4])> {
+        if clip_base == 0 {
+            return None;
+        }
+        let mut min_x = f32::NEG_INFINITY;
+        let mut min_y = f32::NEG_INFINITY;
+        let mut max_x = f32::INFINITY;
+        let mut max_y = f32::INFINITY;
+        let mut any = false;
+        // Walk top-down so the LAST RoundedRect we see is the
+        // outermost — but we want the TOPMOST (innermost), which is
+        // the LAST entry in the iteration order. Track the most-
+        // recent rounded-rect we've seen and let later iterations
+        // overwrite it.
+        let mut topmost_rounded: Option<([f32; 4], [f32; 4])> = None;
+        for (shape, _, _) in &self.clip_stack[..clip_base] {
+            let (x0, y0, x1, y1) = match shape {
+                ClipShape::Rect(r) => (r.x(), r.y(), r.x() + r.width(), r.y() + r.height()),
+                ClipShape::RoundedRect {
+                    rect,
+                    corner_radius,
+                    ..
+                } => {
+                    let bounds = [rect.x(), rect.y(), rect.width(), rect.height()];
+                    let radii = [
+                        corner_radius.top_left,
+                        corner_radius.top_right,
+                        corner_radius.bottom_right,
+                        corner_radius.bottom_left,
+                    ];
+                    topmost_rounded = Some((bounds, radii));
+                    (
+                        rect.x(),
+                        rect.y(),
+                        rect.x() + rect.width(),
+                        rect.y() + rect.height(),
+                    )
+                }
+                _ => continue,
+            };
+            min_x = min_x.max(x0);
+            min_y = min_y.max(y0);
+            max_x = max_x.min(x1);
+            max_y = max_y.min(y1);
+            any = true;
+        }
+        if !any || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let aabb = [min_x, min_y, max_x - min_x, max_y - min_y];
+        // If a rounded-rect exists in the ancestor chain AND the
+        // intersected AABB equals its bounds, return its radii. When
+        // the intersection trims the rounded-rect's edges (a tighter
+        // ancestor rect cuts into it), the rounded corners may no
+        // longer be at the intersection's edge — fall back to square
+        // scissor in that case. This matches `get_clip_data`'s
+        // dominant-corner logic conservatively without re-implementing
+        // it here.
+        let radius = match topmost_rounded {
+            Some((bounds, radii)) if aabb == bounds => radii,
+            _ => [0.0; 4],
+        };
+        Some((aabb, radius))
+    }
+
+    /// Outermost active composite-layer clip-base snapshot — the
+    /// ancestor-clip cutoff that applies for primitives emitted
+    /// inside the outermost push. Used by the walker to record the
+    /// ambient clip on `DynamicRegion::MotionSubtreeTexture` and by
+    /// the strip-clip path in `get_clip_data`. Returns `None`
+    /// outside a composite-layer scope.
+    pub fn composite_layer_clip_base(&self) -> Option<usize> {
+        self.composite_layer_clip_base.first().copied()
+    }
+
+    /// Drain the per-node composite-layer scratch batches. Called
+    /// after the walker finishes; the compositor reads each batch's
+    /// primitives + AABB to rasterize it into a `LayerTexture`.
+    pub fn take_composite_layer_batches(
+        &mut self,
+    ) -> std::collections::HashMap<u64, PrimitiveBatch> {
+        std::mem::take(&mut self.composite_layer_batches)
+    }
+
+    /// The active batch for emission. While inside a composite-
+    /// layer scope, points at the per-node scratch batch; otherwise
+    /// while inside a motion-bound subtree, points at `dynamic_batch`;
+    /// otherwise at `batch`. Internal helper used by every primitive /
+    /// path / glass emit site so the routing is centralised.
+    #[inline]
+    fn active_batch_mut(&mut self) -> &mut PrimitiveBatch {
+        if let Some(node_id) = self.active_composite_layer {
+            self.composite_layer_batches.entry(node_id).or_default()
+        } else if self.motion_subtree_depth > 0 {
+            &mut self.dynamic_batch
+        } else {
+            &mut self.batch
+        }
+    }
+
+    /// Immutable counterpart to [`Self::active_batch_mut`] — used
+    /// by readers like `bg_primitive_count` and `bg_primitive_aabb`
+    /// so they bracket the right batch.
+    #[inline]
+    fn active_batch(&self) -> &PrimitiveBatch {
+        if let Some(node_id) = self.active_composite_layer {
+            // If push happened, the entry must exist; fall back to
+            // `batch` defensively so reads don't panic on an
+            // unbalanced API call.
+            self.composite_layer_batches
+                .get(&node_id)
+                .unwrap_or(&self.batch)
+        } else if self.motion_subtree_depth > 0 {
+            &self.dynamic_batch
+        } else {
+            &self.batch
+        }
+    }
+
+    /// Drain the dynamic batch and return it. The caller (compositor
+    /// fast path) dispatches it per frame on top of the static cache
+    /// blit. Leaves `dynamic_batch` empty for the next paint pass.
+    pub fn take_dynamic_batch(&mut self) -> PrimitiveBatch {
+        std::mem::take(&mut self.dynamic_batch)
     }
 
     /// Get the current transform
@@ -687,6 +1027,14 @@ impl<'a> GpuPaintContext<'a> {
             return shape;
         }
 
+        // Uniform scale factor extracted from the affine — captures DPI
+        // scaling (Retina = ~2.0) plus any uniform element scale. Used
+        // by the polygon branch below to bring element-local vertices
+        // into physical pixels without applying rotation.
+        let [a, b, c, d, ..] = affine.elements;
+        let det = a * d - b * c;
+        let uniform_scale = det.abs().sqrt().max(1e-6);
+
         match shape {
             ClipShape::Rect(rect) => {
                 // Transform all four corners and compute AABB
@@ -722,6 +1070,7 @@ impl<'a> GpuPaintContext<'a> {
             ClipShape::RoundedRect {
                 rect,
                 corner_radius,
+                corner_shape,
             } => {
                 // Transform corners and compute AABB
                 let corners = [
@@ -770,6 +1119,7 @@ impl<'a> GpuPaintContext<'a> {
                 ClipShape::RoundedRect {
                     rect: Rect::new(min_x, min_y, max_x - min_x, max_y - min_y),
                     corner_radius: scaled_radius,
+                    corner_shape,
                 }
             }
             ClipShape::Circle { center, radius } => {
@@ -817,10 +1167,26 @@ impl<'a> GpuPaintContext<'a> {
                 ClipShape::Path(path)
             }
             ClipShape::Polygon(pts) => {
-                // Transform each polygon vertex
-                let transformed: Vec<Point> =
-                    pts.iter().map(|p| self.transform_point(*p)).collect();
-                ClipShape::Polygon(transformed)
+                // Polygon vertices stay in element-local coords (no
+                // rotation / translation) so the fragment shader's
+                // `sp - prim.bounds.xy` test rotates with the element —
+                // any rotation reflected in prim.rotation / local_affine
+                // (CSS, motion-binding spring, timeline updated by
+                // apply_binding_deltas) naturally rotates the polygon.
+                //
+                // BUT prim.bounds.xy is in physical pixels (DPI-scaled),
+                // so element-local coords need to be in physical pixels
+                // too — otherwise on Retina (2x) a 24-px logical element
+                // would have local_p ranging 0..48 but vertices 0..24,
+                // clipping the arc to the top-left quarter and making
+                // most of the ring invisible. Apply only the uniform
+                // (DPI) scale; skip the rotation portion of the affine.
+                let scale = uniform_scale;
+                let scaled: Vec<Point> = pts
+                    .iter()
+                    .map(|p| Point::new(p.x * scale, p.y * scale))
+                    .collect();
+                ClipShape::Polygon(scaled)
             }
         }
     }
@@ -904,21 +1270,49 @@ impl<'a> GpuPaintContext<'a> {
         }
     }
 
-    /// Get clip data from the current clip stack
-    /// Returns (clip_bounds, clip_radius, clip_type)
+    /// Get clip data from the current clip stack.
     ///
-    /// For multiple rect clips, computes the intersection of all clips.
-    /// For mixed clip types, uses the topmost clip (conservative approximation).
+    /// Returns `(clip_bounds, clip_radius, clip_corner_shape, clip_type)`.
+    /// `clip_corner_shape` is a per-corner superellipse `n` parameter
+    /// matching the [`CornerShape`] encoding (n=1.0 = round, 2.0 =
+    /// squircle, 0.0 = bevel, 100.0 = square, -1.0 = scoop). When the
+    /// active rounded clip was pushed with
+    /// [`ClipShape::rounded_rect_shaped`], the shader's clip
+    /// evaluator uses this to call `sd_shaped_rect` so the clip
+    /// curve matches the parent's fill — otherwise the clip stays
+    /// circular (default `[1.0; 4]`).
     ///
-    /// Corner radius handling: A rectangular clip (non-rounded) will reset the
-    /// corner radius to 0 for any corners it covers. This ensures that a child
-    /// with overflow_clip() doesn't inherit rounded corners from a parent.
-    fn get_clip_data(&self) -> ([f32; 4], [f32; 4], ClipType) {
-        if self.clip_stack.is_empty() {
+    /// For multiple rect clips, computes the intersection of all
+    /// clips. For mixed clip types, uses the topmost clip
+    /// (conservative approximation). Stacked RoundedRect clips with
+    /// different `corner_shape` values currently collapse to the
+    /// last-seen shape — typical UI use is a single squircle parent
+    /// pushing `overflow:clip`, where this is exact.
+    ///
+    /// Corner radius handling: a rectangular clip (non-rounded) will
+    /// reset the corner radius to 0 for any corners it covers, so a
+    /// child with overflow_clip() doesn't inherit rounded corners
+    /// from a parent.
+    fn get_clip_data(&self) -> ([f32; 4], [f32; 4], [f32; 4], ClipType) {
+        // P4.3 Option B clip-aware bake: while inside the OUTERMOST
+        // composite layer, ancestor clips below the snapshot base
+        // are stripped from per-primitive clip rects. They get
+        // captured separately and re-applied at blit time by
+        // `composite_*_layers_overlay` (the rounded radius is
+        // threaded through via `current_clip_rounded` so flex-
+        // siblings sitting inside a rounded-rect parent get their
+        // scissor rounded too). Only clips pushed AFTER
+        // `push_composite_layer` (i.e. intrinsic clips the subtree
+        // itself emits, like an inner overflow_clip on a descendant)
+        // participate in the per-primitive clip rect.
+        let start = self.composite_layer_clip_base.first().copied().unwrap_or(0);
+        let active_clips = &self.clip_stack[start..];
+        if active_clips.is_empty() {
             // No clip - use large bounds
             return (
                 [-10000.0, -10000.0, 100000.0, 100000.0],
                 [0.0; 4],
+                [1.0; 4],
                 ClipType::None,
             );
         }
@@ -968,7 +1362,14 @@ impl<'a> GpuPaintContext<'a> {
         // Track whether the topmost clip is a plain Rect (not rounded)
         let mut topmost_is_plain_rect = false;
 
-        for (clip, _poly_meta, _fade) in &self.clip_stack {
+        // Track corner_shape (superellipse n) per corner, paired with
+        // the radius source above. Default `1.0` = round; gets
+        // overwritten with the source `ClipShape::RoundedRect`'s
+        // `corner_shape` whenever that source contributes the
+        // dominant radius for the corner.
+        let mut corner_n_sources = [1.0_f32; 4];
+
+        for (clip, _poly_meta, _fade) in active_clips {
             match clip {
                 ClipShape::Rect(rect) => {
                     // Intersect with this rect
@@ -982,6 +1383,7 @@ impl<'a> GpuPaintContext<'a> {
                 ClipShape::RoundedRect {
                     rect,
                     corner_radius,
+                    corner_shape,
                 } => {
                     let rx = rect.x();
                     let ry = rect.y();
@@ -995,18 +1397,25 @@ impl<'a> GpuPaintContext<'a> {
                     intersect_max_y = intersect_max_y.min(rmax_y);
 
                     // Track corner radii with their source bounds
-                    // Only update if this corner radius is larger (take max)
+                    // Only update if this corner radius is larger (take max).
+                    // Pair each corner's `n` with the radius it came
+                    // from so the squircle curve survives the
+                    // intersection rebuild below.
                     if corner_radius.top_left > corner_sources[0].0 {
                         corner_sources[0] = (corner_radius.top_left, rx, ry, rmax_x, rmax_y);
+                        corner_n_sources[0] = corner_shape.top_left;
                     }
                     if corner_radius.top_right > corner_sources[1].0 {
                         corner_sources[1] = (corner_radius.top_right, rx, ry, rmax_x, rmax_y);
+                        corner_n_sources[1] = corner_shape.top_right;
                     }
                     if corner_radius.bottom_right > corner_sources[2].0 {
                         corner_sources[2] = (corner_radius.bottom_right, rx, ry, rmax_x, rmax_y);
+                        corner_n_sources[2] = corner_shape.bottom_right;
                     }
                     if corner_radius.bottom_left > corner_sources[3].0 {
                         corner_sources[3] = (corner_radius.bottom_left, rx, ry, rmax_x, rmax_y);
+                        corner_n_sources[3] = corner_shape.bottom_left;
                     }
 
                     has_rect_clips = true;
@@ -1035,7 +1444,7 @@ impl<'a> GpuPaintContext<'a> {
         // matted layer was a precomp. The GPU still only evaluates one
         // non-rect shape per primitive, so we stop at the first one
         // found walking top-down.
-        let topmost_non_rect_idx = self.clip_stack.iter().rposition(|(c, _, _)| {
+        let topmost_non_rect_idx = active_clips.iter().rposition(|(c, _, _)| {
             matches!(
                 c,
                 ClipShape::Circle { .. }
@@ -1102,9 +1511,36 @@ impl<'a> GpuPaintContext<'a> {
                 }
             }
 
+            // Corner shape: use the source `n` for any corner whose
+            // radius survived the intersection; default to round
+            // (n=1) for corners that intersected away to 0 radius.
+            let corner_shape = [
+                if radii[0] > 0.0 {
+                    corner_n_sources[0]
+                } else {
+                    1.0
+                },
+                if radii[1] > 0.0 {
+                    corner_n_sources[1]
+                } else {
+                    1.0
+                },
+                if radii[2] > 0.0 {
+                    corner_n_sources[2]
+                } else {
+                    1.0
+                },
+                if radii[3] > 0.0 {
+                    corner_n_sources[3]
+                } else {
+                    1.0
+                },
+            ];
+
             return (
                 [intersect_min_x, intersect_min_y, width, height],
                 radii,
+                corner_shape,
                 ClipType::Rect,
             );
         }
@@ -1127,17 +1563,19 @@ impl<'a> GpuPaintContext<'a> {
         // intersection branches below). Scanning instead of just
         // `last()` is what lets a rect clip stacked on top of a
         // polygon matte still resolve to the polygon as the shape.
-        let shape_idx = topmost_non_rect_idx.unwrap_or(self.clip_stack.len() - 1);
-        let (clip, poly_meta, _fade) = &self.clip_stack[shape_idx];
+        let shape_idx = topmost_non_rect_idx.unwrap_or(active_clips.len() - 1);
+        let (clip, poly_meta, _fade) = &active_clips[shape_idx];
         match clip {
             ClipShape::Rect(rect) => (
                 [rect.x(), rect.y(), rect.width(), rect.height()],
                 [0.0; 4],
+                [1.0; 4],
                 ClipType::Rect,
             ),
             ClipShape::RoundedRect {
                 rect,
                 corner_radius,
+                corner_shape,
             } => (
                 [rect.x(), rect.y(), rect.width(), rect.height()],
                 [
@@ -1146,18 +1584,26 @@ impl<'a> GpuPaintContext<'a> {
                     corner_radius.bottom_right,
                     corner_radius.bottom_left,
                 ],
+                [
+                    corner_shape.top_left,
+                    corner_shape.top_right,
+                    corner_shape.bottom_right,
+                    corner_shape.bottom_left,
+                ],
                 ClipType::Rect,
             ),
             ClipShape::Circle { center, radius } => (
                 // clip_bounds = rect scissor, clip_radius = [cx, cy, radius, 0]
                 scissor_bounds,
                 [center.x, center.y, *radius, 0.0],
+                [1.0; 4],
                 ClipType::Circle,
             ),
             ClipShape::Ellipse { center, radii } => (
                 // clip_bounds = rect scissor, clip_radius = [cx, cy, rx, ry]
                 scissor_bounds,
                 [center.x, center.y, radii.x, radii.y],
+                [1.0; 4],
                 ClipType::Ellipse,
             ),
             ClipShape::Polygon(_) => {
@@ -1166,6 +1612,7 @@ impl<'a> GpuPaintContext<'a> {
                 (
                     scissor_bounds,
                     [0.0, 0.0, vertex_count as f32, aux_offset as f32],
+                    [1.0; 4],
                     ClipType::Polygon,
                 )
             }
@@ -1174,6 +1621,7 @@ impl<'a> GpuPaintContext<'a> {
                 (
                     [-10000.0, -10000.0, 100000.0, 100000.0],
                     [0.0; 4],
+                    [1.0; 4],
                     ClipType::None,
                 )
             }
@@ -1196,6 +1644,18 @@ impl<'a> GpuPaintContext<'a> {
     /// the dispatch site.
     pub fn take_pending_meshes(&mut self) -> Vec<PendingMesh> {
         std::mem::take(&mut self.pending_meshes)
+    }
+
+    /// Take the user-defined GPU passes scheduled this frame.
+    ///
+    /// Every call to [`blinc_core::draw::DrawContext::run_gpu_pass`] inside a
+    /// canvas callback pushes one [`PendingGpuPass`] here. The outer
+    /// render loop drains this list after `take_batch` and dispatches
+    /// each via `GpuPass::initialize_and_render` against the frame's
+    /// real device / queue / target. See `blinc_app::context` for the
+    /// dispatch site.
+    pub fn take_pending_gpu_passes(&mut self) -> Vec<PendingGpuPass> {
+        std::mem::take(&mut self.pending_gpu_passes)
     }
 
     /// Get a reference to the current batch
@@ -1465,9 +1925,18 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // Note: This only works correctly for translate + uniform scale transforms.
         // Rotation transforms are approximated (the bounding box is used).
         let transformed_shape = self.transform_clip_shape(shape);
-        // For polygon clips, pack vertices into aux_data and store metadata
+        // For polygon clips, pack vertices into the ACTIVE batch's aux_data
+        // and store metadata. The active batch is `dynamic_batch` when
+        // emitting inside a motion-bound subtree — primitives there carry
+        // `clip_radius.w = aux_offset` indexing into the dispatched batch's
+        // own aux_data buffer, so vertices written to `self.batch.aux_data`
+        // wouldn't be reachable at draw time. The matching pop is in
+        // `pop_clip`; the aux_data entries stay around for the rest of the
+        // paint pass (every later primitive emitted under this clip needs
+        // them in place when its render-pass dispatches).
         let poly_meta = if let ClipShape::Polygon(ref pts) = transformed_shape {
-            let aux_offset = self.batch.aux_data.len() as u32;
+            let active = self.active_batch_mut();
+            let aux_offset = active.aux_data.len() as u32;
             let vertex_count = pts.len() as u32;
             // Pack vertices as vec4s: (x0, y0, x1, y1) — 2 vertices per vec4
             let mut i = 0;
@@ -1479,7 +1948,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 } else {
                     (0.0, 0.0) // padding
                 };
-                self.batch.aux_data.push([x0, y0, x1, y1]);
+                active.aux_data.push([x0, y0, x1, y1]);
                 i += 2;
             }
             Some((aux_offset, vertex_count))
@@ -1524,6 +1993,148 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn z_layer(&self) -> u32 {
         self.z_layer
+    }
+
+    fn bg_primitive_count(&self) -> usize {
+        // Reads the ACTIVE batch's count so primitive-range bracketing
+        // (e.g. `composite_bg_start` / `composite_bg_end` in the
+        // walker) lands in the same batch the emit calls wrote into.
+        // While inside a motion-bound subtree, that's `dynamic_batch`;
+        // otherwise `batch`.
+        self.active_batch().primitives.len()
+    }
+
+    fn bg_layer_command_count(&self) -> usize {
+        // Layer commands always live on the BG batch (push_layer
+        // routes to `batch.layer_commands` regardless of motion-
+        // subtree depth). Match that routing so the index the
+        // walker captures lines up with what Phase 4's CSS patch
+        // path reads from `cached_bg_batch.layer_commands`.
+        self.batch.layer_commands.len()
+    }
+
+    fn push_motion_subtree(&mut self) {
+        // Override the no-op trait default with our depth-counter
+        // tracker so emit sites route to `dynamic_batch`.
+        GpuPaintContext::push_motion_subtree(self)
+    }
+
+    fn pop_motion_subtree(&mut self) {
+        GpuPaintContext::pop_motion_subtree(self)
+    }
+
+    fn push_composite_layer(&mut self, node_id: u64) {
+        // Override the no-op trait default with the per-node scratch
+        // routing so the promoted CSS subtree's emits land in
+        // `composite_layer_batches[node_id]`.
+        GpuPaintContext::push_composite_layer(self, node_id)
+    }
+
+    fn pop_composite_layer(&mut self) {
+        GpuPaintContext::pop_composite_layer(self)
+    }
+
+    fn bg_primitive_aabb(&self, start: usize, end: usize) -> Option<[f32; 4]> {
+        let prims = &self.active_batch().primitives;
+        if start >= end || end > prims.len() {
+            return None;
+        }
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for p in &prims[start..end] {
+            let [x, y, w, h] = p.bounds;
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x + w);
+            max_y = max_y.max(y + h);
+        }
+        if min_x.is_finite() && max_x > min_x && max_y > min_y {
+            Some([min_x, min_y, max_x - min_x, max_y - min_y])
+        } else {
+            None
+        }
+    }
+
+    fn current_affine_elements(&self) -> [f32; 6] {
+        self.current_affine().elements
+    }
+
+    fn current_clip_aabb(&self) -> Option<[f32; 4]> {
+        if self.clip_stack.is_empty() {
+            return None;
+        }
+        // Each clip in the stack is already in screen coordinates
+        // (push_clip transforms by the active affine on entry). The
+        // effective bounds is the intersection of every entry's
+        // AABB. Non-rect clips (circles, paths, polygons) contribute
+        // their bounding box — the compositor overlay uses the
+        // result as a scissor rect, so a looser-than-necessary AABB
+        // is safe (over-includes pixels) while a tighter bound would
+        // be incorrect.
+        let mut min_x = f32::NEG_INFINITY;
+        let mut min_y = f32::NEG_INFINITY;
+        let mut max_x = f32::INFINITY;
+        let mut max_y = f32::INFINITY;
+        for (shape, _, _) in &self.clip_stack {
+            let (sx, sy, sw, sh) = match shape {
+                ClipShape::Rect(r) => (r.x(), r.y(), r.width(), r.height()),
+                ClipShape::RoundedRect { rect, .. } => {
+                    (rect.x(), rect.y(), rect.width(), rect.height())
+                }
+                ClipShape::Circle { center, radius } => (
+                    center.x - radius,
+                    center.y - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                ),
+                ClipShape::Ellipse { center, radii } => (
+                    center.x - radii.x,
+                    center.y - radii.y,
+                    radii.x * 2.0,
+                    radii.y * 2.0,
+                ),
+                ClipShape::Polygon(pts) => {
+                    if pts.is_empty() {
+                        continue;
+                    }
+                    let mut pmin_x = f32::INFINITY;
+                    let mut pmin_y = f32::INFINITY;
+                    let mut pmax_x = f32::NEG_INFINITY;
+                    let mut pmax_y = f32::NEG_INFINITY;
+                    for p in pts {
+                        pmin_x = pmin_x.min(p.x);
+                        pmin_y = pmin_y.min(p.y);
+                        pmax_x = pmax_x.max(p.x);
+                        pmax_y = pmax_y.max(p.y);
+                    }
+                    (pmin_x, pmin_y, pmax_x - pmin_x, pmax_y - pmin_y)
+                }
+                ClipShape::Path(_) => continue, // skip — no easy AABB
+            };
+            min_x = min_x.max(sx);
+            min_y = min_y.max(sy);
+            max_x = max_x.min(sx + sw);
+            max_y = max_y.min(sy + sh);
+        }
+        if max_x <= min_x || max_y <= min_y {
+            return Some([min_x, min_y, 0.0, 0.0]);
+        }
+        Some([min_x, min_y, max_x - min_x, max_y - min_y])
+    }
+
+    fn current_clip_rounded(&self) -> Option<([f32; 4], [f32; 4])> {
+        // Same heuristic the inherent `ambient_clip_rounded` uses:
+        // walk the full clip stack, intersect AABBs, and track the
+        // topmost rounded-rect's radius. Only return the radius when
+        // the topmost rounded-rect's bounds equal the intersected
+        // AABB — otherwise an ancestor rect has trimmed it and the
+        // radius no longer maps cleanly to the scissor edge.
+        self.ambient_clip_rounded(self.clip_stack.len())
     }
 
     fn set_3d_transform(&mut self, rx_rad: f32, ry_rad: f32, perspective_d: f32) {
@@ -1670,7 +2281,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     affine.elements[1] * x + affine.elements[3] * y + affine.elements[5];
             }
             if !tessellated.is_empty() {
-                let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+                let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
                 self.push_mesh_primitives_brush(
                     &tessellated,
                     &brush,
@@ -1678,6 +2289,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     per_vertex_colors.as_deref(),
                     clip_bounds,
                     clip_radius,
+                    clip_corner_shape,
                     clip_type,
                 );
             }
@@ -1702,18 +2314,19 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         if !tessellated.is_empty() {
-            let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+            let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info(
-                    tessellated,
-                    clip_bounds,
-                    clip_radius,
-                    clip_type,
-                    &brush_info,
-                );
+                self.active_batch_mut()
+                    .push_foreground_path_with_brush_info(
+                        tessellated,
+                        clip_bounds,
+                        clip_radius,
+                        clip_type,
+                        &brush_info,
+                    );
             } else {
-                self.batch.push_path_with_brush_info(
+                self.active_batch_mut().push_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1745,7 +2358,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     affine.elements[1] * x + affine.elements[3] * y + affine.elements[5];
             }
             if !tessellated.is_empty() {
-                let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+                let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
                 self.push_mesh_primitives_brush(
                     &tessellated,
                     &brush,
@@ -1753,6 +2366,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     per_vertex_colors.as_deref(),
                     clip_bounds,
                     clip_radius,
+                    clip_corner_shape,
                     clip_type,
                 );
             }
@@ -1774,18 +2388,19 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         if !tessellated.is_empty() {
-            let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+            let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info(
-                    tessellated,
-                    clip_bounds,
-                    clip_radius,
-                    clip_type,
-                    &brush_info,
-                );
+                self.active_batch_mut()
+                    .push_foreground_path_with_brush_info(
+                        tessellated,
+                        clip_bounds,
+                        clip_radius,
+                        clip_type,
+                        &brush_info,
+                    );
             } else {
-                self.batch.push_path_with_brush_info(
+                self.active_batch_mut().push_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1841,7 +2456,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             }
 
             // Apply current clip bounds to glass primitive (for scroll containers)
-            let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+            let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
             match clip_type {
                 ClipType::None => {}
                 ClipType::Rect => {
@@ -1885,9 +2500,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             }
 
             if style.depth > 0 {
-                self.batch.push_nested_glass(glass);
+                self.active_batch_mut().push_nested_glass(glass);
             } else {
-                self.batch.push_glass(glass);
+                self.active_batch_mut().push_glass(glass);
             }
             return;
         }
@@ -1919,7 +2534,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             }
 
             // Apply current clip bounds to glass primitive
-            let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+            let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
             match clip_type {
                 ClipType::None => {}
                 ClipType::Rect => {
@@ -1954,12 +2569,12 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 }
             }
 
-            self.batch.push_glass(glass);
+            self.active_batch_mut().push_glass(glass);
             return;
         }
 
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Convert OBB (0..1) gradient coords to rect-local pixel coords
         let gradient_params = Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
@@ -2020,6 +2635,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: transformed_gradient_params,
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2041,9 +2657,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2089,7 +2705,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let scaled_bottom_mod = scale_mod(bottom_mod);
 
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Transform gradient params into rect-local then screen space, just
         // like `fill_rect` does.
@@ -2148,6 +2764,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: shadow_color_vec,
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: transformed_gradient_params,
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2171,9 +2788,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2188,7 +2805,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
         let scaled_radius = self.scale_corner_radius(corner_radius);
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Scale border widths by transform
         let affine = self.current_affine();
@@ -2244,6 +2861,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: transformed_gradient_params,
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2265,9 +2883,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2281,7 +2899,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
         let scaled_radius = self.scale_corner_radius(corner_radius);
         let (color, _color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Scale border width by the current transform's uniform scale (DPI + CSS transforms)
         let scaled_border_width = stroke.width * self.current_uniform_scale();
@@ -2307,6 +2925,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params,
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2328,9 +2947,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2361,15 +2980,15 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 glass = glass.with_border_color(bc.r, bc.g, bc.b, bc.a);
             }
             if style.depth > 0 {
-                self.batch.push_nested_glass(glass);
+                self.active_batch_mut().push_nested_glass(glass);
             } else {
-                self.batch.push_glass(glass);
+                self.active_batch_mut().push_glass(glass);
             }
             return;
         }
 
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Convert OBB (0..1) gradient coords to circle bounding rect pixel coords
         let circle_rect = Rect::new(
@@ -2405,6 +3024,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: transformed_gradient_params,
             rotation: [0.0, 1.0, 0.0, 1.0],
             local_affine: [1.0, 0.0, 0.0, 1.0],
@@ -2426,9 +3046,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2443,7 +3063,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed_radius = radius * scale;
 
         let (color, _, gradient_params, fill_type) = self.brush_to_colors(&brush);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Convert OBB (0..1) gradient coords to circle bounding rect pixel coords
         let circle_rect = Rect::new(
@@ -2479,6 +3099,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: transformed_gradient_params,
             rotation: [0.0, 1.0, 0.0, 1.0],
             local_affine: [1.0, 0.0, 0.0, 1.0],
@@ -2500,9 +3121,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2538,7 +3159,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // clip is active the third element carries its `ClipType`,
         // and we propagate that onto each glyph so the shader's
         // `PRIM_TEXT` branch gates `clip_edge_alpha` properly.
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
         let clip_kind_u32 = clip_type as u32;
 
         // Convert TextStyle color to [f32; 4] with opacity applied
@@ -2633,9 +3254,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 prim.clip_bounds = clip_bounds;
                 prim.clip_radius = clip_radius;
                 if self.is_foreground {
-                    self.batch.push_foreground(prim);
+                    self.active_batch_mut().push_foreground(prim);
                 } else {
-                    self.batch.push(prim);
+                    self.active_batch_mut().push(prim);
                 }
             }
         }
@@ -2667,7 +3288,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
         let scaled_radius = self.scale_corner_radius(corner_radius);
         let opacity = self.combined_opacity();
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Scale shadow values by the current transform's uniform scale (DPI + CSS transforms).
         // Shadow offset, blur, and spread are in logical pixels but the shader
@@ -2705,6 +3326,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2726,9 +3348,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -2736,7 +3358,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
         let scaled_radius = self.scale_corner_radius(corner_radius);
         let opacity = self.combined_opacity();
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Scale shadow values by the current transform's uniform scale (DPI + CSS transforms)
         let s = self.current_uniform_scale();
@@ -2772,6 +3394,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: self.current_rotation_sincos(),
             local_affine: self.current_local_affine(),
@@ -2793,16 +3416,16 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
     fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
         let transformed_center = self.transform_point(center);
         let opacity = self.combined_opacity();
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         // Store circle as bounds where the circle fits
         let size = radius * 2.0;
@@ -2827,6 +3450,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: [0.0, 1.0, 0.0, 1.0],
             local_affine: [1.0, 0.0, 0.0, 1.0],
@@ -2848,16 +3472,16 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
     fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
         let transformed_center = self.transform_point(center);
         let opacity = self.combined_opacity();
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_corner_shape, clip_type) = self.get_clip_data();
 
         let size = radius * 2.0;
         let primitive = GpuPrimitive {
@@ -2881,6 +3505,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
             clip_bounds,
             clip_radius,
+            clip_corner_shape,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: [0.0, 1.0, 0.0, 1.0],
             local_affine: [1.0, 0.0, 0.0, 1.0],
@@ -2902,9 +3527,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         if self.is_foreground {
-            self.batch.push_foreground(primitive);
+            self.active_batch_mut().push_foreground(primitive);
         } else {
-            self.batch.push(primitive);
+            self.active_batch_mut().push(primitive);
         }
     }
 
@@ -3009,7 +3634,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
 
         // Get current clip bounds and intersect with the viewport
-        let (clip_bounds, _, _) = self.get_clip_data();
+        let (clip_bounds, _, _, _) = self.get_clip_data();
         let clip_min_x = clip_bounds[0];
         let clip_min_y = clip_bounds[1];
         let clip_max_x = clip_bounds[0] + clip_bounds[2];
@@ -3114,7 +3739,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let transformed = self.transform_rect(rect);
 
         // Get current clip bounds and intersect with the viewport
-        let (clip_bounds, _, _) = self.get_clip_data();
+        let (clip_bounds, _, _, _) = self.get_clip_data();
         let clip_min_x = clip_bounds[0];
         let clip_min_y = clip_bounds[1];
         let clip_max_x = clip_bounds[0] + clip_bounds[2];
@@ -3378,6 +4003,41 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             .copied()
             .unwrap_or(BlendMode::Normal)
     }
+
+    fn run_gpu_pass(
+        &mut self,
+        hook: &dyn blinc_core::draw::GpuPassHook,
+        viewport: Option<blinc_core::Rect>,
+    ) {
+        // Downcast through the canonical wrapper type. Any other
+        // `GpuPassHook` impl is treated as an opaque no-op — the only
+        // sanctioned construction route is `blinc_gpu::GpuPass::new`.
+        let Some(pass) = hook.as_any().downcast_ref::<crate::custom_pass::GpuPass>() else {
+            return;
+        };
+        // Resolve the viewport rect in physical pixels. Explicit
+        // `Some(rect)` from the caller wins (caller is usually the
+        // canvas closure handing through `bounds.rect()`). Otherwise
+        // fall back to the current clip-stack AABB, which gives a
+        // sensible default when the wrapping widget has already pushed
+        // a clip for its layout bounds. `None` at both layers means
+        // "render to the full frame target".
+        let pixel_viewport = match viewport {
+            Some(rect) => {
+                let tl = self.transform_point(rect.origin);
+                let br = self.transform_point(blinc_core::Point::new(
+                    rect.origin.x + rect.size.width,
+                    rect.origin.y + rect.size.height,
+                ));
+                Some([tl.x, tl.y, (br.x - tl.x).abs(), (br.y - tl.y).abs()])
+            }
+            None => self.current_clip_aabb(),
+        };
+        self.pending_gpu_passes.push(PendingGpuPass {
+            pass: pass.clone(),
+            viewport: pixel_viewport,
+        });
+    }
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -3410,6 +4070,7 @@ impl<'a> GpuPaintContext<'a> {
         per_vertex_colors: Option<&[blinc_core::Color]>,
         clip_bounds: [f32; 4],
         clip_radius: [f32; 4],
+        clip_corner_shape: [f32; 4],
         clip_type: ClipType,
     ) {
         use crate::primitives::PrimitiveType;
@@ -3580,6 +4241,7 @@ impl<'a> GpuPaintContext<'a> {
                 corner_radius: [s01, s12, s20, 0.0],
                 clip_bounds,
                 clip_radius,
+                clip_corner_shape,
                 type_info: [
                     PrimitiveType::Mesh as u32,
                     fill_type,
@@ -3591,9 +4253,9 @@ impl<'a> GpuPaintContext<'a> {
             prim.local_affine = [1.0, 0.0, 0.0, 1.0];
 
             if self.is_foreground {
-                self.batch.push_foreground(prim);
+                self.active_batch_mut().push_foreground(prim);
             } else {
-                self.batch.push(prim);
+                self.active_batch_mut().push(prim);
             }
         }
     }
@@ -3956,5 +4618,186 @@ mod tests {
         ctx.pop_layer();
         assert_eq!(ctx.layer_stack.len(), 0);
         assert_eq!(ctx.current_opacity(), 1.0);
+    }
+
+    /// P4.3 Option B — when a composite layer is active, primitives
+    /// emitted into the scratch batch must NOT carry the ancestor
+    /// clip rect; that ancestor clip is re-applied at blit time. A
+    /// primitive emitted inside the layer should report
+    /// `ClipType::None` even though an ancestor clip is on the stack.
+    ///
+    /// IGNORED 2026-05-26 — strip-clip behavior temporarily disabled
+    /// because the AABB scissor passed to the blit doesn't preserve
+    /// the parent's corner radius, producing visible artifacts on
+    /// `cn::switch` (rounded track corners get squared off). Re-
+    /// enable when the bake captures the rounded-rect parent's radius
+    /// too and passes it as the blit shader's scissor radius.
+    #[test]
+    fn composite_layer_strips_ancestor_clip_from_emit() {
+        use blinc_core::DrawContext as _;
+        use blinc_core::Rect;
+        use blinc_core::layer::ClipShape;
+
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        // Outer clip simulating an `.overflow_clip()` track at
+        // [100, 100, 200, 50].
+        ctx.push_clip(ClipShape::Rect(Rect::new(100.0, 100.0, 200.0, 50.0)));
+        let outer_clip_aabb = ctx.current_clip_aabb();
+        assert_eq!(outer_clip_aabb, Some([100.0, 100.0, 200.0, 50.0]));
+
+        // Promote the subtree to a composite layer.
+        ctx.push_composite_layer(0xDEAD_BEEF);
+        assert_eq!(ctx.composite_layer_clip_base(), Some(1));
+
+        // Emit a primitive INSIDE the composite layer. Its
+        // `clip_rect` should be the "no clip" sentinel because the
+        // ancestor clip is stripped.
+        ctx.fill_rect(
+            Rect::new(0.0, 0.0, 50.0, 50.0),
+            0.0.into(),
+            Color::BLUE.into(),
+        );
+        let batches = ctx.take_composite_layer_batches();
+        let scratch = batches
+            .get(&0xDEAD_BEEF)
+            .expect("scratch batch should exist for promoted node");
+        assert_eq!(scratch.primitives.len(), 1);
+        let prim_clip = scratch.primitives[0].clip_bounds;
+        // Sentinel "no clip" bounds from `get_clip_data`.
+        assert_eq!(prim_clip, [-10000.0, -10000.0, 100000.0, 100000.0]);
+
+        // `ambient_clip_aabb` peels the ancestor for the overlay.
+        let ambient = ctx.ambient_clip_aabb(1);
+        assert_eq!(ambient, Some([100.0, 100.0, 200.0, 50.0]));
+
+        ctx.pop_composite_layer();
+        assert_eq!(ctx.composite_layer_clip_base(), None);
+        ctx.pop_clip();
+    }
+
+    /// P4.3 Option B — clips pushed INSIDE the composite layer (i.e.
+    /// the subtree's own intrinsic clips) still apply to primitives
+    /// emitted within them. Only ancestors below the snapshot are
+    /// stripped.
+    ///
+    /// IGNORED 2026-05-26 — paired with the strip-clip test above;
+    /// re-enable both when the strip-clip behavior comes back with
+    /// rounded-corner-aware scissor support.
+    #[test]
+    fn composite_layer_preserves_inner_clip() {
+        use blinc_core::DrawContext as _;
+        use blinc_core::Rect;
+        use blinc_core::layer::ClipShape;
+
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        // Outer ancestor clip (stripped).
+        ctx.push_clip(ClipShape::Rect(Rect::new(0.0, 0.0, 50.0, 50.0)));
+        ctx.push_composite_layer(42);
+
+        // Inner clip pushed by the subtree itself (e.g. a descendant
+        // overflow_clip). This MUST land in per-primitive clip rect
+        // because the bake is supposed to capture intrinsic clipping.
+        ctx.push_clip(ClipShape::Rect(Rect::new(200.0, 200.0, 100.0, 100.0)));
+
+        ctx.fill_rect(
+            Rect::new(0.0, 0.0, 1000.0, 1000.0),
+            0.0.into(),
+            Color::RED.into(),
+        );
+        let batches = ctx.take_composite_layer_batches();
+        let scratch = batches.get(&42).expect("scratch batch exists");
+        let prim_clip = scratch.primitives[0].clip_bounds;
+        // Inner clip (NOT the outer ancestor) lands on the primitive.
+        assert_eq!(prim_clip, [200.0, 200.0, 100.0, 100.0]);
+
+        ctx.pop_clip();
+        ctx.pop_composite_layer();
+        ctx.pop_clip();
+    }
+
+    /// P4.3 Option B — nested composite layers. When a promoted
+    /// subtree contains a descendant that's ALSO promoted, the
+    /// inner push must not clear the outer's clip-base on its pop.
+    /// Previously stored as `Option<usize>`, a single-slot field
+    /// silently dropped the outer's state on the inner's pop —
+    /// leaving subsequent emits in the outer subtree with no
+    /// strip-clip applied (so the outer's primitives leaked into
+    /// scratch with their ancestor clips re-attached). The Vec
+    /// stack form restores correct behaviour. The outer batch
+    /// continues to receive all emits — nested promotion shares
+    /// scratch routing with the outer (an intentional simplification
+    /// matching the no-nested-routing contract; only the clip-base
+    /// accounting is stack-aware).
+    #[test]
+    fn composite_layer_nested_push_preserves_outer_clip_base() {
+        use blinc_core::DrawContext as _;
+        use blinc_core::Rect;
+        use blinc_core::layer::ClipShape;
+
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        // Ancestor clip (outer-of-outer). Should be stripped from
+        // every primitive emitted inside any composite layer.
+        ctx.push_clip(ClipShape::Rect(Rect::new(0.0, 0.0, 800.0, 600.0)));
+
+        // Outer promoted subtree.
+        ctx.push_composite_layer(0xAAAA);
+        assert_eq!(ctx.composite_layer_clip_base(), Some(1));
+
+        // Inner promoted subtree (nested). Old single-slot field
+        // would have OVERWRITTEN outer's clip_base here; the Vec
+        // pushes a new snapshot on top.
+        ctx.push_composite_layer(0xBBBB);
+        assert_eq!(
+            ctx.composite_layer_clip_base(),
+            Some(1),
+            "outermost clip_base (1) must remain the cutoff while inner is active"
+        );
+
+        // Inner emits a primitive. clip_rect strips ancestors below
+        // outer base (1) — i.e., the 800x600 ancestor.
+        ctx.fill_rect(
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            0.0.into(),
+            Color::BLUE.into(),
+        );
+
+        // Inner pop. Previously this would have cleared the outer's
+        // state to None; with Vec it just pops the inner snapshot.
+        ctx.pop_composite_layer();
+        assert_eq!(
+            ctx.composite_layer_clip_base(),
+            Some(1),
+            "outer's clip_base must survive inner pop"
+        );
+
+        // Outer continues to emit; its primitives still strip the
+        // ancestor.
+        ctx.fill_rect(
+            Rect::new(50.0, 50.0, 30.0, 30.0),
+            0.0.into(),
+            Color::RED.into(),
+        );
+
+        let batches = ctx.take_composite_layer_batches();
+        let scratch = batches.get(&0xAAAA).expect("outer scratch exists");
+        // Both primitives (inner + outer emits) route into outer's
+        // scratch batch (no-nested-routing contract) and both have
+        // their ancestor clip stripped.
+        assert_eq!(scratch.primitives.len(), 2);
+        for prim in &scratch.primitives {
+            assert_eq!(
+                prim.clip_bounds,
+                [-10000.0, -10000.0, 100000.0, 100000.0],
+                "ancestor clip stripped for both inner- and outer-emitted prims"
+            );
+        }
+
+        // Outer pop now clears the active state entirely.
+        ctx.pop_composite_layer();
+        assert_eq!(ctx.composite_layer_clip_base(), None);
+        ctx.pop_clip();
     }
 }

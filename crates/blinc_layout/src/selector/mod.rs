@@ -36,19 +36,13 @@
 mod handle;
 mod registry;
 mod scroll_ref;
-mod semantic;
 
 use std::sync::Arc;
 
 use blinc_core::BlincContextState;
 
-pub use handle::{
-    dispatch_programmatic_event_to_node, dispatch_programmatic_event_to_runtime,
-    drain_programmatic_runtime_requests, sync_context_focus_from_runtime,
-    sync_focus_node_to_runtime, sync_focus_to_runtime, ElementEvent, ElementHandle, MotionHandle,
-};
+pub use handle::{ElementEvent, ElementHandle, MotionHandle};
 pub use registry::ElementRegistry;
-pub use semantic::{resolve_semantic_locator, SemanticLocator, SemanticLocatorResolution};
 
 /// Shared element registry for thread-safe access
 pub type SharedElementRegistry = Arc<ElementRegistry>;
@@ -104,7 +98,8 @@ pub fn query_motion(key: &str) -> MotionHandle {
     MotionHandle::new(key)
 }
 pub use scroll_ref::{
-    use_scroll_ref, PendingScroll, ScrollRef, SharedScrollRefInner, TriggerCallback,
+    PendingScroll, ScrollRef, SharedScrollRefInner, TriggerCallback, use_scroll_ref,
+    use_scroll_ref_keyed,
 };
 
 /// Options for scroll-into-view behavior
@@ -124,88 +119,6 @@ impl Default for ScrollOptions {
             behavior: ScrollBehavior::Auto,
             block: ScrollBlock::Nearest,
             inline: ScrollInline::Nearest,
-        }
-    }
-}
-
-impl From<ScrollBehavior> for blinc_core::ScrollBehaviorHint {
-    fn from(value: ScrollBehavior) -> Self {
-        match value {
-            ScrollBehavior::Auto => Self::Auto,
-            ScrollBehavior::Smooth => Self::Smooth,
-        }
-    }
-}
-
-impl From<blinc_core::ScrollBehaviorHint> for ScrollBehavior {
-    fn from(value: blinc_core::ScrollBehaviorHint) -> Self {
-        match value {
-            blinc_core::ScrollBehaviorHint::Auto => Self::Auto,
-            blinc_core::ScrollBehaviorHint::Smooth => Self::Smooth,
-        }
-    }
-}
-
-impl From<ScrollBlock> for blinc_core::ScrollBlockHint {
-    fn from(value: ScrollBlock) -> Self {
-        match value {
-            ScrollBlock::Start => Self::Start,
-            ScrollBlock::Center => Self::Center,
-            ScrollBlock::End => Self::End,
-            ScrollBlock::Nearest => Self::Nearest,
-        }
-    }
-}
-
-impl From<blinc_core::ScrollBlockHint> for ScrollBlock {
-    fn from(value: blinc_core::ScrollBlockHint) -> Self {
-        match value {
-            blinc_core::ScrollBlockHint::Start => Self::Start,
-            blinc_core::ScrollBlockHint::Center => Self::Center,
-            blinc_core::ScrollBlockHint::End => Self::End,
-            blinc_core::ScrollBlockHint::Nearest => Self::Nearest,
-        }
-    }
-}
-
-impl From<ScrollInline> for blinc_core::ScrollInlineHint {
-    fn from(value: ScrollInline) -> Self {
-        match value {
-            ScrollInline::Start => Self::Start,
-            ScrollInline::Center => Self::Center,
-            ScrollInline::End => Self::End,
-            ScrollInline::Nearest => Self::Nearest,
-        }
-    }
-}
-
-impl From<blinc_core::ScrollInlineHint> for ScrollInline {
-    fn from(value: blinc_core::ScrollInlineHint) -> Self {
-        match value {
-            blinc_core::ScrollInlineHint::Start => Self::Start,
-            blinc_core::ScrollInlineHint::Center => Self::Center,
-            blinc_core::ScrollInlineHint::End => Self::End,
-            blinc_core::ScrollInlineHint::Nearest => Self::Nearest,
-        }
-    }
-}
-
-impl From<ScrollOptions> for blinc_core::ScrollIntoViewOptions {
-    fn from(value: ScrollOptions) -> Self {
-        Self {
-            behavior: value.behavior.into(),
-            block: value.block.into(),
-            inline: value.inline.into(),
-        }
-    }
-}
-
-impl From<blinc_core::ScrollIntoViewOptions> for ScrollOptions {
-    fn from(value: blinc_core::ScrollIntoViewOptions) -> Self {
-        Self {
-            behavior: value.behavior.into(),
-            block: value.block.into(),
-            inline: value.inline.into(),
         }
     }
 }

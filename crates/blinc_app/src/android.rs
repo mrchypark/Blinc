@@ -20,8 +20,8 @@
 //! ```
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicI32, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
 /// Latest soft-keyboard inset reported by the JVM in **logical pixels**.
@@ -92,10 +92,10 @@ use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
 use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
-use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
+use blinc_layout::widgets::overlay::{OverlayManager, overlay_manager};
 use blinc_platform::assets::set_global_asset_loader;
-use blinc_platform_android::input::{detect_pinch, PinchPhase, PinchState, TouchPointer};
 use blinc_platform_android::AndroidAssetLoader;
+use blinc_platform_android::input::{PinchPhase, PinchState, TouchPointer, detect_pinch};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -120,7 +120,7 @@ impl AndroidApp {
     /// Initialize the theme system
     fn init_theme() {
         use blinc_theme::{
-            detect_system_color_scheme, platform_theme_bundle, set_redraw_callback, ThemeState,
+            ThemeState, detect_system_color_scheme, platform_theme_bundle, set_redraw_callback,
         };
 
         // Only initialize if not already initialized
@@ -192,9 +192,10 @@ impl AndroidApp {
         // Initialize the theme system
         Self::init_theme();
 
-        // Shared state
+        // Shared state — process-global reactive graph so bare
+        // `signal()` interops with `State<T>` / `Stateful::deps`.
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let reactive: SharedReactiveGraph = blinc_core::reactive::global_graph();
         let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
 
         // Initialize global context state singleton
@@ -208,8 +209,9 @@ impl AndroidApp {
                 Arc::clone(&reactive),
                 Arc::clone(&hooks),
                 Arc::clone(&ref_dirty_flag),
-                stateful_callback,
+                stateful_callback.clone(),
             );
+            blinc_core::reactive::set_stateful_deps_notifier(move |ids| stateful_callback(ids));
         }
 
         // Animation scheduler - single-threaded for mobile efficiency
@@ -606,7 +608,7 @@ impl AndroidApp {
                                             tracing::debug!("Touch CANCEL");
                                             windowed_ctx.pointer_query.set_pressure(0.0);
                                             windowed_ctx.pointer_query.set_touch_count(0);
-                                            router.on_mouse_leave();
+                                            router.on_mouse_leave(&*tree);
                                             pinch_state.reset();
                                             last_touch_x = None;
                                             last_touch_y = None;
@@ -805,7 +807,7 @@ impl AndroidApp {
                                                 blinc_layout::widgets::text_input::cancel_long_press_timer();
                                                 windowed_ctx.pointer_query.set_pressure(0.0);
                                                 windowed_ctx.pointer_query.set_touch_count(0);
-                                                router.on_mouse_leave();
+                                                router.on_mouse_leave(&*tree);
                                                 pinch_state.reset();
                                                 // Clear touch tracking on cancel too
                                                 last_touch_x = None;
@@ -1025,12 +1027,16 @@ impl AndroidApp {
                 }
             }
 
-            // Tick scroll physics for momentum/bounce animations
+            // Tick scroll physics for momentum/bounce animations.
+            // OR in `process_pending_scroll_refs`'s return value so a
+            // freshly-fired `scroll_to_with_options` keeps the redraw
+            // chain alive on its own frame (otherwise the spring sits
+            // in Bouncing until the next stray input).
             let scroll_animating = if let Some(ref mut tree) = render_tree {
                 let current_time = blinc_layout::prelude::elapsed_ms();
-                let animating = tree.tick_scroll_physics(current_time);
-                tree.process_pending_scroll_refs();
-                animating
+                let ticking = tree.tick_scroll_physics(current_time);
+                let just_started = tree.process_pending_scroll_refs();
+                ticking || just_started
             } else {
                 false
             };
@@ -1276,27 +1282,37 @@ impl AndroidApp {
             // Check if stateful elements requested a redraw (hover/press/state changes)
             let has_stateful_updates = blinc_layout::take_needs_redraw();
             let has_pending_rebuilds = blinc_layout::has_pending_subtree_rebuilds();
+            let has_prop_updates = blinc_layout::has_pending_partial_prop_updates();
 
-            if has_stateful_updates || has_pending_rebuilds {
+            if has_stateful_updates || has_pending_rebuilds || has_prop_updates {
                 if has_stateful_updates {
                     tracing::debug!("Redraw requested by: stateful state change");
                 }
 
-                // Get all pending prop updates
-                let prop_updates = blinc_layout::take_pending_prop_updates();
+                // Drain the unified property channel
+                // ([[project-reactive-architecture-v2]]).
+                let prop_updates = blinc_layout::take_pending_partial_prop_updates();
                 let had_prop_updates = !prop_updates.is_empty();
-
-                // Apply prop updates to the tree
+                let mut prop_effects = blinc_layout::SideEffects::default();
                 if let Some(ref mut tree) = render_tree {
-                    for (node_id, props) in &prop_updates {
-                        tree.update_render_props(*node_id, |p| *p = props.clone());
+                    for upd in prop_updates {
+                        prop_effects = prop_effects.or(upd.effects);
+                        if let Some(write) = upd.render_write {
+                            tree.update_render_props(upd.node_id, |p| write(p));
+                        }
+                        if let Some(write) = upd.layout_write {
+                            if let Some(mut style) = tree.layout_tree.get_style(upd.node_id) {
+                                write(&mut style);
+                                tree.layout_tree.set_style(upd.node_id, style);
+                            }
+                        }
                     }
                 }
 
                 // Process subtree rebuilds
-                let mut needs_layout = false;
+                let mut needs_layout = prop_effects.needs_layout;
                 if let Some(ref mut tree) = render_tree {
-                    needs_layout = tree.process_pending_subtree_rebuilds();
+                    needs_layout |= tree.process_pending_subtree_rebuilds();
                 }
 
                 if needs_layout {
@@ -1367,8 +1383,79 @@ impl AndroidApp {
                     &mut ctx,
                     &render_state,
                 ) {
-                    // Build UI
-                    let element = ui_builder(windowed_ctx);
+                    // Tick OverlayStack + ToastTray each frame so motion / TTL
+                    // state advances. Mirrors `windowed.rs:4937-4949` and the
+                    // matching block in `web.rs`/`ios.rs`. Without this,
+                    // overlays pushed via `OverlayStack::present()` never
+                    // animate in or auto-dismiss.
+                    let now = blinc_layout::prelude::elapsed_ms();
+                    {
+                        use blinc_layout::overlay_state::{overlay_stack, toast_tray};
+                        if let Ok(mut s) = overlay_stack().lock() {
+                            s.set_viewport_with_scale(
+                                windowed_ctx.width,
+                                windowed_ctx.height,
+                                windowed_ctx.scale_factor as f32,
+                            );
+                            s.update(now);
+                        }
+                        if let Ok(mut t) = toast_tray().lock() {
+                            t.update(now);
+                        }
+                    }
+
+                    // Drain CSS queued by `ThemeBundle::with_css` →
+                    // `ThemeState::init` (and DSL/plugin `queue_stylesheet`
+                    // calls) before the tree is built so `cn_bundle()`
+                    // styles land on the first frame. Same pattern as
+                    // `windowed.rs:5228-5234`.
+                    {
+                        let queued = blinc_core::BlincContextState::get().drain_stylesheets();
+                        for css in queued {
+                            windowed_ctx.add_css(&css);
+                        }
+                    }
+
+                    // Build UI — compose user UI with all overlay surfaces
+                    // (legacy + new OverlayStack + ToastTray). Without
+                    // these children the `.show()` / `.present()` calls
+                    // would push content into managers that never reach
+                    // the tree.
+                    let element = {
+                        let user_ui = ui_builder(windowed_ctx);
+                        let overlay_layer = windowed_ctx.overlay_manager.build_overlay_layer();
+                        let stack_layer = {
+                            use blinc_layout::overlay_state::overlay_stack;
+                            match overlay_stack().lock() {
+                                Ok(mut s) => {
+                                    s.set_viewport_with_scale(
+                                        windowed_ctx.width,
+                                        windowed_ctx.height,
+                                        windowed_ctx.scale_factor as f32,
+                                    );
+                                    s.build_overlay_layer()
+                                }
+                                Err(_) => blinc_layout::div::Div::new(),
+                            }
+                        };
+                        let viewport = (windowed_ctx.width, windowed_ctx.height);
+                        let tray_layer = {
+                            use blinc_layout::overlay_state::toast_tray;
+                            toast_tray()
+                                .lock()
+                                .ok()
+                                .map(|t| t.build_tray_layer(viewport))
+                                .unwrap_or_else(blinc_layout::div::Div::new)
+                        };
+                        blinc_layout::div::Div::new()
+                            .w(windowed_ctx.width)
+                            .h(windowed_ctx.height)
+                            .relative()
+                            .child(user_ui)
+                            .child(overlay_layer)
+                            .child(stack_layer)
+                            .child(tray_layer)
+                    };
 
                     // Clear stale Stateful base_render_props updaters before rebuild
                     blinc_layout::clear_stateful_base_updaters();
@@ -1764,7 +1851,7 @@ pub fn dispatch_stream_data(stream_id: u64, data: &[u8]) {
 /// # JNI signature
 /// `(I)V`
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_blinc_BlincNativeBridge_nativeDispatchKeyboardInset(
     _env: jni::JNIEnv,
     _class: jni::objects::JClass,
@@ -1801,7 +1888,7 @@ pub extern "system" fn Java_com_blinc_BlincNativeBridge_nativeDispatchKeyboardIn
 /// # JNI signature
 /// `(IIII)V`
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_blinc_BlincNativeBridge_nativeDispatchSafeArea(
     _env: jni::JNIEnv,
     _class: jni::objects::JClass,
@@ -1845,7 +1932,7 @@ pub extern "system" fn Java_com_blinc_BlincNativeBridge_nativeDispatchSafeArea(
 /// # JNI signature
 /// `(II)V`
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_blinc_BlincNativeBridge_nativeDispatchKeyDownWithModifiers(
     _env: jni::JNIEnv,
     _class: jni::objects::JClass,

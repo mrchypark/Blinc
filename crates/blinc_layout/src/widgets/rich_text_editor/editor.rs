@@ -20,20 +20,20 @@ use std::sync::Arc;
 use blinc_core::context_state::BlincContextState;
 use blinc_core::{Brush, Color, CornerRadius, DrawContext, Rect, State};
 
-use crate::canvas::{canvas, Canvas, CanvasBounds};
-use crate::div::{div, Div, ElementBuilder};
-use crate::stateful::{stateful_with_key, NoState};
+use crate::canvas::{Canvas, CanvasBounds, canvas};
+use crate::div::{Div, ElementBuilder, div};
+use crate::stateful::{NoState, stateful_with_key};
 use crate::widgets::cursor::SharedCursorState;
 
 use super::block_ops::{indent_blocks, outdent_blocks, toggle_block_kind};
-use super::cursor::{step_backward, step_forward, DocPosition};
+use super::cursor::{DocPosition, step_backward, step_forward};
 use super::document::BlockKind;
 use super::edit::{
     delete_backward, delete_forward, delete_selection, insert_char, insert_text, soft_break,
     split_block,
 };
-use super::format::{apply_mark_to_selection, Mark};
-use super::render::{compute_line_geometry, render_document, RichTextTheme};
+use super::format::{Mark, apply_mark_to_selection};
+use super::render::{RichTextTheme, compute_line_geometry, render_document};
 use super::state::RichTextState;
 
 /// Build an interactive rich text editor element.
@@ -50,7 +50,7 @@ pub fn rich_text_editor(
     state: &RichTextState,
     theme: RichTextTheme,
     content_width: f32,
-) -> impl ElementBuilder {
+) -> impl ElementBuilder + use<> {
     // Per-editor signal that bumps on every state mutation. The Stateful
     // rebuilds whenever this signal changes, which triggers a fresh
     // line-index computation and a new cursor overlay.

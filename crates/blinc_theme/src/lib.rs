@@ -6,7 +6,7 @@
 //! # Overview
 //!
 //! The theme system provides:
-//! - **Design tokens**: Colors, typography, spacing, opacity, radii, shadows, animations
+//! - **Design tokens**: Colors, typography, spacing, radii, shadows, animations
 //! - **Platform themes**: Native look and feel for macOS, Windows, Linux, iOS, Android
 //! - **Color scheme detection**: Automatic detection of system dark/light mode
 //! - **Dynamic overrides**: Runtime customization without layout rebuilds
@@ -39,7 +39,6 @@
 //! - [`ColorTokens`]: Semantic colors (primary, error, background, text, etc.)
 //! - [`TypographyTokens`]: Font families, sizes, weights, line heights
 //! - [`SpacingTokens`]: 4px-based spacing scale
-//! - [`OpacityTokens`]: Semantic opacity values
 //! - [`RadiusTokens`]: Border radii
 //! - [`ShadowTokens`]: Box shadows
 //! - [`AnimationTokens`]: Durations and easings
@@ -69,7 +68,6 @@
 //! ```
 
 pub mod platform;
-pub mod presets;
 pub mod state;
 pub mod theme;
 pub mod themes;
@@ -79,11 +77,13 @@ pub mod tokens;
 pub mod watcher;
 
 // Re-export commonly used types
-pub use platform::{detect_system_color_scheme, Platform};
-pub use presets::{preset_bundle, ThemePreset};
-pub use state::{set_redraw_callback, ThemeState};
+pub use platform::{Platform, detect_system_color_scheme};
+pub use state::{ThemeState, set_redraw_callback};
 pub use theme::{ColorScheme, Theme, ThemeBundle};
-pub use themes::{platform::platform_theme_bundle, BlincTheme};
+pub use themes::{
+    BlincTheme, DefaultTheme, ExpressiveTheme, HybridTheme, RestrainedTheme,
+    platform::platform_theme_bundle,
+};
 pub use tokens::*;
 
 #[cfg(feature = "watcher")]

@@ -24,18 +24,53 @@
 /// Each component defines `var(--cn-component-prop, var(--fallback))` for overridability.
 pub const CN_STYLES: &str = r#"
 /* ============================================================================
-   Utilities
+   Typography base — every cn widget inherits the theme's canonical
+   sans, body line-height, and dense-HID letter-spacing. CN_STYLES
+   was previously silent on these, leaving widgets to fall back to
+   the platform default font and ignore the theme's deliberate
+   "Noto Sans + 13px text_sm + tracking_tight" choice.
    ============================================================================ */
 
-.cn-truncate {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+.cn-button, .cn-card, .cn-card-header, .cn-card-footer,
+.cn-badge, .cn-alert, .cn-alert-box,
+.cn-input, .cn-textarea, .cn-label,
+.cn-checkbox, .cn-switch, .cn-radio, .cn-toggle,
+.cn-tabs-list, .cn-tabs-trigger,
+.cn-select-trigger, .cn-select-content, .cn-select-item,
+.cn-combobox-trigger, .cn-combobox-content, .cn-combobox-item,
+.cn-slider-track, .cn-progress,
+.cn-avatar, .cn-tooltip,
+.cn-dialog, .cn-drawer, .cn-sheet, .cn-toast,
+.cn-accordion, .cn-accordion-trigger, .cn-accordion-content,
+.cn-breadcrumb, .cn-breadcrumb-item,
+.cn-pagination, .cn-pagination-btn,
+.cn-nav-menu, .cn-nav-link,
+.cn-sidebar, .cn-sidebar-item,
+.cn-dropdown-menu, .cn-dropdown-item,
+.cn-context-menu, .cn-context-menu-item,
+.cn-menubar, .cn-menubar-trigger, .cn-menubar-content, .cn-menubar-item,
+.cn-popover-content, .cn-hover-card-content,
+.cn-tree-node, .cn-skeleton {
+    font-family: var(--font-sans);
 }
 
-.cn-decorative {
-    pointer-events: none;
-    cursor: default;
+.cn-kbd {
+    font-family: var(--font-mono);
+}
+
+/* Body-text widgets get the theme's line-height so multi-line
+   content (alert descriptions, accordion content, tooltips) breathes
+   correctly. */
+.cn-alert, .cn-alert-box, .cn-accordion-content, .cn-tooltip {
+    line-height: var(--leading-normal);
+}
+
+/* Dense-HID tracking on interactive labels. Picks up the variant's
+   tracking_tight value (Universal HID = -0.025em). */
+.cn-button, .cn-tabs-trigger,
+.cn-input, .cn-textarea,
+.cn-select-trigger, .cn-combobox-trigger {
+    letter-spacing: var(--tracking-tight);
 }
 
 /* ============================================================================
@@ -43,31 +78,22 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 /* Button: visual states (hover, active, disabled) handled by Stateful FSM.
-   CSS defines border-radius and padding per size. User CSS can override these classes. */
-.cn-button {
-    border-radius: var(--cn-button-radius, var(--control-radius-md));
-    corner-shape: var(--cn-button-corner-shape, var(--control-corner-shape));
-    transition: corner-shape 180ms, box-shadow 180ms;
-}
-.cn-button:hover {
-    corner-shape: var(--cn-button-corner-shape-hover, var(--control-corner-shape-hover));
-}
+   Geometry tokens flow from the active theme's RadiusTokens so each
+   variant (Restrained / Hybrid / Expressive) gets its own corner reach.
+   The Rust side already reads `RadiusToken` per size — these rules act
+   as the cascade override surface users can hook into. */
+.cn-button { border-radius: var(--radius-default); }
 .cn-button--primary { }
 .cn-button--secondary { }
 .cn-button--destructive { }
 .cn-button--outline { }
 .cn-button--ghost { }
-.cn-button--link {
-    text-decoration: underline;
-    text-decoration-color: var(--primary);
-    text-decoration-thickness: 1.5px;
-}
+.cn-button--link { }
 .cn-button--disabled { }
-.cn-button--sm { border-radius: var(--cn-button-radius-sm, var(--control-radius-sm)); }
-.cn-button--md { border-radius: var(--cn-button-radius-md, var(--control-radius-md)); }
-.cn-button--lg { border-radius: var(--cn-button-radius-lg, var(--control-radius-lg)); }
-.cn-button--icon { border-radius: var(--cn-button-radius-icon, var(--control-radius-md)); }
-.cn-button__label { max-width: 100%; }
+.cn-button--sm { border-radius: var(--radius-sm); }
+.cn-button--md { border-radius: var(--radius-default); }
+.cn-button--lg { border-radius: var(--radius-lg); }
+.cn-button--icon { border-radius: var(--radius-default); }
 
 /* ============================================================================
    Card
@@ -76,19 +102,17 @@ pub const CN_STYLES: &str = r#"
 .cn-card {
     background: var(--cn-card-bg, var(--surface));
     border: 1px solid var(--cn-card-border, var(--border));
-    border-radius: var(--cn-card-radius, var(--container-radius));
-    padding: var(--cn-card-padding, var(--container-padding));
-    gap: var(--cn-card-gap, var(--container-section-gap));
-    corner-shape: var(--cn-card-corner-shape, var(--container-corner-shape));
-    transition: corner-shape 180ms, box-shadow 180ms;
+    border-radius: var(--cn-card-radius, var(--radius-xl));
+    padding: var(--space-6);
+    gap: var(--space-4);
 }
 
 .cn-card-header {
-    gap: var(--cn-card-header-gap, var(--container-header-gap));
+    gap: var(--space-1-5);
 }
 
 .cn-card-footer {
-    gap: var(--cn-card-footer-gap, var(--container-footer-gap));
+    gap: var(--space-2);
 }
 
 /* ============================================================================
@@ -96,35 +120,137 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-badge {
-    border-radius: var(--cn-badge-radius, var(--compact-badge-radius));
-    font-size: var(--cn-badge-font-size, var(--type-badge));
-    padding: var(--cn-badge-py, var(--compact-badge-py)) var(--cn-badge-px, var(--compact-badge-px));
-    corner-shape: var(--cn-badge-corner-shape, 2);
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    /* `2 10` doesn't have an exact spacing token (space-0-5 = 2,
+       space-2-5 = 10) — use the closest matching pair. */
+    padding: var(--space-0-5) var(--space-2-5);
 }
-.cn-badge--default {
+
+/* Soft (default) — pale tinted bg + 1px same-hue border + same-hue
+   text. The thin colored border gives the pill more definition
+   against neutral surfaces; without it the soft fill alone reads
+   as a weak smudge on light themes. Mirrors the Alert component's
+   family so a `Success` badge sits next to a `Success` alert and
+   reads as part of the same status system. */
+.cn-badge--soft-default {
+    background: var(--accent-subtle);
+    border: 1px solid var(--primary);
+    color: var(--primary);
+}
+.cn-badge--soft-secondary {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.cn-badge--soft-success {
+    background: var(--success-bg);
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+.cn-badge--soft-warning {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning);
+    color: var(--warning);
+}
+.cn-badge--soft-destructive {
+    background: var(--error-bg);
+    border: 1px solid var(--error);
+    color: var(--error);
+}
+
+/* Solid — legacy filled style. Useful when the badge sits on a
+   page-tinted surface and a soft variant would disappear. */
+.cn-badge--solid-default {
     background: var(--primary);
     color: var(--text-inverse);
 }
-.cn-badge--secondary {
+.cn-badge--solid-secondary {
     background: var(--secondary);
     color: var(--text-inverse);
 }
-.cn-badge--success {
+.cn-badge--solid-success {
     background: var(--success);
     color: var(--text-inverse);
 }
-.cn-badge--warning {
+.cn-badge--solid-warning {
     background: var(--warning);
     color: var(--text-inverse);
 }
-.cn-badge--destructive {
+.cn-badge--solid-destructive {
     background: var(--error);
     color: var(--text-inverse);
 }
-.cn-badge--outline {
+
+/* Outline — transparent + variant-coloured border + variant-
+   coloured text. Quietest of the three when used in a dense set. */
+.cn-badge--outline-default {
+    background: transparent;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+}
+.cn-badge--outline-secondary {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-primary);
+}
+.cn-badge--outline-success {
+    background: transparent;
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+.cn-badge--outline-warning {
+    background: transparent;
+    border: 1px solid var(--warning);
+    color: var(--warning);
+}
+.cn-badge--outline-destructive {
+    background: transparent;
+    border: 1px solid var(--error);
+    color: var(--error);
+}
+
+/* Icon tint — target the inner SVG shape elements (`path`,
+   `circle`, …) directly instead of the `<svg>` wrapper. The
+   `blinc_icons` / `blinc_tabler_icons` generators emit paths with
+   only the `d` attribute and rely on `stroke="currentColor"` on
+   the outer `<svg>` for the tint. Blinc's CSS engine doesn't
+   propagate `stroke` from `<svg>` down to child paths, so a rule
+   on `svg { stroke: … }` has no effect; the path needs its own
+   matching selector. Listing each SVG shape tag covers both
+   line-style icons (Lucide / Tabler outline — stroke-driven) and
+   filled icons (Tabler filled — fill-driven). Setting both stroke
+   and fill is safe because each shape carries `fill="none"` in
+   the outline sets, which the per-shape CSS rule overrides only
+   for shapes that actually fill.
+   Inline `.color(...)` on the icon element wins via specificity
+   for one-off overrides. */
+.cn-badge--soft-default :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--outline-default :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--primary);
+}
+.cn-badge--soft-secondary :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--outline-secondary :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--text-secondary);
+}
+.cn-badge--soft-success :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--outline-success :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--success);
+}
+.cn-badge--soft-warning :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--outline-warning :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--warning);
+}
+.cn-badge--soft-destructive :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--outline-destructive :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--error);
+}
+.cn-badge--solid-default :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--solid-secondary :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--solid-success :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--solid-warning :is(path, circle, rect, ellipse, line, polygon, polyline, g),
+.cn-badge--solid-destructive :is(path, circle, rect, ellipse, line, polygon, polyline, g) {
+    stroke: var(--text-inverse);
 }
 
 /* ============================================================================
@@ -134,21 +260,19 @@ pub const CN_STYLES: &str = r#"
 .cn-alert {
     background: var(--cn-alert-bg, var(--surface));
     border: 1px solid var(--cn-alert-border, var(--border));
-    border-radius: var(--cn-alert-radius, var(--container-radius));
+    border-radius: var(--radius-default);
     color: var(--text-primary);
-    font-size: var(--cn-alert-font-size, var(--type-body-md));
-    padding: var(--cn-alert-padding, var(--container-padding-compact));
-    corner-shape: var(--cn-alert-corner-shape, var(--container-corner-shape));
+    font-size: var(--text-sm);
+    padding: var(--space-4);
 }
 .cn-alert-box {
     background: var(--cn-alert-bg, var(--surface));
     border: 1px solid var(--cn-alert-border, var(--border));
-    border-radius: var(--cn-alert-radius, var(--container-radius));
+    border-radius: var(--radius-default);
     color: var(--text-primary);
-    font-size: var(--cn-alert-font-size, var(--type-body-md));
-    padding: var(--cn-alert-padding, var(--container-padding-compact));
-    gap: var(--cn-alert-gap, var(--overlay-gap));
-    corner-shape: var(--cn-alert-corner-shape, var(--container-corner-shape));
+    font-size: var(--text-sm);
+    padding: var(--space-4);
+    gap: var(--space-3);
 }
 .cn-alert--success {
     background: var(--success-bg);
@@ -185,9 +309,7 @@ pub const CN_STYLES: &str = r#"
 
 .cn-skeleton {
     background: var(--cn-skeleton-bg, var(--surface-elevated));
-    border-radius: var(--cn-skeleton-radius, var(--control-radius-sm));
-    corner-shape: var(--cn-skeleton-corner-shape, var(--control-corner-shape));
-    mix-blend-mode: overlay;
+    border-radius: var(--radius-sm);
 }
 
 /* ============================================================================
@@ -195,52 +317,95 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-input {
+    /* No `border:` here — the layout TextInput already sets idle /
+       hover / focused border colours via setters in cn::input
+       (mirroring combobox's search input, which works). Adding a base
+       `border:` rule here parses a `border-color` that
+       apply_complex_selector_styles writes into render_props every
+       frame, clobbering the focused colour the setter chose. The
+       `:focus` rule below still applies the focus colour because
+       state-rules are applied after base rules in the same pass. */
     background: var(--cn-input-bg, var(--input-bg));
-    border: 1px solid var(--cn-input-border, var(--border));
-    border-radius: var(--cn-input-radius, var(--control-radius-md));
+    border-radius: var(--radius-default);
     color: var(--text-primary);
-    corner-shape: var(--cn-input-corner-shape, var(--control-corner-shape));
-    transition: border-color 150ms, background 150ms, corner-shape 180ms;
+    /* Idle ring: same width, transparent, gap of 1 px so the focus
+       transition "scales" the gap from 1 → 2 px while the colour fades
+       in. Without a base outline the transition has no starting point
+       and the ring pops in. */
+    outline: 2px solid transparent;
+    outline-offset: 1px;
+    transition: outline-color 160ms ease, outline-offset 160ms ease;
 }
 .cn-input:hover {
     border-color: var(--border-hover);
     background: var(--input-bg-hover);
-    corner-shape: var(--cn-input-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-input:focus {
+    /* HID focus affordance: brighten the border AND draw a 2px outer
+       ring offset 2px out from the input edge. The outline uses a
+       fainter `--focus-ring` (alpha-tinted variant token) so the
+       crisp border edge stays distinguishable from the soft halo. */
     border-color: var(--border-focus);
     background: var(--input-bg-focus);
-    corner-shape: var(--cn-input-corner-shape-hover, var(--control-corner-shape-hover));
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
 }
 .cn-input--error {
     border-color: var(--border-error);
 }
+.cn-input--error:focus {
+    border-color: var(--border-error);
+    outline: 2px solid var(--focus-ring-error);
+}
+.cn-input--success {
+    border-color: var(--success);
+}
+.cn-input--success:focus {
+    border-color: var(--success);
+    outline: 2px solid var(--focus-ring-success);
+}
 
-.cn-input--sm { font-size: var(--cn-input-font-size-sm, var(--type-body-sm)); }
-.cn-input--md { font-size: var(--cn-input-font-size-md, var(--type-body-md)); }
-.cn-input--lg { font-size: var(--cn-input-font-size-lg, var(--type-body-lg)); }
+.cn-input--sm { font-size: var(--text-xs); }
+.cn-input--md { font-size: var(--text-sm); }
+.cn-input--lg { font-size: var(--text-lg); }
 
 /* ============================================================================
    Textarea
    ============================================================================ */
 
 .cn-textarea {
+    /* See `.cn-input` for the rationale on omitting `border:` here. */
     background: var(--cn-textarea-bg, var(--input-bg));
-    border: 1px solid var(--cn-textarea-border, var(--border));
-    border-radius: var(--cn-textarea-radius, var(--control-radius-md));
+    border-radius: var(--radius-default);
     color: var(--text-primary);
-    corner-shape: var(--cn-textarea-corner-shape, var(--control-corner-shape));
-    transition: border-color 150ms, background 150ms, corner-shape 180ms;
+    outline: 2px solid transparent;
+    outline-offset: 1px;
+    transition: outline-color 160ms ease, outline-offset 160ms ease;
 }
 .cn-textarea:hover {
     border-color: var(--border-hover);
     background: var(--input-bg-hover);
-    corner-shape: var(--cn-textarea-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-textarea:focus {
+    /* HID focus ring — see `.cn-input:focus` for rationale. */
     border-color: var(--border-focus);
     background: var(--input-bg-focus);
-    corner-shape: var(--cn-textarea-corner-shape-hover, var(--control-corner-shape-hover));
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+.cn-textarea--error {
+    border-color: var(--border-error);
+}
+.cn-textarea--error:focus {
+    border-color: var(--border-error);
+    outline: 2px solid var(--focus-ring-error);
+}
+.cn-textarea--success {
+    border-color: var(--success);
+}
+.cn-textarea--success:focus {
+    border-color: var(--success);
+    outline: 2px solid var(--focus-ring-success);
 }
 
 /* ============================================================================
@@ -261,9 +426,8 @@ pub const CN_STYLES: &str = r#"
 .cn-kbd {
     background: var(--cn-kbd-bg, var(--surface));
     border-color: var(--cn-kbd-border, var(--border));
-    border-radius: var(--cn-kbd-radius, var(--compact-kbd-radius));
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    corner-shape: var(--cn-kbd-corner-shape, 1.2);
 }
 
 /* ============================================================================
@@ -271,17 +435,18 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-checkbox {
-    border: 2px solid var(--cn-checkbox-border, var(--border));
-    border-radius: var(--cn-checkbox-radius, var(--control-radius-sm));
-    background: var(--cn-checkbox-bg, var(--input-bg));
+    /* Border width is Rust-owned because it varies per size
+       (1.5px / 2px / 2px). Border color + bg are state-driven by the
+       Stateful builder, but we still set `transition:` here so any user
+       cascade override animates rather than snaps. */
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: background 150ms, border-color 150ms, transform 100ms;
-    corner-shape: var(--cn-checkbox-corner-shape, var(--control-corner-shape));
+    transition:
+        background var(--duration-fast) var(--ease-state),
+        border-color var(--duration-fast) var(--ease-state);
 }
-.cn-checkbox:hover {
-    border-color: var(--border-hover);
-    transform: scale(1.05, 1.05);
-}
+/* Hover scale is Rust-driven via the Stateful FSM — duplicating it here
+   compounded with the Rust transform. State colors handled in Rust too. */
 .cn-checkbox--checked {
     background: var(--cn-checkbox-checked-bg, var(--primary));
     border-color: var(--cn-checkbox-checked-border, var(--primary));
@@ -296,20 +461,20 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-switch {
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
     cursor: pointer;
-    transition: background 200ms;
+    transition: background var(--duration-normal) var(--ease-state);
 }
 .cn-switch-track {
     background: var(--cn-switch-off-bg, var(--border));
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
 }
 .cn-switch-track--on {
     background: var(--cn-switch-on-bg, var(--primary));
 }
 .cn-switch-thumb {
     background: var(--cn-switch-thumb, var(--text-inverse));
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
 }
 .cn-switch--disabled {
     opacity: 0.5;
@@ -317,14 +482,37 @@ pub const CN_STYLES: &str = r#"
 }
 
 /* ============================================================================
+   Toggle (binary on/off button — shadcn `<Toggle>`)
+   ============================================================================ */
+
+/* Layout widget already paints bg / border / fg from theme tokens.
+   The cn rules here just add the variant + size hooks and the hover /
+   active state-rule wiring users can extend via `.cn-toggle:hover` /
+   `.cn-toggle--pressed` overrides. Don't redeclare bg/border here —
+   the layout widget's setters would get clobbered. */
+.cn-toggle {
+    border-radius: var(--radius-default);
+    cursor: pointer;
+    transition:
+        background var(--duration-fast) var(--ease-state),
+        border-color var(--duration-fast) var(--ease-state),
+        color var(--duration-fast) var(--ease-state);
+}
+.cn-toggle--sm { border-radius: var(--radius-sm); }
+.cn-toggle--md { border-radius: var(--radius-default); }
+.cn-toggle--lg { border-radius: var(--radius-default); }
+
+/* ============================================================================
    Radio
    ============================================================================ */
 
 .cn-radio {
     border: 2px solid var(--cn-radio-border, var(--border-secondary));
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
     cursor: pointer;
-    transition: border-color 150ms, transform 100ms;
+    transition:
+        border-color var(--duration-fast) var(--ease-state),
+        transform var(--duration-fastest) var(--ease-state);
 }
 .cn-radio:hover {
     border-color: var(--cn-radio-hover-border, var(--primary));
@@ -335,7 +523,7 @@ pub const CN_STYLES: &str = r#"
 }
 .cn-radio-dot {
     background: var(--cn-radio-dot, var(--primary));
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
 }
 .cn-radio--disabled {
     opacity: 0.5;
@@ -347,25 +535,28 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-tabs-list {
-    background: var(--cn-tabs-list-bg, var(--surface-elevated));
-    border-radius: 8px;
-    padding: 6px;
-    gap: 4px;
+    /* Tonal tray for the trigger row — uses surface-overlay so the
+       active trigger (raised to --surface) reads as elevated. */
+    background: var(--cn-tabs-list-bg, var(--surface-overlay));
+    border-radius: var(--radius-md);
+    padding: var(--space-1);
+    gap: var(--space-1);
 }
 .cn-tabs-trigger {
-    border-radius: var(--cn-tabs-trigger-radius, var(--control-radius-md));
+    border-radius: var(--radius-default);
     cursor: pointer;
     color: var(--text-secondary);
-    corner-shape: var(--cn-tabs-trigger-corner-shape, var(--control-corner-shape));
-    transition: background 150ms, color 150ms, corner-shape 180ms;
+    transition: color var(--duration-fast) var(--ease-state);
 }
-.cn-tabs-trigger:hover {
+.cn-tabs-trigger:hover:not(.cn-tabs-trigger--active) {
     color: var(--text-primary);
-    background: var(--surface-overlay);
-    corner-shape: var(--cn-tabs-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-tabs-trigger--active {
-    background: var(--cn-tabs-active-bg, var(--background));
+    /* Active trigger lifts to --surface so it stands out from the
+       --surface-overlay tray underneath. Previously --background,
+       which made the active trigger MERGE with the canvas instead
+       of reading as raised. */
+    background: var(--cn-tabs-active-bg, var(--surface));
     color: var(--text-primary);
     box-shadow: theme(shadow-sm);
 }
@@ -374,73 +565,118 @@ pub const CN_STYLES: &str = r#"
     cursor: not-allowed;
 }
 
-.cn-tabs-trigger--sm { height: var(--control-height-sm); padding: var(--control-py-sm) var(--control-px-sm); font-size: var(--type-action-sm); }
-.cn-tabs-trigger--md { height: var(--control-height-md); padding: var(--control-py-md) var(--control-px-md); font-size: var(--type-action-md); }
-.cn-tabs-trigger--lg { height: var(--control-height-lg); padding: var(--control-py-lg) var(--control-px-lg); font-size: var(--type-action-lg); }
+/* Tab trigger sizes — content + padding determines height (no fixed
+   heights). Vertical padding kept tight to keep the tray compact. */
+.cn-tabs-trigger--sm { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); }
+.cn-tabs-trigger--md { padding: var(--space-1-5) var(--space-4); font-size: var(--text-sm); }
+.cn-tabs-trigger--lg { padding: var(--space-2) var(--space-5); font-size: var(--text-lg); }
 
 /* ============================================================================
    Select
    ============================================================================ */
 
 .cn-select-trigger {
-    background: var(--cn-select-bg, var(--input-bg));
-    border: 1px solid var(--cn-select-border, var(--border));
-    border-radius: var(--cn-select-trigger-radius, var(--control-radius-md));
+    /* `background`, `border`, and `color` are Rust-owned (state-aware:
+       open / disabled / placeholder). Leaving CSS values here would
+       overwrite the disabled `InputBgDisabled` fill with `--surface`
+       (white) — the exact regression that hid the disabled trigger bg.
+       Keep only the radius + cursor + transition; users still cascade
+       via more specific rules if they need to override. */
+    border-radius: var(--radius-default);
     cursor: pointer;
-    color: var(--text-primary);
-    corner-shape: var(--cn-select-trigger-corner-shape, var(--control-corner-shape));
-    transition: border-color 150ms, background 150ms, corner-shape 180ms;
-}
-.cn-select-trigger:hover {
-    border-color: var(--border-hover);
-    background: var(--input-bg-hover);
-    corner-shape: var(--cn-select-trigger-corner-shape-hover, var(--control-corner-shape-hover));
+    transition: border-color var(--duration-fast) var(--ease-state);
 }
 
 .cn-select-content {
-    background: var(--surface);
+    /* Floating dropdown panel → elevation 2.
+       Shared overlay-menu chrome — keep `.cn-dropdown-menu`,
+       `.cn-context-menu`, and `.cn-combobox-content` in sync.
+       No outer padding: items extend edge-to-edge and the rounded
+       overflow_clip on the panel (see `ClipShape::rounded_rect_shaped`)
+       trims their hover bg to the panel's outer curve, so the
+       highlight follows the rounded corner instead of leaving a
+       gap between the item's small radius and the panel's larger
+       one. */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-select-content-radius, var(--overlay-radius));
-    padding: var(--cn-select-content-py, var(--overlay-gap));
-    box-shadow: var(--cn-select-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-select-content-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-default);
+    /* Reuse the dropdown keyframes — same top-anchored slide/fade. */
+    animation: cn-dropdown-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top center;
 }
 
 .cn-select-item {
-    padding: var(--cn-select-item-py, var(--overlay-item-py)) var(--cn-select-item-px, var(--overlay-item-px));
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
     color: var(--text-primary);
-    border-radius: var(--cn-select-item-radius, var(--control-radius-sm));
-    corner-shape: var(--cn-select-item-corner-shape, var(--control-corner-shape));
-    transition: background 100ms, corner-shape 180ms;
+    /* No `border-radius` — item bg is a clean rectangle so the
+       panel's rounded clip can shape the first/last items into the
+       outer curve. A small radius here would leave a visible band
+       between the item's curve and the panel's curve. */
+    /* No CSS `transition` here — same rationale as cn-menubar-item:
+       when the cursor slides across rows quickly the bg transition
+       leaves multiple rows partially highlighted (each at a different
+       point in the fade-out) and reads as a stuck-hover bug. Instant
+       on/off matches the HID. */
 }
+/* Item hover uses `--accent-subtle` because the parent panel is
+   already at `--surface-elevated`; hovering to the same colour
+   would be invisible. `--accent-subtle` is a low-alpha accent
+   tint specifically designed for this use. */
 .cn-select-item:hover {
-    background: var(--surface-elevated);
-    corner-shape: var(--cn-select-item-corner-shape-hover, var(--control-corner-shape-hover));
+    background: var(--accent-subtle);
 }
+/* `--selection` (~24 % alpha accent on Hybrid, 20 % on macOS) vs hover's
+   `--accent-subtle` (~10 % alpha) so the currently-chosen row is
+   visibly distinct from hovered rows and from the panel itself. */
 .cn-select-item--selected {
-    background: var(--surface-elevated);
+    background: var(--selection);
+    color: var(--accent);
 }
-.cn-select-value { max-width: 100%; }
 
 /* ============================================================================
    Slider
    ============================================================================ */
 
 .cn-slider-track {
-    background: var(--cn-slider-track-bg, var(--surface-elevated));
-    border-radius: 9999px;
+    /* Match `.cn-progress` and `.cn-switch-track` — `--border` reads as
+       quiet chrome that delineates the track without competing with
+       the primary fill. `--surface-elevated` previously vanished
+       against the page on light themes (panel + page are both very
+       near-white in Hybrid). */
+    background: var(--cn-slider-track-bg, var(--border));
+    border-radius: var(--radius-full);
 }
 .cn-slider-fill {
     background: var(--cn-slider-fill-bg, var(--primary));
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
 }
 .cn-slider-thumb {
-    border: 2px solid var(--cn-slider-thumb-border, var(--border));
-    border-radius: 9999px;
-    background: var(--cn-slider-thumb-bg, var(--surface));
+    /* No `background` here — bg is driven entirely by the Rust-side
+       `.bg(...)` call so per-state interiors (TextInverse for idle,
+       transparent for hover, input-bg-disabled for disabled via the
+       `--disabled` class) aren't clobbered by CSS-class application
+       order. The base CSS used to set `background: var(--surface)`,
+       which was applied AFTER any inline `.bg(TRANSPARENT)` and made
+       the hover halo invisible through the thumb's centre.
+       No `border` either — same rationale as the bg: state-specific
+       outlines (Border idle, Primary hover/drag, BorderSecondary
+       disabled) come from Rust. CSS keeps just the always-true chrome
+       (full rounded corners, pointer cursor). */
+    border-radius: var(--radius-full);
     cursor: pointer;
+}
+/* Disabled thumb tone — matches the disabled-button / disabled-input
+   surface family (--input-bg-disabled). Just changing the thumb bg
+   isn't enough on its own — `cn::slider` also overrides the track to
+   `--input-bg-disabled` and the fill to `--border-secondary` so the
+   whole control reads as inert (same approach `cn::switch` takes:
+   muted track + thumb chrome that doesn't change opacity). */
+.cn-slider-thumb--disabled {
+    background: var(--input-bg-disabled);
+    border-color: var(--border-secondary);
+    border-width: 1px;
+    cursor: not-allowed;
 }
 
 /* ============================================================================
@@ -448,31 +684,36 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-progress {
-    background: var(--cn-progress-track, var(--accent-subtle));
-    border-radius: 9999px;
+    /* Subtle gray track — matches typical HID expectations (Material /
+       Apple HIG / shadcn). `--secondary` was the dark slate Secondary-
+       button tone, which competed visually with the primary fill and
+       made the track read as a second-tier button rather than chrome.
+       `--border` is the same token used for switch tracks and reads as
+       light contained chrome. */
+    background: var(--cn-progress-track, var(--border));
+    border-radius: var(--radius-full);
     overflow: hidden;
 }
 .cn-progress-bar {
     background: var(--cn-progress-bar, var(--primary));
-    border-radius: 9999px;
-    transition: width 300ms;
+    border-radius: var(--radius-full);
+    transition: width var(--duration-slow) var(--ease-nav);
 }
-.cn-progress--sm { height: var(--cn-progress-height-sm, var(--compact-progress-height-sm)); }
-.cn-progress--md { height: var(--cn-progress-height-md, var(--compact-progress-height-md)); }
-.cn-progress--lg { height: var(--cn-progress-height-lg, var(--compact-progress-height-lg)); }
+.cn-progress--sm { height: var(--space-1); }
+.cn-progress--md { height: var(--space-2); }
+.cn-progress--lg { height: var(--space-3); }
 
 /* ============================================================================
    Avatar
    ============================================================================ */
 
 .cn-avatar {
-    background: var(--cn-avatar-bg, var(--surface-elevated));
-    border: 1px solid var(--cn-avatar-border, var(--border));
-    border-radius: 9999px;
+    background: var(--cn-avatar-bg, var(--surface));
+    border-radius: var(--radius-full);
     overflow: hidden;
 }
 .cn-avatar--square {
-    border-radius: var(--cn-avatar-square-radius, var(--control-radius-md));
+    border-radius: var(--radius-default);
 }
 
 /* ============================================================================
@@ -490,10 +731,17 @@ pub const CN_STYLES: &str = r#"
 .cn-tooltip {
     background: var(--cn-tooltip-bg, var(--tooltip-bg));
     color: var(--cn-tooltip-text, var(--tooltip-text));
-    border-radius: var(--cn-tooltip-radius, var(--control-radius-sm));
-    font-size: var(--cn-tooltip-font-size, var(--type-helper));
-    padding: var(--cn-tooltip-py, var(--overlay-item-py)) var(--cn-tooltip-px, var(--overlay-item-px));
-    corner-shape: var(--cn-tooltip-corner-shape, var(--control-corner-shape));
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    padding: var(--space-1-5) var(--space-3);
+    /* Snap-in for now. An earlier CSS-driven fade-in (`@keyframes
+       cn-tooltip-enter`) was wired up but never actually fired — class-
+       only `@keyframes` animations didn't start until the class-anim
+       fix in `start_all_css_animations`. Re-enabling the fade exposed
+       a text-glyph opacity gap: the glyph pipeline doesn't pick up the
+       container's animated opacity mid-animation, so the tooltip text
+       disappears on desktop and looks laggy on web. Keep snap-in until
+       the glyph path honours animated opacity. */
 }
 
 /* ============================================================================
@@ -501,13 +749,14 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-dialog {
-    background: var(--cn-dialog-bg, var(--surface));
+    /* Modal → elevation 2 (lifts above surrounding cards) */
+    background: var(--cn-dialog-bg, var(--surface-elevated));
     border: 1px solid var(--cn-dialog-border, var(--border));
-    border-radius: var(--cn-dialog-radius, var(--container-radius));
-    padding: var(--cn-dialog-padding, var(--container-padding));
-    gap: var(--cn-dialog-gap, var(--container-section-gap));
-    corner-shape: var(--cn-dialog-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-xl);
+    padding: var(--space-6);
+    gap: var(--space-4);
+    /* Enter/exit motion is driven by the OverlayBuilder motion_enter /
+       motion_exit; no CSS keyframe here. */
 }
 
 /* ============================================================================
@@ -515,17 +764,17 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-drawer {
-    background: var(--cn-drawer-bg, var(--surface));
+    /* Modal overlay → elevation 2. Enter/exit motion is driven by the
+       DrawerBuilder motion_enter / motion_exit. */
+    background: var(--cn-drawer-bg, var(--surface-elevated));
     border: 1px solid var(--cn-drawer-border, var(--border));
-    corner-shape: var(--cn-drawer-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
 }
 .cn-drawer-header {
     border-bottom: 1px solid var(--border);
-    padding: var(--cn-drawer-header-padding, var(--container-padding-compact));
+    padding: var(--space-4);
 }
 .cn-drawer-footer {
-    padding: var(--cn-drawer-footer-padding, var(--container-padding-compact));
+    padding: var(--space-4);
 }
 
 /* ============================================================================
@@ -533,10 +782,10 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-sheet {
-    background: var(--cn-sheet-bg, var(--surface));
+    /* Modal overlay → elevation 2. Enter/exit motion is driven by the
+       SheetBuilder motion_enter / motion_exit. */
+    background: var(--cn-sheet-bg, var(--surface-elevated));
     border: 1px solid var(--cn-sheet-border, var(--border));
-    corner-shape: var(--cn-sheet-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
 }
 
 /* ============================================================================
@@ -544,12 +793,13 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-toast {
-    background: var(--cn-toast-bg, var(--surface));
+    /* Floating notification → elevation 2 */
+    background: var(--cn-toast-bg, var(--surface-elevated));
     border: 1px solid var(--cn-toast-border, var(--border));
-    border-radius: var(--cn-toast-radius, var(--container-radius));
+    border-radius: var(--radius-xl);
     color: var(--text-primary);
-    corner-shape: var(--cn-toast-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    /* Enter/exit motion is driven by the ToastBuilder motion_enter /
+       motion_exit (slide from the tray corner by default). */
 }
 .cn-toast--success {
     border-left: 4px solid var(--success);
@@ -569,23 +819,25 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-accordion {
-    background: var(--cn-accordion-bg, var(--surface-elevated));
+    /* Accordion outer is a card-tier container, not a modal —
+       elevation 1 (--surface). */
+    background: var(--cn-accordion-bg, var(--surface));
     border: 1.5px solid var(--cn-accordion-border, var(--border));
-    border-radius: var(--cn-accordion-radius, var(--container-radius));
-    corner-shape: var(--cn-accordion-corner-shape, var(--container-corner-shape));
+    border-radius: var(--radius-xl);
 }
 .cn-accordion-trigger {
-    padding: var(--cn-accordion-trigger-py, var(--overlay-item-py)) var(--cn-accordion-trigger-px, var(--overlay-item-px));
+    padding: var(--space-4) var(--space-3);
     cursor: pointer;
     color: var(--text-primary);
-    font-size: var(--cn-accordion-trigger-font-size, var(--type-action-md));
-    text-overflow: ellipsis;
+    font-size: var(--text-sm);
 }
 .cn-accordion-trigger:hover {
     background: var(--surface-overlay);
 }
 .cn-accordion-content {
-    background: var(--cn-accordion-content-bg, var(--surface));
+    /* Expanded content recedes to the canvas tone inside the
+       elevated container. */
+    background: var(--cn-accordion-content-bg, var(--background));
     border-top: 1px solid var(--border);
     color: var(--text-secondary);
 }
@@ -595,46 +847,49 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-breadcrumb {
-    gap: var(--cn-breadcrumb-gap, var(--compact-cluster-gap-md));
+    gap: var(--space-2);
     color: var(--text-secondary);
 }
 .cn-breadcrumb-item {
     color: var(--text-secondary);
     cursor: pointer;
-    text-decoration: underline;
-    text-decoration-color: transparent;
-    text-decoration-thickness: 1.5px;
 }
 .cn-breadcrumb-item:hover {
     color: var(--text-primary);
-    text-decoration-color: var(--primary);
 }
 .cn-breadcrumb-item--active {
     color: var(--text-primary);
-    text-decoration-color: var(--primary);
 }
-.cn-breadcrumb-label { max-width: 100%; }
 
 /* ============================================================================
    Pagination
    ============================================================================ */
 
 .cn-pagination {
-    gap: var(--cn-pagination-gap, var(--compact-cluster-gap-sm));
+    gap: var(--space-1);
 }
 .cn-pagination-btn {
     border: 1px solid var(--border);
-    border-radius: var(--cn-pagination-radius, var(--control-radius-md));
+    border-radius: var(--radius-default);
     cursor: pointer;
     color: var(--text-primary);
-    corner-shape: var(--cn-pagination-corner-shape, var(--control-corner-shape));
-    transition: background 150ms, corner-shape 180ms;
 }
 .cn-pagination-btn:hover {
     background: var(--surface-elevated);
-    corner-shape: var(--cn-pagination-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-pagination-btn--active {
+    background: var(--primary);
+    color: var(--text-inverse);
+    border-color: var(--primary);
+}
+/* The current page button is non-interactive (cursor: default, no
+   click handler), so its hover state should stay locked on the active
+   styling. Without this, the generic `.cn-pagination-btn:hover` rule
+   above wins (same specificity, state-selector applied after base) and
+   the primary-blue fill flips to `--surface-elevated` mid-hover — the
+   number disappears against the now-light bg and the row reads as if
+   no page is selected. */
+.cn-pagination-btn--active:hover {
     background: var(--primary);
     color: var(--text-inverse);
     border-color: var(--primary);
@@ -643,32 +898,58 @@ pub const CN_STYLES: &str = r#"
     opacity: 0.5;
     cursor: not-allowed;
 }
+/* Match the active rule — disabled buttons (chevrons at first/last
+   page) shouldn't repaint to surface-elevated on hover; they keep
+   their dimmed look so the interactive affordance reads as 'not
+   available right now'. */
+.cn-pagination-btn--disabled:hover {
+    background: transparent;
+}
 
 /* ============================================================================
    Navigation Menu
    ============================================================================ */
 
 .cn-nav-menu {
-    gap: var(--cn-nav-menu-gap, var(--compact-cluster-gap-sm));
+    gap: var(--space-1);
 }
 .cn-nav-link {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
     color: var(--text-secondary);
 }
 .cn-nav-link:hover {
     background: var(--surface-elevated);
     color: var(--text-primary);
-    corner-shape: var(--cn-nav-link-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-nav-link--active {
     background: var(--surface-elevated);
     color: var(--text-primary);
-    text-decoration: underline;
-    text-decoration-color: var(--primary);
-    text-decoration-thickness: 1.5px;
 }
-.cn-nav-link__label { max-width: 100%; }
+/* The dropdown panel (`.cn-nav-menu-content`) is itself painted at
+   `--surface-elevated`, so the generic `.cn-nav-link:hover` rule
+   above (which sets the same fill) leaves items inside the panel
+   with no visible hover affordance. Override with `--accent-subtle`
+   for the descendant case — same convention combobox / select /
+   dropdown-menu items use against their own surface-elevated panels. */
+.cn-nav-menu-content .cn-nav-link:hover {
+    background: var(--accent-subtle);
+}
+
+.cn-nav-menu-content {
+    /* Floating overlay → elevation 2 */
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    /* CSS-driven enter — slide down + fade. Motion FSM workaround. */
+    animation: cn-nav-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top center;
+}
+
+@keyframes cn-nav-menu-enter {
+    from { opacity: 0; transform: scale(0.98) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+}
 
 /* ============================================================================
    Sidebar
@@ -679,21 +960,23 @@ pub const CN_STYLES: &str = r#"
     border-right: 1px solid var(--border);
 }
 .cn-sidebar-item {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
     background: transparent;
     color: var(--text-secondary);
 }
-.cn-sidebar-item:hover {
-    background: var(--surface-elevated);
+.cn-sidebar-item:hover:not(.cn-sidebar-item--active) {
+    /* Subtle accent feedback — matches the overlay-menu hover treatment
+       (dropdown / select / context). Previously this used
+       `--surface-elevated` (#FBFCFE in light), which is the same token
+       as the active state, so hover and active looked identical. */
+    background: var(--accent-subtle);
     color: var(--text-primary);
-    corner-shape: var(--cn-sidebar-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-sidebar-item--active {
     background: var(--surface-elevated);
     color: var(--text-primary);
 }
-.cn-sidebar-item__label { max-width: 100%; }
 
 /* ============================================================================
    Scroll Area
@@ -708,26 +991,33 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-dropdown-menu {
-    background: var(--surface);
+    /* Shared overlay-menu chrome with select / context / combobox.
+       No outer padding so item hover bgs run flush with the panel's
+       rounded edge — see `.cn-select-content` for the rationale. */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-dropdown-radius, var(--overlay-radius));
-    padding: var(--cn-dropdown-padding, var(--overlay-gap));
-    box-shadow: var(--cn-dropdown-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-dropdown-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-default);
+    /* CSS-driven enter — slight scale + fade. Motion FSM workaround. */
+    animation: cn-dropdown-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top center;
+}
+
+@keyframes cn-dropdown-menu-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 .cn-dropdown-item {
-    padding: var(--cn-dropdown-item-py, var(--overlay-item-py)) var(--cn-dropdown-item-px, var(--overlay-item-px));
-    border-radius: var(--cn-dropdown-item-radius, var(--control-radius-sm));
+    padding: var(--space-2) var(--space-3);
     cursor: pointer;
     color: var(--text-primary);
-    font-size: var(--cn-dropdown-font-size, var(--type-body-md));
-    corner-shape: var(--cn-dropdown-item-corner-shape, var(--control-corner-shape));
-    transition: background 100ms, corner-shape 180ms;
+    font-size: var(--text-sm);
+    /* No `border-radius` — see `.cn-select-item`. */
+    /* No transition — see cn-menubar-item rationale. */
 }
+/* `--accent-subtle` — parent panel sits at `--surface-elevated`,
+   so hovering to the same tier would be invisible. */
 .cn-dropdown-item:hover {
-    background: var(--surface-elevated);
-    corner-shape: var(--cn-dropdown-item-corner-shape-hover, var(--control-corner-shape-hover));
+    background: var(--accent-subtle);
 }
 .cn-dropdown-item--disabled {
     opacity: 0.5;
@@ -736,72 +1026,97 @@ pub const CN_STYLES: &str = r#"
 .cn-dropdown-item--destructive {
     color: var(--error);
 }
-.cn-dropdown-item__label { max-width: 100%; }
-.cn-menu-shortcut {
-    text-decoration: underline;
-    text-decoration-color: var(--text-tertiary);
-    text-decoration-thickness: 1px;
-}
 
 /* ============================================================================
    Context Menu
    ============================================================================ */
 
 .cn-context-menu {
-    background: var(--surface);
+    /* Shared overlay-menu chrome with select / dropdown / combobox.
+       No outer padding so item hover bgs run flush with the panel's
+       rounded edge — see `.cn-select-content` for the rationale. */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-context-menu-radius, var(--overlay-radius));
-    padding: var(--cn-context-menu-padding, var(--overlay-gap));
-    box-shadow: var(--cn-context-menu-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-context-menu-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-default);
+    /* CSS-driven enter — small scale + fade. Motion FSM workaround. */
+    animation: cn-context-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top left;
+}
+
+@keyframes cn-context-menu-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 .cn-context-menu-item {
-    padding: var(--cn-context-menu-item-py, var(--overlay-item-py)) var(--cn-context-menu-item-px, var(--overlay-item-px));
-    border-radius: var(--cn-context-menu-item-radius, var(--control-radius-sm));
+    padding: var(--space-2) var(--space-3);
+    /* No `border-radius` — see `.cn-select-item`. */
     cursor: pointer;
     color: var(--text-primary);
-    font-size: var(--cn-context-menu-font-size, var(--type-body-md));
-    corner-shape: var(--cn-context-menu-item-corner-shape, var(--control-corner-shape));
-    transition: background 100ms, corner-shape 180ms;
+    font-size: var(--text-sm);
+    /* No transition — see cn-menubar-item rationale. */
 }
 .cn-context-menu-item:hover {
-    background: var(--surface-elevated);
-    corner-shape: var(--cn-context-menu-item-corner-shape-hover, var(--control-corner-shape-hover));
+    background: var(--accent-subtle);
 }
-.cn-context-menu-item__label { max-width: 100%; }
 
 /* ============================================================================
    Menubar
    ============================================================================ */
 
 .cn-menubar {
-    background: var(--surface);
+    /* Elevated container → elevation 2 */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-menubar-radius, var(--overlay-radius));
-    padding: var(--cn-menubar-padding, var(--overlay-gap));
-    gap: var(--cn-menubar-gap, var(--overlay-gap));
-    corner-shape: var(--cn-menubar-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-md);
+    padding: var(--space-1);
+    gap: var(--space-1);
 }
 .cn-menubar-trigger {
-    padding: var(--cn-menubar-trigger-py, var(--overlay-item-py)) var(--cn-menubar-trigger-px, var(--overlay-item-px));
-    border-radius: var(--cn-menubar-trigger-radius, var(--control-radius-sm));
+    padding: var(--space-1-5) var(--space-3);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--text-sm);
     background: transparent;
 }
 .cn-menubar-trigger:hover {
     background: var(--surface-elevated);
-    corner-shape: var(--cn-menubar-trigger-corner-shape-hover, var(--control-corner-shape-hover));
+}
+/* Dropdown panel that opens when a menubar trigger is activated.
+   Shared chrome with .cn-dropdown-menu / .cn-context-menu so the
+   File / Edit / View popups read as elevation-2 floating surfaces
+   instead of the pure-white `Surface` the Rust-side `.bg(...)`
+   fallback was painting. */
+.cn-menubar-content {
+    /* No outer padding — see `.cn-select-content`. */
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-default);
+    /* Reuse the dropdown keyframes — same top-anchored slide/fade. */
+    animation: cn-dropdown-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top center;
 }
 .cn-menubar-item {
-    border-radius: 4px;
+    /* Match `.cn-dropdown-item` / `.cn-context-menu-item` so all three
+       menu primitives share the same row chrome. The Rust builder
+       applies a smaller `.py / .px` to set a sensible fallback when
+       cn_styles isn't loaded; this CSS rule overrides it when the
+       stylesheet IS present. No `border-radius` — see
+       `.cn-select-item`. */
+    padding: var(--space-2) var(--space-3);
     background: transparent;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    /* No CSS `transition` here — when the cursor moves across menu rows
+       quickly, the transition trail leaves multiple rows partially
+       highlighted (each at a different point in the fade-out animation),
+       which reads as a stuck-hover bug. Instant on/off matches the HID. */
 }
+/* `--accent-subtle` — parent dropdown panel sits at `--surface-elevated`,
+   so hovering to the same tier is invisible. Match cn-dropdown-item /
+   cn-context-menu-item for visual consistency across menu primitives. */
 .cn-menubar-item:hover {
-    background: var(--surface-elevated);
+    background: var(--accent-subtle);
 }
 
 /* ============================================================================
@@ -809,13 +1124,20 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-popover-content {
-    background: var(--surface);
+    /* Floating overlay → elevation 2 */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-popover-radius, var(--overlay-radius));
-    padding: var(--cn-popover-padding, var(--container-padding-compact));
-    box-shadow: var(--cn-popover-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-popover-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    /* CSS-driven enter — same approach as cn-tooltip while the motion FSM
+       integration with the new OverlayStack is being fixed. */
+    animation: cn-popover-enter var(--duration-normal) var(--ease-spring);
+    transform-origin: top center;
+}
+
+@keyframes cn-popover-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* ============================================================================
@@ -823,13 +1145,19 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-hover-card-content {
-    background: var(--surface);
+    /* Floating overlay → elevation 2 */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-hover-card-radius, var(--overlay-radius));
-    padding: var(--cn-hover-card-padding, var(--container-padding-compact));
-    box-shadow: var(--cn-hover-card-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-hover-card-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    /* CSS-driven enter — same approach as cn-tooltip / cn-popover. */
+    animation: cn-hover-card-enter var(--duration-normal) var(--ease-spring);
+    transform-origin: top center;
+}
+
+@keyframes cn-hover-card-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* ============================================================================
@@ -837,16 +1165,17 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-tree-node {
-    padding: var(--cn-tree-node-py, var(--overlay-gap)) var(--cn-tree-node-px, var(--control-px-sm));
-    border-radius: var(--cn-tree-node-radius, var(--control-radius-sm));
+    /* No `padding` here — Rust owns per-side padding so the left side
+       can encode tree-depth indent. CSS overriding `padding:` would
+       collapse all rows to the same x-offset. */
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    color: var(--text-primary);
-    corner-shape: var(--cn-tree-node-corner-shape, var(--control-corner-shape));
-    transition: background 100ms, corner-shape 180ms;
+    /* No CSS `transition` here — same rationale as cn-menubar-item /
+       cn-select-item: the bg transition leaves multiple rows
+       partially highlighted on a fast cursor sweep. */
 }
 .cn-tree-node:hover {
     background: var(--surface-elevated);
-    corner-shape: var(--cn-tree-node-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-tree-node--selected {
     background: var(--primary);
@@ -857,12 +1186,15 @@ pub const CN_STYLES: &str = r#"
    Resizable
    ============================================================================ */
 
+/* `.cn-resizable-handle` is the wide HIT AREA wrapper (thickness +
+   hit padding on each side). The actual visible thin handle line
+   is the Rust-side inner div whose background is theme-driven —
+   `--border` at rest, `--primary` while dragging. Painting the
+   wrapper background would fill the entire hit zone with that
+   colour, making the handle read 2-3× wider than its actual
+   visual stripe. Keep the wrapper transparent. */
 .cn-resizable-handle {
-    background: var(--border);
-    transition: background 150ms;
-}
-.cn-resizable-handle:hover {
-    background: var(--primary);
+    background: transparent;
 }
 
 /* ============================================================================
@@ -879,39 +1211,102 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-combobox-trigger {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--cn-combobox-trigger-radius, var(--control-radius-md));
+    /* Match select-trigger: bg / border / color are Rust-owned so the
+       state-aware disabled fill isn't clobbered by CSS. */
+    border-radius: var(--radius-default);
     cursor: pointer;
-    color: var(--text-primary);
-    corner-shape: var(--cn-combobox-trigger-corner-shape, var(--control-corner-shape));
-    transition: border-color 150ms, background 150ms, corner-shape 180ms;
-}
-.cn-combobox-trigger:hover {
-    border-color: var(--border-hover);
-    corner-shape: var(--cn-combobox-trigger-corner-shape-hover, var(--control-corner-shape-hover));
+    transition: border-color var(--duration-fast) var(--ease-state);
 }
 .cn-combobox-content {
-    background: var(--surface);
+    /* Shared overlay-menu chrome with select / dropdown / context.
+       No outer padding — see `.cn-select-content`. */
+    background: var(--surface-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--cn-combobox-content-radius, var(--overlay-radius));
-    padding: var(--cn-combobox-content-py, var(--overlay-gap));
-    box-shadow: var(--cn-combobox-shadow, var(--overlay-shadow));
-    corner-shape: var(--cn-combobox-content-corner-shape, var(--overlay-corner-shape));
-    backdrop-filter: glass;
+    border-radius: var(--radius-default);
+    /* Reuse the dropdown keyframes — same top-anchored slide/fade. */
+    animation: cn-dropdown-menu-enter var(--duration-fast) var(--ease-state);
+    transform-origin: top center;
 }
 .cn-combobox-item {
-    padding: var(--cn-combobox-item-py, var(--overlay-item-py)) var(--cn-combobox-item-px, var(--overlay-item-px));
+    padding: var(--space-2) var(--space-3);
+    /* No `border-radius` — see `.cn-select-item`. */
     cursor: pointer;
     color: var(--text-primary);
-    border-radius: var(--cn-combobox-item-radius, var(--control-radius-sm));
-    corner-shape: var(--cn-combobox-item-corner-shape, var(--control-corner-shape));
-    transition: background 100ms, corner-shape 180ms;
+    font-size: var(--text-sm);
+    /* No transition — see cn-menubar-item rationale. */
 }
+/* Hover uses `--accent-subtle`. The selected state uses `--selection`,
+   which carries roughly 2× the alpha (~20% vs ~10%) on most themes so
+   the currently-chosen row is visibly distinct against the panel
+   background even when Surface is pure white — `accent-subtle` alone
+   on `Surface = #FFFFFF` (macOS light) renders as a ~5 % blue tint
+   that's effectively invisible. */
 .cn-combobox-item:hover {
-    background: var(--surface-elevated);
-    corner-shape: var(--cn-combobox-item-corner-shape-hover, var(--control-corner-shape-hover));
+    background: var(--accent-subtle);
 }
-.cn-combobox-value { max-width: 100%; }
-.cn-combobox-item__label { max-width: 100%; }
+.cn-combobox-item--selected {
+    background: var(--selection);
+    color: var(--accent);
+}
+
+/* ============================================================================
+   Table (shadcn `<Table>` family)
+   ============================================================================ */
+
+/* Outer container — 1px border, rounded, clipped so the row borders
+   don't bleed past the rounded corners. The layout `table()` widget
+   already paints `overflow_clip`; the cn rule adds the surface chrome
+   (border + radius + base font-size). bg stays unset so layout's
+   per-section setters (thead / tfoot paint `--surface-overlay`) win. */
+.cn-table {
+    border: 1px solid var(--cn-table-border, var(--border));
+    border-radius: var(--cn-table-radius, var(--radius-md));
+    font-size: var(--text-sm);
+}
+
+/* thead / tfoot bg is owned by the layout widget (theme token
+   `--surface-overlay` via Rust setters). Don't redeclare here — the
+   CSS value would clobber the setter result. The cn footer only adds
+   the top-border + medium font-weight. */
+.cn-table-footer {
+    font-weight: 500;
+    border-top: 1px solid var(--cn-table-border, var(--border));
+}
+
+/* Rows — bottom border + hover bg. The row separator is what gives the
+   table its grid feel; tbody's last row strips the border via the
+   `:last-child` rule so the closing edge sits flush with the outer
+   border-radius. */
+.cn-table-row {
+    border-bottom: 1px solid var(--cn-table-border, var(--border));
+    transition: background var(--duration-fast) var(--ease-state);
+}
+.cn-table-body .cn-table-row:last-child {
+    border-bottom: none;
+}
+.cn-table-row:hover {
+    background: var(--cn-table-row-hover, var(--surface-hover));
+}
+.cn-table-row--selected,
+.cn-table-row--selected:hover {
+    background: var(--cn-table-row-selected, var(--selection));
+}
+
+/* Header cell — muted-foreground, medium-weight, left-aligned, compact
+   40 px height to match shadcn. */
+.cn-table-head {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: var(--text-sm);
+}
+
+/* Data cell — no extra colour; inherits TextPrimary from the layout
+   widget. cn just contributes the class hook for users to extend. */
+.cn-table-cell { }
+
+/* Caption — small muted label below the table. */
+.cn-table-caption {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+}
 "#;

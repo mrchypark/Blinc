@@ -641,11 +641,6 @@ impl Path {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageId(pub u64);
 
-impl ImageId {
-    /// Sentinel value returned when image operations are unsupported.
-    pub const UNSUPPORTED: Self = Self(0);
-}
-
 /// Image rendering options
 #[derive(Clone, Debug, Default)]
 pub struct ImageOptions {
@@ -1720,6 +1715,113 @@ pub trait DrawContext {
         0
     }
 
+    /// Number of background-batch primitives the context has emitted
+    /// so far this frame. Read by the paint walker to bracket the
+    /// primitive range a node (and its descendants) contributes, so
+    /// the compositor-path fast Phase 4 knows which primitives to
+    /// patch when a motion binding's value changes. Default `0` for
+    /// contexts that don't track primitives (mock test contexts).
+    fn bg_primitive_count(&self) -> usize {
+        0
+    }
+
+    /// Number of layer commands the context has recorded so far this
+    /// frame. Read by the walker right after `push_layer` so the
+    /// Phase 4 CSS-anim recording can capture the just-pushed
+    /// layer's index. The fast-path patcher uses that index to
+    /// update `LayerConfig.opacity` in place when a CSS opacity
+    /// animation took the layered (non-flattened) path. Default `0`
+    /// for contexts that don't track layer commands (mock tests).
+    fn bg_layer_command_count(&self) -> usize {
+        0
+    }
+
+    /// Notify the context that the walker is entering a motion-bound
+    /// subtree. Subsequent primitive / path / glass emissions route
+    /// to a separate "dynamic batch" instead of the main batch, so
+    /// the compositor v2 fast path can dispatch them per-frame as an
+    /// overlay rather than baking them into the static cache. Pair
+    /// with [`Self::pop_motion_subtree`]. Default no-op for contexts
+    /// without this distinction (mock tests, future backends).
+    fn push_motion_subtree(&mut self) {}
+
+    /// Pair with [`Self::push_motion_subtree`]. Default no-op.
+    fn pop_motion_subtree(&mut self) {}
+
+    /// Walker entered a composite-promotable CSS-animated subtree.
+    /// Subsequent primitive / path / glass emissions route into a
+    /// per-node scratch batch keyed by `node_id` (rather than the
+    /// bg batch). At end of paint, the compositor rasterizes each
+    /// scratch batch into its own `LayerTexture` and the per-frame
+    /// composite blits the texture with the active animation
+    /// transform applied — no walker re-entry, no per-frame
+    /// rasterization. Pair with [`Self::pop_composite_layer`].
+    /// Default no-op for contexts without this distinction.
+    fn push_composite_layer(&mut self, _node_id: u64) {}
+
+    /// Pair with [`Self::push_composite_layer`]. Default no-op.
+    fn pop_composite_layer(&mut self) {}
+
+    /// Union AABB (`[x, y, w, h]` in screen pixels, post-DPI) of every
+    /// background-batch primitive in `start..end`. Used by the
+    /// compositor v2 damage-rect path: it captures the on-screen
+    /// rectangle a motion-bound subtree occupied at last paint so the
+    /// fast path can union it with the new AABB and re-render just
+    /// the damaged region of the static cache.
+    ///
+    /// Returns `None` if `start >= end`, the range is out of bounds,
+    /// or the context doesn't track primitives (mock test contexts).
+    fn bg_primitive_aabb(&self, _start: usize, _end: usize) -> Option<[f32; 4]> {
+        None
+    }
+
+    /// Snapshot the intersected AABB of all currently-pushed clips,
+    /// in *screen coordinates* (i.e. each `push_clip` entry already
+    /// transformed by the affine that was on the stack at the time
+    /// of push).
+    ///
+    /// Returns `None` when the stack is empty (no active clip).
+    /// Returns `Some([x, y, w, h])` otherwise — the intersection
+    /// rectangle, or zero-size if the rects don't overlap.
+    ///
+    /// Used by the layer compositor: when the walker reaches a
+    /// `Canvas` node, the ancestor clip stack (scroll viewports,
+    /// overflow:hidden containers, etc.) is active. The compositor's
+    /// overlay pass needs to apply the same clip so canvas content
+    /// scrolled out of its parent stays hidden. Default returns
+    /// `None` for contexts without a clip stack (mock tests).
+    fn current_clip_aabb(&self) -> Option<[f32; 4]> {
+        None
+    }
+
+    /// Snapshot the current ancestor clip as
+    /// `(aabb_xywh, corner_radius_tl_tr_br_bl)`. Used by P4.3's
+    /// motion-subtree bake to capture the parent's rounded-rect clip
+    /// alongside the AABB so the per-frame blit can use the blit
+    /// shader's rounded-rect scissor — without it, a progress
+    /// indicator inside an `overflow_clip`-rounded track gets its
+    /// left rounded corner squared off by the AABB-only scissor.
+    /// Radius is `[0; 4]` when the ancestor chain has no rounded-
+    /// rect clip. Default returns `None` for contexts without a
+    /// clip stack (mock tests).
+    fn current_clip_rounded(&self) -> Option<([f32; 4], [f32; 4])> {
+        None
+    }
+
+    /// Snapshot the current composed affine transform as
+    /// `[a, b, c, d, tx, ty]`.
+    ///
+    /// The compositor's split-paint hook uses this when the walker
+    /// reaches a `Canvas` node — it captures the affine at paint
+    /// time so a later fast-path frame can replay the canvas's
+    /// `render_fn` with the same transform state without re-walking
+    /// the rest of the tree. Default identity; real implementations
+    /// in `blinc_gpu` override with the top of their transform
+    /// stack.
+    fn current_affine_elements(&self) -> [f32; 6] {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 3D Transform (per-element, transient)
     // ─────────────────────────────────────────────────────────────────────────
@@ -1896,30 +1998,8 @@ pub trait DrawContext {
     /// Stroke a circle (convenience method)
     fn stroke_circle(&mut self, center: Point, radius: f32, stroke: &Stroke, brush: Brush);
 
-    /// Stroke a polyline through the given points.
-    ///
-    /// Implementations may provide a fast GPU path for large point counts.
-    /// The default implementation builds a [`Path`] and calls [`DrawContext::stroke_path`].
-    fn stroke_polyline(&mut self, points: &[Point], stroke: &Stroke, brush: Brush) {
-        if points.len() < 2 {
-            return;
-        }
-        let mut path = Path::new().move_to(points[0].x, points[0].y);
-        for &p in &points[1..] {
-            path = path.line_to(p.x, p.y);
-        }
-        self.stroke_path(&path, stroke, brush);
-    }
-
     /// Draw text at a position
     fn draw_text(&mut self, text: &str, origin: Point, style: &TextStyle);
-
-    /// Measure text dimensions for layout/alignment use-cases.
-    ///
-    /// Returns `None` when the active backend cannot provide reliable text metrics.
-    fn measure_text(&mut self, _text: &str, _style: &TextStyle) -> Option<Size> {
-        None
-    }
 
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
@@ -2110,6 +2190,39 @@ pub trait DrawContext {
     fn sample_layer(&mut self, id: LayerId, source_rect: Rect, dest_rect: Rect);
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Custom GPU passes
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Schedule a user-defined GPU pass to run inline with this paint
+    /// session.
+    ///
+    /// `viewport` is the rect (in local coordinates) the pass should
+    /// clip its output to. Pass `Some(bounds.rect())` from inside a
+    /// `canvas(|ctx, bounds| …)` closure to clip to the canvas's layout
+    /// region, or `None` to inherit whatever clip is already on the
+    /// stack (the GPU backend captures the current clip-stack AABB
+    /// when `None`). Falling back further when no clip is pushed runs
+    /// the pass against the full frame target.
+    ///
+    /// The default impl is a no-op so non-GPU contexts (mock test
+    /// contexts, the recording context) silently skip the pass. The
+    /// GPU-backed paint context overrides this to queue the pass for
+    /// dispatch during composite.
+    ///
+    /// `GpuPassHook` is an opaque marker from `blinc_core` to keep this
+    /// trait free of `wgpu` references. The concrete bridge type lives
+    /// in `blinc_gpu` (`GpuPass`); construct one via
+    /// `blinc_gpu::GpuPass::new(my_custom_pass)`. Takes `&dyn` (not
+    /// `&mut dyn`) because canvas closures are `Fn`, not `FnMut`; the
+    /// concrete `GpuPass` uses interior mutability so the user can hold
+    /// it through a captured-by-move binding without `RefCell` /
+    /// `Mutex` of their own.
+    ///
+    /// See the "Custom GPU passes" chapter of the book for the full
+    /// pattern.
+    fn run_gpu_pass(&mut self, _pass: &dyn GpuPassHook, _viewport: Option<Rect>) {}
+
+    // ─────────────────────────────────────────────────────────────────────────
     // State Queries
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -2124,6 +2237,21 @@ pub trait DrawContext {
 
     /// Get the current blend mode
     fn current_blend_mode(&self) -> BlendMode;
+}
+
+/// Opaque hook for user-defined GPU work scheduled through
+/// [`DrawContext::run_gpu_pass`].
+///
+/// `blinc_core` doesn't know what's inside — only the concrete GPU paint
+/// context (`blinc_gpu::GpuPaintContext`) does. The canonical bridge type
+/// is `blinc_gpu::GpuPass`, which wraps any `CustomRenderPass` and
+/// implements this trait.
+///
+/// Implementations should return `self` from `as_any`; the GPU layer
+/// downcasts to its canonical wrapper to retrieve the underlying pass.
+pub trait GpuPassHook: 'static {
+    /// Bridge to `Any` for downcast inside the GPU backend.
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 /// Extension trait for DrawContext that provides ergonomic generic methods
@@ -2671,8 +2799,6 @@ impl DrawContext for RecordingContext {
 // Recording SDF Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TODO: Remove `allow(dead_code)` when SDF recording path consumes all variants.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SdfShape {
     Rect {

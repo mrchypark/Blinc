@@ -20,9 +20,6 @@ typedef struct WindowedContext WindowedContext;
 // Type for UI builder function pointer
 typedef void (*UIBuilderFn)(WindowedContext* ctx);
 
-// Type for iOS native bridge call function pointer
-typedef char* (*IOSNativeCallFn)(const char* ns, const char* name, const char* args_json);
-
 // =============================================================================
 // Application Initialization
 // =============================================================================

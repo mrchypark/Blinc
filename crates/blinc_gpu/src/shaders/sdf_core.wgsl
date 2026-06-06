@@ -61,6 +61,11 @@ struct Primitive {
     clip_bounds: vec4<f32>,
     // Clip corner radii (for rounded rect) or (radius_x, radius_y, 0, 0) for ellipse
     clip_radius: vec4<f32>,
+    // Clip corner shape (superellipse n per corner) for the rounded
+    // rect clip — n=1.0 = round (default), 2.0 = squircle, 0.0 = bevel,
+    // -1.0 = scoop. Lets overflow:clip on a squircle parent follow
+    // the same curve as the parent fill instead of a circular cut.
+    clip_corner_shape: vec4<f32>,
     // Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0) in user space
     gradient_params: vec4<f32>,
     // Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - for rotated SDF evaluation
@@ -450,7 +455,7 @@ fn shadow_circle(p: vec2<f32>, center: vec2<f32>, radius: f32, sigma: f32) -> f3
 //   clip_radius = shape-specific data
 // The shader applies BOTH the rect scissor AND the shape clip.
 // clip_fade = (top, right, bottom, left) overflow fade distances in pixels
-fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
+fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_corner_shape: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
     var alpha: f32 = 1.0;
 
     if clip_type != 0u {
@@ -459,7 +464,7 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
             case 1u /* CLIP_RECT */: {
                 let clip_origin = clip_bounds.xy;
                 let clip_size = clip_bounds.zw;
-                let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+                let clip_d = sd_shaped_rect(p, clip_origin, clip_size, clip_radius, clip_corner_shape);
                 alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
             }
             case 2u /* CLIP_CIRCLE */: {
@@ -481,12 +486,12 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
                 alpha = scissor_alpha * shape_alpha;
             }
             case 4u /* CLIP_POLYGON */: {
+                // Scissor-only for early discard. The polygon shape test
+                // is deferred to fs_main after `sp` is computed, so it
+                // can run against element-local coords (`sp - prim.bounds.xy`)
+                // and rotate with motion bindings / CSS transforms.
                 let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
-                let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
-                let vertex_count = u32(clip_radius.z);
-                let aux_offset = u32(clip_radius.w);
-                let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
-                alpha = scissor_alpha * shape_alpha;
+                alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
             }
             default: {}
         }
@@ -706,8 +711,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // text in the same draw dispatch.
     if prim_type > 2u && prim_type != 7u && prim_type != 9u { discard; }
 
-    // Early clip test - discard if completely outside clip region (screen space)
-    let clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, clip_type, prim.clip_fade);
+    // Early clip test - discard if completely outside clip region (screen space).
+    // For CLIP_POLYGON the scissor-AABB portion runs here; the polygon's
+    // winding-number shape test is deferred to after `sp` is computed
+    // below so the polygon vertices (stored in element-local coords) can
+    // be tested in the same frame the SDF evaluates — which means clips
+    // rotate with motion-binding / CSS rotation automatically.
+    var clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, prim.clip_corner_shape, clip_type, prim.clip_fade);
     if clip_alpha < 0.001 {
         discard;
     }
@@ -762,6 +772,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let inv_c = -la.z * inv_det;
             let inv_d = la.x * inv_det;
             sp = vec2<f32>(inv_a * rel.x + inv_c * rel.y, inv_b * rel.x + inv_d * rel.y) + center;
+        }
+    }
+
+    // CLIP_POLYGON shape test in element-local coords. Polygon vertices
+    // are stored in aux_data as supplied by the user (0..size range); the
+    // walker no longer pre-transforms them to screen space. Using
+    // `sp - prim.bounds.xy` puts the sample point in the same frame, so
+    // any rotation (CSS, motion-binding timeline, motion-binding rotation
+    // updated via apply_binding_deltas) naturally rotates the polygon.
+    if clip_type == 4u {
+        let vertex_count = u32(prim.clip_radius.z);
+        let aux_offset = u32(prim.clip_radius.w);
+        let local_p = sp - prim.bounds.xy;
+        let shape_alpha = calculate_polygon_clip_alpha(local_p, vertex_count, aux_offset);
+        clip_alpha = clip_alpha * shape_alpha;
+        if clip_alpha < 0.001 {
+            discard;
         }
     }
 
@@ -1139,8 +1166,38 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let inner_aa = aa_width;
             let border_blend = smoothstep(-inner_aa, inner_aa, -inner_sdf);
 
-            // Only apply border color where we're inside the shape
-            fill_color = mix(fill_color, prim.border_color, border_blend * step(0.001, fill_alpha));
+            // Composite the border ON TOP of the fill using src-over alpha
+            // compositing, NOT a four-component mix. The previous mix() pulled
+            // the border colour's alpha into fill_color.a — so when the border
+            // is semi-transparent (e.g. ColorToken::Border at 10 % alpha) over
+            // an opaque body the border ring became ~90 % transparent and the
+            // page bg leaked through as a dark "extra outline stroke" tracing
+            // the rounded corner.
+            //
+            // Standard "over" in straight-alpha form:
+            //   out_a   = src_a + dst_a * (1 - src_a)
+            //   out_rgb = (src_rgb * src_a + dst_rgb * dst_a * (1 - src_a)) / out_a
+            // Both branches matter:
+            //   * opaque fill + semi-transparent border  → out_a stays 1.0,
+            //     out_rgb = border * border_a + fill * (1 - border_a).
+            //     Body stays opaque, corner ring tinted by border colour.
+            //   * transparent fill (e.g. outline button) + semi-transparent
+            //     border → out_a = border_a, out_rgb = border_rgb. The border
+            //     renders at its own colour and alpha, exactly as before the
+            //     bug fix. The premultiplied form without the /out_a division
+            //     would have squared the alpha here (10 % × 10 % = 1 % effective)
+            //     and made the outline button's border invisible.
+            let border_t = border_blend * step(0.001, fill_alpha);
+            let border_a = prim.border_color.a * border_t;
+            let out_a = border_a + fill_color.a * (1.0 - border_a);
+            let premult_rgb = prim.border_color.rgb * border_a
+                + fill_color.rgb * fill_color.a * (1.0 - border_a);
+            let new_rgb = select(
+                premult_rgb / max(out_a, 0.0001),
+                vec3<f32>(0.0),
+                out_a < 0.0001
+            );
+            fill_color = vec4<f32>(new_rgb, out_a);
         }
     }
 

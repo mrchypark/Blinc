@@ -1,0 +1,421 @@
+//! Multi-file compilation via `BlincDsl::compile_directory`.
+
+use blinc_dsl_core::BlincDsl;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Build a uniquely-named temp dir for the test and clean it up
+/// on drop. Sidesteps adding `tempfile` to dev-deps.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(prefix: &str) -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("{prefix}_{nanos}"));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self(path))
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn write(&self, name: &str, source: &str) -> std::io::Result<std::path::PathBuf> {
+        let p = self.0.join(name);
+        std::fs::write(&p, source)?;
+        Ok(p)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `compile_directory` walks `*.blinc` files in lex order,
+/// compiles each, and returns the per-file function-name map.
+#[test]
+fn compile_directory_emits_per_file_function_names() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_multi_module_basic").expect("tempdir");
+    dir.write(
+        "counter.blinc",
+        r#"component Counter { view { Text("hello") } }"#,
+    )
+    .unwrap();
+    dir.write(
+        "greeting.blinc",
+        r#"component Greeting { view { Text("hi") } }"#,
+    )
+    .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    let by_file = dsl.compile_directory(dir.path()).expect("compile dir");
+
+    assert_eq!(by_file.len(), 2, "should compile both .blinc files");
+    let all: Vec<String> = by_file.values().flatten().cloned().collect();
+    assert!(
+        all.iter().any(|s| s == "Counter$view"),
+        "Counter$view missing: {all:?}"
+    );
+    assert!(
+        all.iter().any(|s| s == "Greeting$view"),
+        "Greeting$view missing: {all:?}"
+    );
+}
+
+/// ES6 import: an entry file imports a component declared in
+/// a sibling file; `compile_project` resolves the dependency
+/// through the registered filesystem resolver, merges the
+/// imported decls into the entry program, and JIT-compiles the
+/// result. With `apply_module_namespace_prefix` in the pipeline,
+/// `Counter` from `widgets.blinc` becomes `widgets$Counter` —
+/// the entry's `Counter()` call gets rewritten to that mangled
+/// name by `inject_imported_view_externs` so the JIT symbol
+/// resolves cleanly.
+#[test]
+fn compile_project_resolves_es6_imports() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_project_import").expect("tempdir");
+    dir.write(
+        "widgets.blinc",
+        r#"component Counter { view { Text("counted") } }"#,
+    )
+    .unwrap();
+    let entry = dir
+        .write(
+            "main.blinc",
+            r#"
+            import { Counter } from "./widgets"
+            view { Counter() }
+            "#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    let names = dsl
+        .compile_project(&entry, dir.path())
+        .expect("compile_project");
+    assert!(
+        names.iter().any(|s| s == "widgets$Counter$view"),
+        "merged import should expose mangled `widgets$Counter$view`, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|s| s == "render_view"),
+        "entry should expose render_view (the entry view body is not a component, so it stays un-mangled), got: {names:?}"
+    );
+}
+
+/// Nested ES6 path: `import { X } from "./ui/widgets"` resolves to
+/// `<root>/ui/widgets.blinc` via the NodeStyle resolver. With the
+/// namespace prefix derived from path-relative-to-source-root, the
+/// nested file's `Counter` becomes `ui$widgets$Counter` — multi-
+/// segment path components join with the same `$` separator
+/// `apply_module_namespace_prefix` uses for the class name itself.
+#[test]
+fn compile_project_resolves_nested_es6_path() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_project_nested").expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("ui")).unwrap();
+    std::fs::write(
+        dir.path().join("ui/widgets.blinc"),
+        r#"component Counter { view { Text("c") } }"#,
+    )
+    .unwrap();
+    let entry = dir
+        .write(
+            "main.blinc",
+            r#"
+            import { Counter } from "./ui/widgets"
+            view { Counter() }
+            "#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    let names = dsl
+        .compile_project(&entry, dir.path())
+        .expect("compile_project");
+    assert!(
+        names.iter().any(|s| s == "ui$widgets$Counter$view"),
+        "nested import should expose `ui$widgets$Counter$view` (path segments joined with `$`), got: {names:?}"
+    );
+}
+
+/// Two files each declaring a `component Counter` no longer collide
+/// in the JIT symbol table or the component registry — they emit
+/// `<module>$Counter$view` and `<other_module>$Counter$view` as
+/// distinct symbols. The entry imports both (the last-imported
+/// `Counter` wins at the use-site in the entry's own source until
+/// alias support lands as a follow-up), but `compile_project` walks
+/// every transitive import and both files get compiled to distinct
+/// mangled symbols regardless of which one the entry's view body
+/// actually references.
+///
+/// Importing the same local name from two different source files
+/// ALSO emits a `BLINC-IMPORT-DUP` warning diagnostic (Zyntax-shaped
+/// `Diagnostic::warning` with primary + secondary annotations and a
+/// help suggestion pointing at the `as` alias escape hatch) so
+/// authors know the second import shadows the first at every
+/// reference. The compile keeps going — the warning is non-fatal.
+///
+/// Regression-covers the cross-file collision case the namespacing
+/// pass exists to prevent — pre-namespacing, both `Counter$view`
+/// symbols would have collapsed onto a single entry in the JIT
+/// symbol table and the component registry, and whichever file
+/// compiled last would silently overwrite the other.
+#[test]
+fn cross_file_same_named_components_do_not_collide() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_project_collision").expect("tempdir");
+    dir.write("red.blinc", r#"component Counter { view { Text("red") } }"#)
+        .unwrap();
+    dir.write(
+        "blue.blinc",
+        r#"component Counter { view { Text("blue") } }"#,
+    )
+    .unwrap();
+    // Entry imports both. Without alias support both bring the local
+    // name `Counter` into the entry, but each file's own component
+    // still gets compiled to its mangled symbol. `compile_project`
+    // walks every import so both red.blinc and blue.blinc are
+    // included in the aggregated names list.
+    let entry = dir
+        .write(
+            "main.blinc",
+            r#"
+            import { Counter } from "./red"
+            import { Counter } from "./blue"
+            view { Counter() }
+            "#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    let names = dsl
+        .compile_project(&entry, dir.path())
+        .expect("compile_project");
+
+    assert!(
+        names.iter().any(|s| s == "red$Counter$view"),
+        "red module's Counter should produce `red$Counter$view`, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|s| s == "blue$Counter$view"),
+        "blue module's Counter should produce `blue$Counter$view`, got: {names:?}"
+    );
+    // BLINC-IMPORT-DUP warning fires because the entry imports
+    // `Counter` from two distinct files.
+    let diags = dsl.compile_diagnostics();
+    let dup_warning = diags
+        .iter()
+        .find(|d| d.code.map(|c| c.0 == "BLINC-IMPORT-DUP").unwrap_or(false));
+    let dup_warning = dup_warning.expect(
+        "duplicate-import warning should fire when the same local name \
+         is imported from two distinct source files",
+    );
+    assert!(
+        dup_warning.message.contains("Counter"),
+        "warning message should name the colliding local, got: {:?}",
+        dup_warning.message
+    );
+    assert!(
+        dup_warning.help.iter().any(|h| h.contains(" as ")),
+        "warning should suggest the `as` alias escape hatch, got help: {:?}",
+        dup_warning.help
+    );
+
+    // Un-mangled `Counter$view` must NOT appear — every component
+    // declared inside a `compile_project` run carries its module
+    // prefix.
+    assert!(
+        !names.iter().any(|s| s == "Counter$view"),
+        "no un-mangled `Counter$view` should leak, got: {names:?}"
+    );
+}
+
+/// Two files each declaring `fsm MyFsm { … }` no longer collide
+/// in the global `FsmRegistry`. The mangling pass renames each
+/// file's state enum + impl from `MyFsm` to `<module>$MyFsm`, and
+/// the registry-population pass keys by the trait name (now
+/// mangled), so both FSMs sit at distinct entries instead of one
+/// overwriting the other.
+///
+/// Regression-covers the FSM extension of the namespacing pass
+/// that originally only mangled components. Pre-fix, the two
+/// `MyFsm` definitions silently collapsed onto a single registry
+/// entry and whichever file was compiled last won.
+#[test]
+fn cross_file_same_named_fsms_register_distinctly() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_project_fsm_collision").expect("tempdir");
+    dir.write(
+        "alpha.blinc",
+        r#"
+            fsm MyFsm {
+                state Idle
+                state Running
+                initial Idle
+                on Idle.Start -> Running
+            }
+            view { Text("alpha") }
+        "#,
+    )
+    .unwrap();
+    dir.write(
+        "beta.blinc",
+        r#"
+            fsm MyFsm {
+                state Off
+                state On
+                initial Off
+                on Off.Flip -> On
+            }
+            view { Text("beta") }
+        "#,
+    )
+    .unwrap();
+    // Entry needs to import both files so `compile_project` walks
+    // them. Imports trigger compilation even though the entry view
+    // doesn't reference the FSMs directly.
+    let entry = dir
+        .write(
+            "main.blinc",
+            r#"
+            import { MyFsm } from "./alpha"
+            import { MyFsm } from "./beta"
+            view { Text("main") }
+            "#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    let _ = dsl
+        .compile_project(&entry, dir.path())
+        .expect("compile_project");
+
+    // Both mangled FSMs should be live in the registry. Look them
+    // up by module-mangled name.
+    use blinc_dsl_core::with_fsm_registry;
+    use zyntax_typed_ast::InternedString;
+    let module = InternedString::new_global("main");
+    let alpha_id = with_fsm_registry(|r| r.find_by_name(module, "alpha$MyFsm"));
+    let beta_id = with_fsm_registry(|r| r.find_by_name(module, "beta$MyFsm"));
+    assert!(
+        alpha_id.is_some(),
+        "alpha module's FSM should register as `alpha$MyFsm`"
+    );
+    assert!(
+        beta_id.is_some(),
+        "beta module's FSM should register as `beta$MyFsm`"
+    );
+    // Un-mangled `MyFsm` must NOT exist — the namespacing pass
+    // renames every cross-file FSM declaration.
+    let unmangled = with_fsm_registry(|r| r.find_by_name(module, "MyFsm"));
+    assert!(
+        unmangled.is_none(),
+        "no un-mangled `MyFsm` should leak into the registry"
+    );
+}
+
+/// Cross-file FSM import: alpha.blinc declares `MyFsm`; main.blinc
+/// imports it and calls `MyFsm.trigger(...)` from its view body.
+///
+/// `resolve_fsm_trigger_calls` consults the global `FsmRegistry`
+/// for receiver names that aren't in the current program's local
+/// FSM impls — alpha.blinc's `MyFsm` (mangled to `alpha$MyFsm`)
+/// is registered by `populate_fsm_registry_pass` when alpha
+/// compiles, then main.blinc's `MyFsm.trigger(...)` resolves
+/// against it. The `import_rewrites` step in
+/// `inject_imported_view_externs` swaps the receiver Variable's
+/// name from `MyFsm` to `alpha$MyFsm` before the FSM-call
+/// resolution runs, so the `__fsm_runtime_trigger__` marker carries
+/// the mangled name that the runtime's default-instance tracker
+/// keys by.
+#[test]
+fn cross_file_fsm_import_advances_state_via_trigger() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_project_fsm_import").expect("tempdir");
+    dir.write(
+        "alpha.blinc",
+        r#"
+            fsm MyFsm {
+                state Idle
+                state Running
+                initial Idle
+                on Idle.Start -> Running
+            }
+            view { Text("alpha") }
+        "#,
+    )
+    .unwrap();
+    let entry = dir
+        .write(
+            "main.blinc",
+            r#"
+            import { MyFsm } from "./alpha"
+            view {
+                MyFsm.trigger("Idle.Start")
+                Text("main")
+            }
+            "#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    dsl.compile_project(&entry, dir.path())
+        .expect("compile_project");
+
+    // Rendering invokes the trigger call in main.blinc's view body.
+    dsl.render_view().expect("render_view");
+
+    // After the trigger fires, the FSM should have advanced from
+    // Idle to Running. Runtime default-instance tracker keys by
+    // the MANGLED name.
+    let current = blinc_runtime::fsm::current_state_name("alpha$MyFsm");
+    assert_eq!(
+        current.as_deref(),
+        Some("Running"),
+        "imported FSM trigger from main.blinc should advance \
+         alpha's MyFsm from Idle to Running"
+    );
+}
+
+/// `recompile_file` re-runs compile for a single path and
+/// refreshes the per-file function-name map. Pins the hot-
+/// reload entry point.
+#[test]
+fn recompile_file_replaces_per_file_tracking() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let dir = TempDir::new("blinc_multi_module_reload").expect("tempdir");
+    let path = dir
+        .write(
+            "widget.blinc",
+            r#"component Widget { view { Text("v1") } }"#,
+        )
+        .unwrap();
+
+    let dsl = BlincDsl::new().expect("runtime init");
+    dsl.compile_file(&path).expect("initial compile");
+    let v1_names = dsl.compiled_function_names(&path).expect("tracked");
+    assert!(v1_names.iter().any(|s| s == "Widget$view"));
+
+    // Edit + recompile. Non-destructive: substrate state for
+    // Widget survives the swap (registry replace-by-name).
+    std::fs::write(&path, r#"component Widget { view { Text("v2") } }"#).unwrap();
+    dsl.recompile_file(&path).expect("hot reload");
+
+    let v2_names = dsl.compiled_function_names(&path).expect("re-tracked");
+    assert!(
+        v2_names.iter().any(|s| s == "Widget$view"),
+        "Widget$view should still be in the post-reload set"
+    );
+}

@@ -33,9 +33,7 @@
 //! router.on_mouse_up(&tree, 100.0, 200.0, MouseButton::Left);
 //! ```
 
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use blinc_core::events::event_types;
 
@@ -44,7 +42,7 @@ use crate::renderer::RenderTree;
 use crate::tree::LayoutNodeId;
 
 #[cfg(feature = "recorder")]
-use crate::recorder_bridge::{self, RecorderEventData, RecorderModifiers, RecorderMouseButton};
+use crate::recorder_bridge::{self, RecorderEventData, RecorderMouseButton};
 
 /// Mouse button identifier (matches platform)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,15 +53,6 @@ pub enum MouseButton {
     Back,
     Forward,
     Other(u16),
-}
-
-/// Keyboard modifier key state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct InputModifiers {
-    pub shift: bool,
-    pub ctrl: bool,
-    pub alt: bool,
-    pub meta: bool,
 }
 
 /// Result of a hit test
@@ -89,6 +78,14 @@ pub struct HitTestResult {
     /// Whether this hit is within a foreground-layer subtree.
     /// Used to prioritize foreground elements over normal elements.
     pub is_foreground: bool,
+    /// Absolute bounds of every direct child of `node`, captured at
+    /// hit-test time. `node` is the topmost (deepest) hit, so by
+    /// construction none of these children contained the cursor at
+    /// hit time. Used by the cursor-inside-last-leaf short-circuit
+    /// to detect when the cursor moves into one of them — at which
+    /// point the deepest hit would change and a full re-test is
+    /// needed.
+    pub leaf_children_bounds: Vec<(f32, f32, f32, f32)>,
 }
 
 /// Callback for element events
@@ -123,11 +120,16 @@ pub struct EventRouter {
     /// Elements currently under the pointer (for enter/leave tracking)
     hovered: HashSet<LayoutNodeId>,
 
-    /// Element where mouse button was pressed (for proper release targeting)
-    pressed_target: Option<LayoutNodeId>,
+    /// Element where mouse button was pressed (for proper release
+    /// targeting). Stored as `StableNodeId` so rebuilds between
+    /// mouse-down and mouse-up don't invalidate the target; the
+    /// release path resolves back to the current LayoutNodeId via
+    /// `tree.layout_id()`.
+    pressed_target: Option<crate::tree::StableNodeId>,
 
-    /// Ancestors of pressed target (for event bubbling on release)
-    pressed_ancestors: Vec<LayoutNodeId>,
+    /// Ancestors of pressed target (for event bubbling on release).
+    /// Same stable-id treatment as `pressed_target`.
+    pressed_ancestors: Vec<crate::tree::StableNodeId>,
 
     /// Currently focused element (receives keyboard events)
     focused: Option<LayoutNodeId>,
@@ -151,15 +153,30 @@ pub struct EventRouter {
     drag_delta_x: f32,
     drag_delta_y: f32,
 
-    /// Last known keyboard modifier state.
-    modifiers: InputModifiers,
-
-    /// Keys currently pressed (used to detect key-repeat).
-    pressed_keys: HashSet<u32>,
-
     /// Bounds for each ancestor from the last hit test
     /// Maps node_id.to_raw() to (x, y, width, height)
     last_hit_ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
+
+    /// Ancestor chain (root → leaf) from the last successful hit
+    /// test. Reused by `RenderTree::get_cursor_for_last_hit` so a
+    /// mouse-move only walks the tree once per event instead of
+    /// twice (once for hover dispatch + once for cursor resolution
+    /// on a UI with `cursor:` styles set).
+    last_hit_chain: Vec<LayoutNodeId>,
+    /// `true` iff the deepest hit from the last test has no children
+    /// in the layout tree. Gates `cursor_inside_last_leaf` — a leaf
+    /// with children could see the cursor cross into a child without
+    /// the parent's bounds being exited, which would change the
+    /// hover set without our short-circuit detecting it.
+    last_leaf_has_no_children: bool,
+    /// Absolute bounds of every direct child of the last hit's leaf
+    /// node. Used by `cursor_inside_last_leaf` to detect when the
+    /// cursor moves into a child (which would change the deepest
+    /// hit and require a full re-test) while staying inside the
+    /// parent's bounds. Empty when the leaf is childless; in that
+    /// case `last_leaf_has_no_children = true` and this check is
+    /// vacuous.
+    last_leaf_children_bounds: Vec<(f32, f32, f32, f32)>,
 }
 
 impl Default for EventRouter {
@@ -193,9 +210,10 @@ impl EventRouter {
             drag_start_y: 0.0,
             drag_delta_x: 0.0,
             drag_delta_y: 0.0,
-            modifiers: InputModifiers::default(),
-            pressed_keys: HashSet::new(),
             last_hit_ancestor_bounds: std::collections::HashMap::new(),
+            last_hit_chain: Vec::new(),
+            last_leaf_has_no_children: false,
+            last_leaf_children_bounds: Vec::new(),
         }
     }
 
@@ -231,6 +249,64 @@ impl EventRouter {
         self.last_hit_ancestor_bounds.get(&node.to_raw()).copied()
     }
 
+    /// `true` if a mouse-button press is currently in flight. Drag
+    /// detection needs every move event, so the
+    /// cursor-still-inside-last-leaf short-circuit defers to this.
+    pub fn is_press_in_flight(&self) -> bool {
+        self.pressed_target.is_some()
+    }
+
+    /// `true` when `(x, y)` lies within the AABB of the deepest hit
+    /// node from the most recent hit test. When this returns true,
+    /// the hover set can't have changed and the entire dispatch
+    /// pipeline (hit_test, hover-set diff, ENTER/LEAVE/MOVE emit,
+    /// cursor lookup) is safe to skip — only the stored cursor
+    /// position needs updating.
+    ///
+    /// Returns `false` when no prior hit is recorded (zero bounds)
+    /// so the very first mouse-move after window init always runs
+    /// the full pipeline.
+    pub fn cursor_inside_last_leaf(&self, x: f32, y: f32) -> bool {
+        if self.last_hit_bounds_width <= 0.0 || self.last_hit_bounds_height <= 0.0 {
+            return false;
+        }
+        let inside_leaf = x >= self.last_hit_bounds_x
+            && x < self.last_hit_bounds_x + self.last_hit_bounds_width
+            && y >= self.last_hit_bounds_y
+            && y < self.last_hit_bounds_y + self.last_hit_bounds_height;
+        if !inside_leaf {
+            return false;
+        }
+        // Cursor is inside the previous leaf. The hover set is
+        // unchanged ONLY if no direct child of the leaf now contains
+        // the cursor — otherwise the child would become the new
+        // deepest hit and a POINTER_ENTER would be due.
+        //
+        // Leaves with no children (`last_leaf_has_no_children`) skip
+        // this loop entirely. Leaves with children pay an O(children)
+        // bounds check per move; in cn_demo's deepest leaves that's
+        // a handful of containers — orders of magnitude cheaper than
+        // the recursive hit_test we'd otherwise run.
+        if self.last_leaf_has_no_children {
+            return true;
+        }
+        for (cx, cy, cw, ch) in self.last_leaf_children_bounds.iter().copied() {
+            if x >= cx && x < cx + cw && y >= cy && y < cy + ch {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Update stored cursor coordinates without running the hit-
+    /// test pipeline. Paired with `cursor_inside_last_leaf` so the
+    /// short-circuit path still keeps `mouse_position()` current
+    /// for any handler / shader reading it.
+    pub fn set_mouse_position(&mut self, x: f32, y: f32) {
+        self.mouse_x = x;
+        self.mouse_y = y;
+    }
+
     /// Get the current drag delta (offset from drag start position)
     ///
     /// Returns (delta_x, delta_y) - the distance dragged from the initial mouse_down position.
@@ -249,9 +325,12 @@ impl EventRouter {
         self.hovered.contains(&node_id)
     }
 
-    /// Check if a specific node is currently pressed
-    pub fn is_pressed(&self, node_id: LayoutNodeId) -> bool {
-        self.pressed_target == Some(node_id)
+    /// Check if a specific node is currently pressed, by its
+    /// stable id (the source-of-truth for the router's pressed
+    /// state). Callers holding a `LayoutNodeId` should look up its
+    /// stable id via `tree.stable_id(node)` first.
+    pub fn is_pressed(&self, stable: crate::tree::StableNodeId) -> bool {
+        self.pressed_target == Some(stable)
     }
 
     /// Check if a specific node is currently focused
@@ -264,9 +343,35 @@ impl EventRouter {
         self.hovered.iter().copied()
     }
 
-    /// Get the pressed target node, if any
-    pub fn pressed_target(&self) -> Option<LayoutNodeId> {
+    /// Root → leaf ancestor chain from the most recent hit test.
+    /// Empty when the last test missed (cursor outside any node).
+    /// Used by `RenderTree::get_cursor_for_last_hit` to resolve
+    /// `cursor:` styles without a second tree walk.
+    pub fn last_hit_chain(&self) -> &[LayoutNodeId] {
+        &self.last_hit_chain
+    }
+
+    /// Get the pressed target as a `StableNodeId`, if any.
+    ///
+    /// Callers needing a `LayoutNodeId` for the current frame should
+    /// resolve via `tree.layout_id(stable)` (which returns `None`
+    /// when the press happened on a subtree that has since been
+    /// removed by a rebuild).
+    pub fn pressed_target_stable(&self) -> Option<crate::tree::StableNodeId> {
         self.pressed_target
+    }
+
+    /// Resolve the pressed target to a live `LayoutNodeId` for the
+    /// given tree, or `None` if no press is in flight or the press
+    /// target was removed by an intervening rebuild.
+    pub fn pressed_target(&self, tree: &RenderTree) -> Option<LayoutNodeId> {
+        self.pressed_target.and_then(|s| tree.layout_id(s))
+    }
+
+    /// `true` if a press is currently in flight (cheap; no tree
+    /// lookup needed).
+    pub fn has_pressed_target(&self) -> bool {
+        self.pressed_target.is_some()
     }
 
     /// Set the event callback for routing events to elements
@@ -285,34 +390,52 @@ impl EventRouter {
         self.event_callback = None;
     }
 
-    /// Execute an operation while collecting events emitted through the router's
-    /// callback path, restoring any previous callback afterwards.
-    pub fn collect_events<R>(
-        &mut self,
-        operation: impl FnOnce(&mut Self) -> R,
-    ) -> (Vec<(LayoutNodeId, u32)>, R) {
-        let previous_callback = self.event_callback.take();
-        let collected = Rc::new(RefCell::new(Vec::new()));
-        self.set_event_callback({
-            let collected = Rc::clone(&collected);
-            move |node, event_type| {
-                collected.borrow_mut().push((node, event_type));
-            }
-        });
+    /// Get the currently focused element
+    /// Compute a small fingerprint of the routing state that
+    /// `apply_stylesheet_state_styles` actually consults: the set of
+    /// currently-hovered nodes, the pressed target, and the focused
+    /// node. Callers cache the previous-frame fingerprint and skip
+    /// the state-style application entirely when it's unchanged — a
+    /// noticeable CPU drop on `cn_demo` where the steady-state
+    /// (spinners rotating, no input) was iterating all ~hundreds of
+    /// registered IDs every frame to detect zero state changes.
+    ///
+    /// The encoding XOR-folds the hovered set into a single `u64`
+    /// (order-independent, cheap), then mixes in the pressed /
+    /// focused identities. Different orderings of the same hovered
+    /// set produce the same fingerprint, which is exactly what we
+    /// want — `apply_stylesheet_state_styles` is itself
+    /// order-insensitive.
+    pub fn state_fingerprint(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        self.event_callback = previous_callback;
-        let collected = match Rc::try_unwrap(collected) {
-            Ok(collected) => collected.into_inner(),
-            Err(collected) => std::mem::take(&mut *collected.borrow_mut()),
-        };
-        match result {
-            Ok(result) => (collected, result),
-            Err(payload) => std::panic::resume_unwind(payload),
+        let mut hovered_xor: u64 = 0;
+        for n in self.hovered.iter() {
+            let mut h = DefaultHasher::new();
+            n.hash(&mut h);
+            hovered_xor ^= h.finish();
         }
+
+        let mut h = DefaultHasher::new();
+        hovered_xor.hash(&mut h);
+        match self.pressed_target {
+            Some(s) => {
+                1u8.hash(&mut h);
+                s.hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+        match self.focused {
+            Some(n) => {
+                1u8.hash(&mut h);
+                n.hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+        h.finish()
     }
 
-    /// Get the currently focused element
     pub fn focused(&self) -> Option<LayoutNodeId> {
         self.focused
     }
@@ -409,6 +532,103 @@ impl EventRouter {
 
     /// Handle mouse move event with overlay occlusion awareness
     ///
+    /// Drag-only fast path: emit DRAG events to the pressed target +
+    /// its ancestors without running the hit-test pipeline. While a
+    /// press is in flight the pressed target is fixed (set at
+    /// mouse-down), so hover-set updates / ENTER / LEAVE / cursor
+    /// lookup don't apply — those all care about which node is
+    /// currently under the cursor, but during a drag the user is
+    /// interacting with the pressed element regardless of cursor
+    /// position. Returns the emitted events for the dispatch loop.
+    ///
+    /// Caller MUST verify `is_press_in_flight()` before invoking.
+    /// Mouse-move events without a press should still go through
+    /// `on_mouse_move_with_occlusion` for the full hover pipeline.
+    pub fn on_mouse_drag_fast(
+        &mut self,
+        tree: &RenderTree,
+        x: f32,
+        y: f32,
+    ) -> Vec<(LayoutNodeId, u32)> {
+        self.mouse_x = x;
+        self.mouse_y = y;
+        let mut events = Vec::new();
+        let Some(stable_target) = self.pressed_target else {
+            return events;
+        };
+
+        self.drag_delta_x = x - self.drag_start_x;
+        self.drag_delta_y = y - self.drag_start_y;
+
+        const DRAG_THRESHOLD: f32 = 3.0;
+        let delta_exceeds =
+            self.drag_delta_x.abs() > DRAG_THRESHOLD || self.drag_delta_y.abs() > DRAG_THRESHOLD;
+
+        if !self.is_dragging && delta_exceeds {
+            self.is_dragging = true;
+        }
+
+        if self.is_dragging {
+            if let Some(target) = tree.layout_id(stable_target) {
+                self.emit_event(target, event_types::DRAG);
+                events.push((target, event_types::DRAG));
+            }
+            // Bubble to ancestors of the pressed target. Collect first
+            // to avoid borrow conflict with `emit_event`.
+            let ancestors: Vec<_> = self
+                .pressed_ancestors
+                .iter()
+                .rev()
+                .skip(1)
+                .copied()
+                .collect();
+            for stable_ancestor in ancestors {
+                if let Some(ancestor) = tree.layout_id(stable_ancestor) {
+                    self.emit_event(ancestor, event_types::DRAG);
+                    events.push((ancestor, event_types::DRAG));
+                }
+            }
+        }
+
+        // Also emit POINTER_MOVE to the pressed target + ancestors. The
+        // slow `on_mouse_move_with_occlusion` path emits POINTER_MOVE
+        // on every hovered node (filtered to those with handlers); we
+        // mirror that for the drag fast path so an `on_mouse_move`
+        // handler on a pressed widget still receives per-move ticks
+        // during a drag. Without this, `motion_demo`'s pull-to-refresh
+        // (which uses `on_mouse_move` to read mouse_y and drive
+        // `set_immediate` on its translate binding) sat frozen during
+        // a drag because POINTER_MOVE never reached the handler —
+        // only DRAG did, and the demo doesn't subscribe to DRAG.
+        // Filtered to nodes with handlers so the common no-subscriber
+        // case stays cheap.
+        let registry = tree.handler_registry();
+        if let Some(target) = tree.layout_id(stable_target) {
+            if let Some(stable) = tree.stable_id(target) {
+                if registry.has_handler(stable, event_types::POINTER_MOVE) {
+                    self.emit_event(target, event_types::POINTER_MOVE);
+                    events.push((target, event_types::POINTER_MOVE));
+                }
+            }
+        }
+        let ancestors: Vec<_> = self
+            .pressed_ancestors
+            .iter()
+            .rev()
+            .skip(1)
+            .copied()
+            .collect();
+        for stable_ancestor in ancestors {
+            if registry.has_handler(stable_ancestor, event_types::POINTER_MOVE) {
+                if let Some(ancestor) = tree.layout_id(stable_ancestor) {
+                    self.emit_event(ancestor, event_types::POINTER_MOVE);
+                    events.push((ancestor, event_types::POINTER_MOVE));
+                }
+            }
+        }
+        events
+    }
+
     /// Same as `on_mouse_move`, but also checks for overlay occlusion.
     /// Elements that are visually occluded by overlays will not receive hover events.
     ///
@@ -442,13 +662,39 @@ impl EventRouter {
 
         let mut events = Vec::new();
 
-        // Hit test to find elements under pointer (with optional occlusion filtering)
-        let hits = if overlay_bounds.is_empty() {
-            self.hit_test_all(tree, x, y)
+        // Hit test to find elements under pointer. The common no-overlay case
+        // only needs the topmost hit chain (root -> leaf) for hover enter/leave
+        // and event bubbling, so avoid `hit_test_all`'s sibling walk on every
+        // mouse move in large scroll views.
+        let (hits, current_hovered): (Vec<HitTestResult>, HashSet<LayoutNodeId>) = if overlay_bounds
+            .is_empty()
+        {
+            if let Some(hit) = self.hit_test(tree, x, y) {
+                let hovered = hit
+                    .ancestors
+                    .iter()
+                    .copied()
+                    .filter(|node| {
+                        let in_bounds = hit.ancestor_bounds.get(&node.to_raw()).is_some_and(
+                            |&(bx, by, bw, bh)| x >= bx && x < bx + bw && y >= by && y < by + bh,
+                        );
+                        let pointer_events_none = tree
+                            .get_render_node(*node)
+                            .map(|n| n.props.pointer_events_none)
+                            .unwrap_or(false);
+                        in_bounds && !pointer_events_none
+                    })
+                    .collect();
+                (vec![hit], hovered)
+            } else {
+                (Vec::new(), HashSet::new())
+            }
         } else {
-            self.hit_test_all_with_occlusion(tree, x, y, overlay_bounds, overlay_layer_id)
+            let hits =
+                self.hit_test_all_with_occlusion(tree, x, y, overlay_bounds, overlay_layer_id);
+            let hovered = hits.iter().map(|h| h.node).collect();
+            (hits, hovered)
         };
-        let current_hovered: HashSet<LayoutNodeId> = hits.iter().map(|h| h.node).collect();
 
         // Store bounds for all hit nodes (for event handlers to access via get_node_bounds)
         // Clear previous bounds and populate with current hit test results
@@ -477,6 +723,28 @@ impl EventRouter {
             self.last_hit_bounds_y = topmost.bounds_y;
             self.last_hit_bounds_width = topmost.bounds_width;
             self.last_hit_bounds_height = topmost.bounds_height;
+            // Cache the root → leaf ancestor chain so a subsequent
+            // cursor-style lookup can reuse it instead of re-walking
+            // the tree.
+            self.last_hit_chain.clear();
+            self.last_hit_chain.extend_from_slice(&topmost.ancestors);
+            // Whether the deepest hit truly has no children — only
+            // then is the cursor-inside-last-leaf short-circuit safe.
+            // A leaf with children (e.g. button-div with a text
+            // child) could see the cursor cross into a child without
+            // leaving the parent's bounds; the child would become a
+            // new deepest hit needing POINTER_ENTER. We capture each
+            // child's absolute bounds (populated by hit_test_node at
+            // the leaf level) so the short-circuit can additionally
+            // require the cursor not be in any child.
+            self.last_leaf_has_no_children = topmost.leaf_children_bounds.is_empty();
+            self.last_leaf_children_bounds.clear();
+            self.last_leaf_children_bounds
+                .extend_from_slice(&topmost.leaf_children_bounds);
+        } else {
+            self.last_hit_chain.clear();
+            self.last_leaf_has_no_children = false;
+            self.last_leaf_children_bounds.clear();
         }
 
         // Elements that were hovered but no longer are -> POINTER_LEAVE
@@ -513,10 +781,28 @@ impl EventRouter {
             }
         }
 
-        // All currently hovered elements get POINTER_MOVE
+        // POINTER_MOVE on every hovered node — but only emit to
+        // nodes that actually have a `POINTER_MOVE` handler. The
+        // previous unconditional emit pushed ~5-10 events per
+        // mouse-move (one per ancestor in the hover chain), each
+        // round-tripping through `pending_events` and
+        // `dispatch_event_full` to ultimately find no handler.
+        // At a Magic Mouse's ~120 Hz move rate × cn_demo's hover
+        // chain, that ate ~20 % CPU during cursor wiggles for no
+        // visible work — `state_changed` and pointer_query handle
+        // the legitimate cases.
+        //
+        // Per-node check is cheap: `has_handler` is a single
+        // HashMap probe per node, and we already walked the
+        // hover chain to compute the set.
+        let registry = tree.handler_registry();
         for node in &current_hovered {
-            self.emit_event(*node, event_types::POINTER_MOVE);
-            events.push((*node, event_types::POINTER_MOVE));
+            if let Some(stable) = tree.stable_id(*node) {
+                if registry.has_handler(stable, event_types::POINTER_MOVE) {
+                    self.emit_event(*node, event_types::POINTER_MOVE);
+                    events.push((*node, event_types::POINTER_MOVE));
+                }
+            }
         }
 
         // Record mouse move event (only if recording is enabled)
@@ -532,8 +818,11 @@ impl EventRouter {
 
         self.hovered = current_hovered;
 
-        // Drag detection: if we have a pressed target and moved, emit DRAG
-        if let Some(target) = self.pressed_target {
+        // Drag detection: if we have a pressed target and moved, emit DRAG.
+        // `pressed_target` is a stable id; resolve to the live layout id
+        // for this frame before emitting so a rebuild between mouse-down
+        // and the move doesn't drop the drag.
+        if let Some(stable_target) = self.pressed_target {
             // Update drag delta
             self.drag_delta_x = x - self.drag_start_x;
             self.drag_delta_y = y - self.drag_start_y;
@@ -544,32 +833,40 @@ impl EventRouter {
                 || self.drag_delta_y.abs() > DRAG_THRESHOLD;
 
             tracing::debug!(
-                "Drag check: target={:?}, delta=({:.1}, {:.1}), threshold_exceeded={}, is_dragging={}",
-                target, self.drag_delta_x, self.drag_delta_y, delta_exceeds, self.is_dragging
+                "Drag check: stable_target={:?}, delta=({:.1}, {:.1}), threshold_exceeded={}, is_dragging={}",
+                stable_target,
+                self.drag_delta_x,
+                self.drag_delta_y,
+                delta_exceeds,
+                self.is_dragging
             );
 
             if !self.is_dragging && delta_exceeds {
                 self.is_dragging = true;
                 tracing::debug!(
-                    "DRAG started: target={:?}, delta=({:.1}, {:.1})",
-                    target,
+                    "DRAG started: stable_target={:?}, delta=({:.1}, {:.1})",
+                    stable_target,
                     self.drag_delta_x,
                     self.drag_delta_y
                 );
             }
 
-            // Emit DRAG event to the pressed target
+            // Emit DRAG event to the pressed target (resolved per-frame)
             if self.is_dragging {
-                tracing::debug!(
-                    "Emitting DRAG to {:?}, delta=({:.1}, {:.1})",
-                    target,
-                    self.drag_delta_x,
-                    self.drag_delta_y
-                );
-                self.emit_event(target, event_types::DRAG);
-                events.push((target, event_types::DRAG));
+                if let Some(target) = tree.layout_id(stable_target) {
+                    tracing::debug!(
+                        "Emitting DRAG to {:?}, delta=({:.1}, {:.1})",
+                        target,
+                        self.drag_delta_x,
+                        self.drag_delta_y
+                    );
+                    self.emit_event(target, event_types::DRAG);
+                    events.push((target, event_types::DRAG));
+                }
 
-                // Collect ancestors to avoid borrow conflict
+                // Bubble DRAG to ancestors (skip the target itself —
+                // last entry of ancestors). Collect first to avoid
+                // borrow conflict.
                 let ancestors: Vec<_> = self
                     .pressed_ancestors
                     .iter()
@@ -577,9 +874,11 @@ impl EventRouter {
                     .skip(1)
                     .copied()
                     .collect();
-                for ancestor in ancestors {
-                    self.emit_event(ancestor, event_types::DRAG);
-                    events.push((ancestor, event_types::DRAG));
+                for stable_ancestor in ancestors {
+                    if let Some(ancestor) = tree.layout_id(stable_ancestor) {
+                        self.emit_event(ancestor, event_types::DRAG);
+                        events.push((ancestor, event_types::DRAG));
+                    }
                 }
             }
         }
@@ -624,9 +923,16 @@ impl EventRouter {
 
         // Hit test for the topmost element
         if let Some(hit) = self.hit_test(tree, x, y) {
-            self.pressed_target = Some(hit.node);
-            // Store ancestors for bubbling on release
-            self.pressed_ancestors = hit.ancestors.clone();
+            // Record the press as a stable id so a rebuild between
+            // mouse-down and mouse-up (or a mid-drag rebuild) doesn't
+            // strand the release on a recycled slotmap key.
+            self.pressed_target = tree.stable_id(hit.node);
+            // Store ancestors for bubbling on release, also stable.
+            self.pressed_ancestors = hit
+                .ancestors
+                .iter()
+                .filter_map(|&n| tree.stable_id(n))
+                .collect();
             // Store local coordinates and bounds for event handlers
             self.last_hit_local_x = hit.local_x;
             self.last_hit_local_y = hit.local_y;
@@ -653,7 +959,6 @@ impl EventRouter {
                     x,
                     y,
                     button: RecorderMouseButton::from(button),
-                    modifiers: recorder_bridge::RecorderModifiers::default(),
                     target_element: Some(format!("{:?}", hit.node)),
                 });
             }
@@ -690,7 +995,7 @@ impl EventRouter {
     /// (ensures proper button release even if cursor moved).
     pub fn on_mouse_up(
         &mut self,
-        _tree: &RenderTree,
+        tree: &RenderTree,
         x: f32,
         y: f32,
         button: MouseButton,
@@ -704,59 +1009,76 @@ impl EventRouter {
         let was_dragging = self.is_dragging;
 
         tracing::debug!(
-            "on_mouse_up: pressed_target={:?}, was_dragging={}, pos=({:.1}, {:.1})",
+            "on_mouse_up: pressed_target_stable={:?}, was_dragging={}, pos=({:.1}, {:.1})",
             self.pressed_target,
             was_dragging,
             x,
             y
         );
 
-        // Release goes to the element where press started
-        if let Some(target) = self.pressed_target.take() {
-            // If we were dragging, emit DRAG_END before POINTER_UP
-            if was_dragging {
-                self.emit_event(target, event_types::DRAG_END);
-                events.push((target, event_types::DRAG_END));
-            }
+        // Release goes to the element where press started. Resolve
+        // the stable id to the live layout id for this frame — if
+        // the press target's subtree was removed by an intervening
+        // rebuild, `layout_id` returns None and we silently drop
+        // the release (the unmount-time UNMOUNT event was already
+        // emitted by `on_unmount`).
+        if let Some(stable_target) = self.pressed_target.take() {
+            let target = tree.layout_id(stable_target);
 
-            // Record mouse up event (only if recording is enabled)
-            #[cfg(feature = "recorder")]
-            if recorder_bridge::is_recording() {
-                recorder_bridge::record_event(RecorderEventData::MouseUp {
-                    x,
-                    y,
-                    button: RecorderMouseButton::from(button),
-                    modifiers: recorder_bridge::RecorderModifiers::default(),
-                    target_element: Some(format!("{:?}", target)),
-                });
+            if let Some(target) = target {
+                // If we were dragging, emit DRAG_END before POINTER_UP
+                if was_dragging {
+                    self.emit_event(target, event_types::DRAG_END);
+                    events.push((target, event_types::DRAG_END));
+                }
 
-                // If not dragging, also record a click event
-                if !was_dragging {
-                    recorder_bridge::record_event(RecorderEventData::Click {
+                // Record mouse up event (only if recording is enabled)
+                #[cfg(feature = "recorder")]
+                if recorder_bridge::is_recording() {
+                    recorder_bridge::record_event(RecorderEventData::MouseUp {
                         x,
                         y,
                         button: RecorderMouseButton::from(button),
-                        modifiers: recorder_bridge::RecorderModifiers::default(),
                         target_element: Some(format!("{:?}", target)),
                     });
+
+                    // If not dragging, also record a click event
+                    if !was_dragging {
+                        recorder_bridge::record_event(RecorderEventData::Click {
+                            x,
+                            y,
+                            button: RecorderMouseButton::from(button),
+                            target_element: Some(format!("{:?}", target)),
+                        });
+                    }
                 }
+
+                // Emit to the target first
+                tracing::debug!("on_mouse_up: emitting POINTER_UP to target {:?}", target);
+                self.emit_event(target, event_types::POINTER_UP);
+                events.push((target, event_types::POINTER_UP));
+            } else {
+                tracing::debug!(
+                    "on_mouse_up: press target {:?} no longer in tree (removed mid-press) — dropping release",
+                    stable_target
+                );
             }
 
-            // Emit to the target first
-            tracing::debug!("on_mouse_up: emitting POINTER_UP to target {:?}", target);
-            self.emit_event(target, event_types::POINTER_UP);
-            events.push((target, event_types::POINTER_UP));
-
-            // Bubble through ancestors (stored from on_mouse_down)
-            // ancestors is root to leaf, so reverse and skip the target node (last element)
+            // Bubble through ancestors (stored from on_mouse_down).
+            // Each ancestor is resolved independently — some may
+            // have survived the rebuild even if the press target
+            // didn't, so we still want to deliver POINTER_UP to
+            // those.
             let ancestors = std::mem::take(&mut self.pressed_ancestors);
-            for &ancestor in ancestors.iter().rev().skip(1) {
-                if was_dragging {
-                    self.emit_event(ancestor, event_types::DRAG_END);
-                    events.push((ancestor, event_types::DRAG_END));
+            for &stable_ancestor in ancestors.iter().rev().skip(1) {
+                if let Some(ancestor) = tree.layout_id(stable_ancestor) {
+                    if was_dragging {
+                        self.emit_event(ancestor, event_types::DRAG_END);
+                        events.push((ancestor, event_types::DRAG_END));
+                    }
+                    self.emit_event(ancestor, event_types::POINTER_UP);
+                    events.push((ancestor, event_types::POINTER_UP));
                 }
-                self.emit_event(ancestor, event_types::POINTER_UP);
-                events.push((ancestor, event_types::POINTER_UP));
             }
         } else {
             self.pressed_ancestors.clear();
@@ -774,35 +1096,46 @@ impl EventRouter {
     ///
     /// Emits POINTER_LEAVE to all currently hovered elements.
     /// Also emits POINTER_UP to the pressed target if there is one (mouse left while dragging).
-    pub fn on_mouse_leave(&mut self) -> Vec<(LayoutNodeId, u32)> {
+    pub fn on_mouse_leave(&mut self, tree: &RenderTree) -> Vec<(LayoutNodeId, u32)> {
         let mut events = Vec::new();
 
-        // If we were pressing/dragging, emit POINTER_UP to clean up state
-        // This handles the case where mouse leaves the window while dragging
-        if let Some(target) = self.pressed_target.take() {
-            tracing::debug!(
-                "on_mouse_leave: emitting POINTER_UP to pressed_target {:?} (mouse left window while pressing)",
-                target
-            );
+        // If we were pressing/dragging, emit POINTER_UP to clean up
+        // state. `pressed_target` is a stable id; resolve to the
+        // current frame's layout id (None if the target's subtree
+        // was removed by a rebuild — we still clear the press).
+        if let Some(stable_target) = self.pressed_target.take() {
+            if let Some(target) = tree.layout_id(stable_target) {
+                tracing::debug!(
+                    "on_mouse_leave: emitting POINTER_UP to pressed_target {:?} (mouse left window while pressing)",
+                    target
+                );
 
-            // If we were dragging, emit DRAG_END before POINTER_UP
-            if self.is_dragging {
-                self.emit_event(target, event_types::DRAG_END);
-                events.push((target, event_types::DRAG_END));
+                // If we were dragging, emit DRAG_END before POINTER_UP
+                if self.is_dragging {
+                    self.emit_event(target, event_types::DRAG_END);
+                    events.push((target, event_types::DRAG_END));
+                }
+
+                self.emit_event(target, event_types::POINTER_UP);
+                events.push((target, event_types::POINTER_UP));
+            } else {
+                tracing::debug!(
+                    "on_mouse_leave: press target {:?} no longer in tree — dropping POINTER_UP",
+                    stable_target
+                );
             }
 
-            self.emit_event(target, event_types::POINTER_UP);
-            events.push((target, event_types::POINTER_UP));
-
-            // Bubble through ancestors
+            // Bubble through ancestors — resolve each independently
             let ancestors = std::mem::take(&mut self.pressed_ancestors);
-            for &ancestor in ancestors.iter().rev().skip(1) {
-                if self.is_dragging {
-                    self.emit_event(ancestor, event_types::DRAG_END);
-                    events.push((ancestor, event_types::DRAG_END));
+            for &stable_ancestor in ancestors.iter().rev().skip(1) {
+                if let Some(ancestor) = tree.layout_id(stable_ancestor) {
+                    if self.is_dragging {
+                        self.emit_event(ancestor, event_types::DRAG_END);
+                        events.push((ancestor, event_types::DRAG_END));
+                    }
+                    self.emit_event(ancestor, event_types::POINTER_UP);
+                    events.push((ancestor, event_types::POINTER_UP));
                 }
-                self.emit_event(ancestor, event_types::POINTER_UP);
-                events.push((ancestor, event_types::POINTER_UP));
             }
 
             // Reset drag state
@@ -830,47 +1163,12 @@ impl EventRouter {
     ///
     /// Emits KEY_DOWN to the focused element.
     pub fn on_key_down(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
-        self.on_key_down_with_modifiers(
-            key_code,
-            self.modifiers.shift,
-            self.modifiers.ctrl,
-            self.modifiers.alt,
-            self.modifiers.meta,
-        )
-    }
-
-    /// Handle key press with explicit modifier state.
-    ///
-    /// This updates router-level modifier tracking so recorder mouse events can
-    /// include current modifier keys.
-    pub fn on_key_down_with_modifiers(
-        &mut self,
-        key_code: u32,
-        shift: bool,
-        ctrl: bool,
-        alt: bool,
-        meta: bool,
-    ) -> Option<(LayoutNodeId, u32)> {
-        #[cfg(not(feature = "recorder"))]
-        let _ = key_code;
-
-        self.modifiers = InputModifiers {
-            shift,
-            ctrl,
-            alt,
-            meta,
-        };
-
-        let is_repeat = key_code != 0 && !self.pressed_keys.insert(key_code);
-
         if let Some(focused) = self.focused {
             // Record key down event (only if recording is enabled)
             #[cfg(feature = "recorder")]
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyDown {
                     key_code,
-                    modifiers: self.recorder_modifiers(),
-                    is_repeat,
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -886,44 +1184,12 @@ impl EventRouter {
     ///
     /// Emits KEY_UP to the focused element.
     pub fn on_key_up(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
-        self.on_key_up_with_modifiers(
-            key_code,
-            self.modifiers.shift,
-            self.modifiers.ctrl,
-            self.modifiers.alt,
-            self.modifiers.meta,
-        )
-    }
-
-    /// Handle key release with explicit modifier state.
-    pub fn on_key_up_with_modifiers(
-        &mut self,
-        key_code: u32,
-        shift: bool,
-        ctrl: bool,
-        alt: bool,
-        meta: bool,
-    ) -> Option<(LayoutNodeId, u32)> {
-        #[cfg(not(feature = "recorder"))]
-        let _ = key_code;
-
-        self.modifiers = InputModifiers {
-            shift,
-            ctrl,
-            alt,
-            meta,
-        };
-        if key_code != 0 {
-            self.pressed_keys.remove(&key_code);
-        }
-
         if let Some(focused) = self.focused {
             // Record key up event (only if recording is enabled)
             #[cfg(feature = "recorder")]
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyUp {
                     key_code,
-                    modifiers: self.recorder_modifiers(),
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -940,9 +1206,6 @@ impl EventRouter {
     /// Emits TEXT_INPUT to the focused element.
     /// Returns the focused node if there is one.
     pub fn on_text_input(&mut self, ch: char) -> Option<(LayoutNodeId, u32)> {
-        #[cfg(not(feature = "recorder"))]
-        let _ = ch;
-
         if let Some(focused) = self.focused {
             // Record text input event (only if recording is enabled)
             #[cfg(feature = "recorder")]
@@ -1046,11 +1309,6 @@ impl EventRouter {
     /// When the window gains focus, emits WINDOW_FOCUS to the focused element.
     /// When the window loses focus, emits WINDOW_BLUR to the focused element.
     pub fn on_window_focus(&mut self, focused: bool) -> Option<(LayoutNodeId, u32)> {
-        if !focused {
-            self.pressed_keys.clear();
-            self.modifiers = InputModifiers::default();
-        }
-
         if let Some(focus_target) = self.focused {
             let event_type = if focused {
                 event_types::WINDOW_FOCUS
@@ -1119,13 +1377,16 @@ impl EventRouter {
     /// Should be called before an element is removed from the render tree.
     /// Emits UNMOUNT to the element. Also clears any state associated with
     /// the element (hover, focus, pressed target).
-    pub fn on_unmount(&mut self, node: LayoutNodeId) {
+    pub fn on_unmount(&mut self, tree: &RenderTree, node: LayoutNodeId) {
         self.emit_event(node, event_types::UNMOUNT);
 
         // Clear any state associated with this node
         self.hovered.remove(&node);
-        if self.pressed_target == Some(node) {
-            self.pressed_target = None;
+        if let Some(stable) = tree.stable_id(node) {
+            if self.pressed_target == Some(stable) {
+                self.pressed_target = None;
+                self.pressed_ancestors.clear();
+            }
         }
         if self.focused == Some(node) {
             self.focused = None;
@@ -1162,7 +1423,7 @@ impl EventRouter {
 
         // Nodes in old but not new -> unmounted
         for node in old_nodes.difference(&new_nodes) {
-            self.on_unmount(*node);
+            self.on_unmount(new_tree, *node);
             unmounted.push(*node);
         }
 
@@ -1173,23 +1434,14 @@ impl EventRouter {
     fn collect_all_nodes(&self, tree: &RenderTree) -> HashSet<LayoutNodeId> {
         let mut nodes = HashSet::new();
         if let Some(root) = tree.root() {
-            Self::collect_nodes_recursive(tree, root, &mut nodes);
+            self.collect_nodes_recursive(tree, root, &mut nodes);
         }
         nodes
     }
 
-    #[cfg(feature = "recorder")]
-    fn recorder_modifiers(&self) -> RecorderModifiers {
-        RecorderModifiers {
-            shift: self.modifiers.shift,
-            ctrl: self.modifiers.ctrl,
-            alt: self.modifiers.alt,
-            meta: self.modifiers.meta,
-        }
-    }
-
     /// Recursively collect node IDs
     fn collect_nodes_recursive(
+        &self,
         tree: &RenderTree,
         node: LayoutNodeId,
         nodes: &mut HashSet<LayoutNodeId>,
@@ -1197,7 +1449,7 @@ impl EventRouter {
         nodes.insert(node);
         let children = tree.layout().children(node);
         for child in children {
-            Self::collect_nodes_recursive(tree, child, nodes);
+            self.collect_nodes_recursive(tree, child, nodes);
         }
     }
 
@@ -1211,15 +1463,18 @@ impl EventRouter {
     /// that contains the point.
     pub fn hit_test(&self, tree: &RenderTree, x: f32, y: f32) -> Option<HitTestResult> {
         let root = tree.root()?;
+        let mut ancestors = Vec::new();
+        let mut ancestor_bounds = std::collections::HashMap::new();
         self.hit_test_node(
             tree,
             root,
             x,
             y,
             (0.0, 0.0),
-            Vec::new(),
-            std::collections::HashMap::new(),
+            &mut ancestors,
+            &mut ancestor_bounds,
             (0.0, 0.0),
+            None,
         )
     }
 
@@ -1239,6 +1494,7 @@ impl EventRouter {
                 std::collections::HashMap::new(),
                 &mut results,
                 (0.0, 0.0),
+                None,
             );
         }
         results
@@ -1253,9 +1509,10 @@ impl EventRouter {
         x: f32,
         y: f32,
         parent_offset: (f32, f32),
-        mut ancestors: Vec<LayoutNodeId>,
-        mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
+        ancestors: &mut Vec<LayoutNodeId>,
+        ancestor_bounds: &mut std::collections::HashMap<u64, (f32, f32, f32, f32)>,
         cumulative_scroll: (f32, f32),
+        active_cull_viewport: Option<(f32, f32, f32, f32)>,
     ) -> Option<HitTestResult> {
         let bounds = tree.layout().get_bounds(node, parent_offset)?;
 
@@ -1296,9 +1553,10 @@ impl EventRouter {
         );
 
         ancestors.push(node);
+        let bounds_key = node.to_raw();
         // Store this node's bounds for event bubbling
         ancestor_bounds.insert(
-            node.to_raw(),
+            bounds_key,
             (bounds.x, bounds.y, bounds.width, bounds.height),
         );
 
@@ -1315,6 +1573,11 @@ impl EventRouter {
                 cumulative_scroll.0 + scroll_offset.0,
                 cumulative_scroll.1 + scroll_offset.1,
             )
+        };
+        let cull_viewport = if tree.is_viewport_cull_scroll(node) {
+            Some((bounds.x, bounds.y, bounds.width, bounds.height))
+        } else {
+            active_cull_viewport
         };
 
         // Check children in reverse order (last child is on top).
@@ -1365,15 +1628,34 @@ impl EventRouter {
                 child_cumulative = new_cumulative_scroll;
             }
 
+            // Match the paint path for `scroll().viewport_cull(true)`: once
+            // a culling scroll is active, ordinary off-viewport child subtrees
+            // are neither painted nor hit-testable. Visible nested scrolls are
+            // still walked and remain the first scroll target in the hit chain.
+            if let Some((cx, cy, cw, ch)) = cull_viewport {
+                if !child_is_fixed && !child_is_sticky && !child_is_fg {
+                    if let Some(cb) = tree.layout().get_bounds(child, child_offset) {
+                        let intersects = cb.x + cb.width > cx
+                            && cb.x < cx + cw
+                            && cb.y + cb.height > cy
+                            && cb.y < cy + ch;
+                        if !intersects {
+                            continue;
+                        }
+                    }
+                }
+            }
+
             if let Some(mut result) = self.hit_test_node(
                 tree,
                 child,
                 x,
                 y,
                 child_offset,
-                ancestors.clone(),
-                ancestor_bounds.clone(),
+                ancestors,
+                ancestor_bounds,
                 child_cumulative,
+                cull_viewport,
             ) {
                 // Mark result as foreground if this child or the result itself is foreground
                 if child_is_fg {
@@ -1407,44 +1689,64 @@ impl EventRouter {
             }
         }
 
-        if let Some(result) = best_hit {
-            return Some(result);
-        }
+        let result = if best_hit.is_some() {
+            best_hit
+        } else if !in_bounds {
+            // If the point was outside this node's own bounds, don't return
+            // this node as a target (only its overflow children could match).
+            None
+        } else {
+            // No child hit - check if this node has pointer_events_none
+            // If so, return None to let the hit fall through to siblings
+            let pointer_events_none = tree
+                .get_render_node(node)
+                .map(|n| n.props.pointer_events_none)
+                .unwrap_or(false);
 
-        // If the point was outside this node's own bounds, don't return
-        // this node as a target (only its overflow children could match).
-        if !in_bounds {
-            return None;
-        }
+            if pointer_events_none {
+                tracing::trace!(
+                    "hit_test_node: node={:?} has pointer_events_none, passing through",
+                    node
+                );
+                None
+            } else {
+                // This node is the target. Clone the traversal state only
+                // once, when we actually have a hit to return; the old code
+                // cloned it for every sibling probe during mouse movement.
+                // Capture direct children's absolute bounds. By
+                // construction (this branch fires only when no
+                // child's recursion returned `Some`), none of them
+                // contained the cursor at hit time. The router uses
+                // these for the cursor-inside-last-leaf short-circuit
+                // — a wiggle that stays inside this node AND outside
+                // every child bound can't have changed the hover
+                // set, so the entire dispatch pipeline is safe to
+                // skip.
+                let mut leaf_children_bounds = Vec::new();
+                for child in tree.layout().children(node) {
+                    if let Some(cb) = tree.layout().get_bounds(child, base_child_offset) {
+                        leaf_children_bounds.push((cb.x, cb.y, cb.width, cb.height));
+                    }
+                }
+                Some(HitTestResult {
+                    node,
+                    local_x: x - bounds.x,
+                    local_y: y - bounds.y,
+                    ancestors: ancestors.clone(),
+                    bounds_x: bounds.x,
+                    bounds_y: bounds.y,
+                    bounds_width: bounds.width,
+                    bounds_height: bounds.height,
+                    ancestor_bounds: ancestor_bounds.clone(),
+                    is_foreground: false,
+                    leaf_children_bounds,
+                })
+            }
+        };
 
-        // No child hit - check if this node has pointer_events_none
-        // If so, return None to let the hit fall through to siblings
-        let pointer_events_none = tree
-            .get_render_node(node)
-            .map(|n| n.props.pointer_events_none)
-            .unwrap_or(false);
-
-        if pointer_events_none {
-            tracing::trace!(
-                "hit_test_node: node={:?} has pointer_events_none, passing through",
-                node
-            );
-            return None;
-        }
-
-        // This node is the target
-        Some(HitTestResult {
-            node,
-            local_x: x - bounds.x,
-            local_y: y - bounds.y,
-            ancestors,
-            bounds_x: bounds.x,
-            bounds_y: bounds.y,
-            bounds_width: bounds.width,
-            bounds_height: bounds.height,
-            ancestor_bounds,
-            is_foreground: false,
-        })
+        ancestor_bounds.remove(&bounds_key);
+        ancestors.pop();
+        result
     }
 
     /// Recursive hit test collecting all hits
@@ -1460,6 +1762,7 @@ impl EventRouter {
         mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
         results: &mut Vec<HitTestResult>,
         cumulative_scroll: (f32, f32),
+        active_cull_viewport: Option<(f32, f32, f32, f32)>,
     ) {
         let Some(bounds) = tree.layout().get_bounds(node, parent_offset) else {
             return;
@@ -1507,6 +1810,10 @@ impl EventRouter {
                 bounds_height: bounds.height,
                 ancestor_bounds: ancestor_bounds.clone(),
                 is_foreground: false,
+                // `hit_test_all` collects every container in the
+                // chain, not just the leaf — short-circuit lives on
+                // the single-hit path, so the empty Vec is fine.
+                leaf_children_bounds: Vec::new(),
             });
         }
 
@@ -1523,6 +1830,11 @@ impl EventRouter {
                 cumulative_scroll.0 + scroll_offset.0,
                 cumulative_scroll.1 + scroll_offset.1,
             )
+        };
+        let cull_viewport = if tree.is_viewport_cull_scroll(node) {
+            Some((bounds.x, bounds.y, bounds.width, bounds.height))
+        } else {
+            active_cull_viewport
         };
 
         // Check children
@@ -1555,6 +1867,23 @@ impl EventRouter {
                 child_cumulative = new_cumulative_scroll;
             }
 
+            if let Some((cx, cy, cw, ch)) = cull_viewport {
+                let child_is_fg = child_render
+                    .map(|n| n.props.layer == crate::element::RenderLayer::Foreground)
+                    .unwrap_or(false);
+                if !child_is_fixed && !child_is_sticky && !child_is_fg {
+                    if let Some(cb) = tree.layout().get_bounds(child, child_offset) {
+                        let intersects = cb.x + cb.width > cx
+                            && cb.x < cx + cw
+                            && cb.y + cb.height > cy
+                            && cb.y < cy + ch;
+                        if !intersects {
+                            continue;
+                        }
+                    }
+                }
+            }
+
             self.hit_test_node_all(
                 tree,
                 child,
@@ -1565,6 +1894,7 @@ impl EventRouter {
                 ancestor_bounds.clone(),
                 results,
                 child_cumulative,
+                cull_viewport,
             );
         }
     }
@@ -1630,7 +1960,9 @@ impl EventRouter {
             // Block the hit
             tracing::debug!(
                 "hit_test_with_occlusion: blocking hit on {:?} - occluded by overlay at ({:.1}, {:.1})",
-                hit.node, x, y
+                hit.node,
+                x,
+                y
             );
             return None;
         }
@@ -1698,7 +2030,9 @@ impl EventRouter {
             if result.is_empty() {
                 tracing::debug!(
                     "hit_test_with_occlusion: in overlay bounds at ({:.1}, {:.1}), overlay_id={:?}, but no hits pass filter",
-                    x, y, overlay_id
+                    x,
+                    y,
+                    overlay_id
                 );
             }
             result
@@ -1755,6 +2089,53 @@ mod tests {
     }
 
     #[test]
+    fn test_hit_test_nested_scroll_after_outer_scroll_offset() {
+        let ui = scroll()
+            .id("outer")
+            .w(200.0)
+            .h(100.0)
+            .viewport_cull(true)
+            .child(
+                div()
+                    .w_full()
+                    .flex_col()
+                    .child(div().id("spacer").w_full().h(120.0))
+                    .child(
+                        scroll()
+                            .id("inner")
+                            .w_full()
+                            .h(80.0)
+                            .child(div().id("inner-content").w_full().h(160.0)),
+                    ),
+            );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 100.0);
+
+        let outer = tree.query_by_id("outer").expect("outer scroll");
+        let inner = tree.query_by_id("inner").expect("inner scroll");
+        tree.dispatch_scroll_chain(outer, &[outer], 50.0, 50.0, 0.0, -120.0);
+
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 50.0, 40.0)
+            .expect("visible inner scroll should be hit");
+
+        assert!(hit.ancestors.contains(&inner));
+
+        let first_scroll = std::iter::once(hit.node)
+            .chain(
+                hit.ancestors
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|ancestor| *ancestor != hit.node),
+            )
+            .find(|node| tree.is_scroll_container(*node));
+        assert_eq!(first_scroll, Some(inner));
+    }
+
+    #[test]
     fn test_hover_enter_leave() {
         let ui = div().w(400.0).h(300.0).child(div().w(100.0).h(100.0));
 
@@ -1774,9 +2155,11 @@ mod tests {
 
         // Should have POINTER_ENTER events
         let captured = events.borrow();
-        assert!(captured
-            .iter()
-            .any(|(_, e)| *e == event_types::POINTER_ENTER));
+        assert!(
+            captured
+                .iter()
+                .any(|(_, e)| *e == event_types::POINTER_ENTER)
+        );
     }
 
     #[test]
@@ -1803,6 +2186,106 @@ mod tests {
         let captured = events.borrow();
         assert!(captured.contains(&event_types::POINTER_DOWN));
         assert!(captured.contains(&event_types::POINTER_UP));
+    }
+
+    /// Regression: pressed_target survives a tree rebuild between
+    /// POINTER_DOWN and POINTER_UP. Pre-fix `pressed_target` was a
+    /// `LayoutNodeId` — the slotmap version bumped during the rebuild,
+    /// the cached id resolved to None in `dispatch_event_full`, and the
+    /// release event was silently dropped. Symptom on the user side
+    /// was `on_click` closures never firing on `cn::button`,
+    /// `cn::sidebar`, and the cn_demo Reset Animation button after the
+    /// POINTER_DOWN handler ran any state mutation. The fix switched
+    /// `pressed_target` to `StableNodeId`, which survives the rebuild
+    /// and resolves to the new LayoutNodeId at release time.
+    ///
+    /// Setup: root → middle → leaf. Press lands on `leaf` (the
+    /// innermost hit). Queue a rebuild on `middle` so its children
+    /// (including `leaf`) get fresh LayoutNodeIds. Then release —
+    /// POINTER_UP must still reach the press target's *new* id, via
+    /// stable_id resolution.
+    #[test]
+    fn pressed_target_survives_rebuild_between_down_and_up() {
+        // Serialize against other tests that touch the global
+        // PENDING_SUBTREE_REBUILDS queue (see
+        // `PENDING_QUEUE_TEST_LOCK` docs). Parallel slotmap
+        // `LayoutNodeId` collisions otherwise let an unrelated
+        // test's rebuild supersede ours, and
+        // `process_pending_subtree_rebuilds` returns false.
+        let _guard = crate::stateful::PENDING_QUEUE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Clear any leftover pending rebuilds from prior tests so we
+        // only process the one this test queues.
+        let _ = crate::stateful::take_pending_subtree_rebuilds();
+
+        let ui = div()
+            .w(400.0)
+            .h(300.0)
+            .child(div().w(200.0).h(200.0).child(div().w(100.0).h(100.0)));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 300.0);
+
+        let middle_id = tree.layout_tree.children(tree.root().unwrap())[0];
+        let leaf_id_before = tree.layout_tree.children(middle_id)[0];
+        let leaf_stable = tree.stable_id(leaf_id_before).unwrap();
+
+        let events: Rc<RefCell<Vec<(LayoutNodeId, u32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let events_clone = Rc::clone(&events);
+
+        let mut router = EventRouter::new();
+        router.set_event_callback(move |node, event| {
+            events_clone.borrow_mut().push((node, event));
+        });
+
+        // Press on the leaf (innermost hit at 50,50).
+        router.on_mouse_down(&tree, 50.0, 50.0, MouseButton::Left);
+        assert_eq!(router.pressed_target_stable(), Some(leaf_stable));
+
+        // Rebuild `middle`'s subtree. `process_pending_subtree_rebuilds`
+        // removes and re-creates middle's children, so the slotmap
+        // version bumps and `leaf_id_before` is now stale. Note: we
+        // queue against `middle`, not the leaf — the rebuild root
+        // itself keeps its id; only its descendants get re-keyed.
+        crate::stateful::queue_subtree_rebuild(
+            middle_id,
+            div().w(200.0).h(200.0).child(div().w(100.0).h(100.0)),
+        );
+        assert!(tree.process_pending_subtree_rebuilds());
+        assert!(
+            tree.stable_id(leaf_id_before).is_none(),
+            "old leaf LayoutNodeId should be stale after rebuild — if this fails, the slotmap key didn't bump and the regression test no longer exercises the staleness path"
+        );
+
+        // The press target's stable id should still resolve, to a new
+        // LayoutNodeId. That's what `dispatch_event_full` does
+        // internally on POINTER_UP.
+        let leaf_id_after = tree
+            .layout_id(leaf_stable)
+            .expect("press target's stable id must survive the rebuild");
+        assert_ne!(
+            leaf_id_after, leaf_id_before,
+            "post-rebuild LayoutNodeId must differ from pre-rebuild id"
+        );
+
+        // Release — POINTER_UP must reach the new layout id, not the stale one.
+        router.on_mouse_up(&tree, 55.0, 55.0, MouseButton::Left);
+
+        let captured = events.borrow();
+        let up_events: Vec<_> = captured
+            .iter()
+            .filter(|(_, ty)| *ty == event_types::POINTER_UP)
+            .collect();
+        assert!(
+            !up_events.is_empty(),
+            "POINTER_UP must fire across the rebuild"
+        );
+        assert!(
+            up_events.iter().any(|(n, _)| *n == leaf_id_after),
+            "POINTER_UP must reach the press target's post-rebuild LayoutNodeId, not the stale one"
+        );
+
+        let _ = crate::stateful::take_pending_subtree_rebuilds();
     }
 
     #[test]
@@ -1833,9 +2316,11 @@ mod tests {
         // Check FOCUS was emitted
         {
             let captured = events.borrow();
-            assert!(captured
-                .iter()
-                .any(|(n, e)| *n == first_focused && *e == event_types::FOCUS));
+            assert!(
+                captured
+                    .iter()
+                    .any(|(n, e)| *n == first_focused && *e == event_types::FOCUS)
+            );
         }
 
         // Click second child - should blur first and focus second
@@ -1844,9 +2329,11 @@ mod tests {
         {
             let captured = events.borrow();
             // Should have BLUR for first element
-            assert!(captured
-                .iter()
-                .any(|(n, e)| *n == first_focused && *e == event_types::BLUR));
+            assert!(
+                captured
+                    .iter()
+                    .any(|(n, e)| *n == first_focused && *e == event_types::BLUR)
+            );
         }
     }
 
@@ -1923,7 +2410,7 @@ mod tests {
         assert!(focused.is_some());
 
         // Unmount the focused node
-        router.on_unmount(focused.unwrap());
+        router.on_unmount(&tree, focused.unwrap());
 
         // Focus should be cleared
         assert!(router.focused().is_none());
@@ -1963,235 +2450,5 @@ mod tests {
             let captured = events.borrow();
             assert!(captured.contains(&event_types::WINDOW_FOCUS));
         }
-    }
-
-    #[test]
-    fn collect_events_restores_previous_callback_after_panic() {
-        let ui = div().w(400.0).h(300.0).child(div().w(100.0).h(100.0));
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(400.0, 300.0);
-
-        let events: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
-        let events_clone = Rc::clone(&events);
-
-        let mut router = EventRouter::new();
-        router.set_event_callback(move |_node, event| {
-            events_clone.borrow_mut().push(event);
-        });
-
-        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = router.collect_events(|_| panic!("boom"));
-        }));
-        assert!(panic_result.is_err());
-        assert!(router.event_callback.is_some());
-
-        let node = router.hit_test(&tree, 50.0, 50.0).unwrap().node;
-        router.emit_event(node, event_types::FOCUS);
-
-        assert_eq!(events.borrow().as_slice(), &[event_types::FOCUS]);
-    }
-
-    #[test]
-    fn test_hit_test_respects_scroll_physics_offset() {
-        // Regression test: after scrolling a container, hit testing should target the
-        // visually-present child, not the pre-scroll position.
-        let item_h = 40.0;
-        let item_count = 20usize;
-
-        let mut list = div().flex_col().w_full();
-        for i in 0..item_count {
-            list = list.child(
-                div()
-                    .id(format!("item-{i}"))
-                    .w_full()
-                    .h(item_h)
-                    .flex_shrink_0(),
-            );
-        }
-
-        let ui = div().w(200.0).h(200.0).child(
-            div()
-                .id("scroll")
-                .w_full()
-                .h_full()
-                .overflow_y_scroll()
-                .child(list),
-        );
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(200.0, 200.0);
-
-        // Scroll down by 10 items (visual content moves up).
-        let scroll_id = tree
-            .element_registry()
-            .get("scroll")
-            .expect("scroll container id registered");
-        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
-
-        let router = EventRouter::new();
-        let hit = router
-            .hit_test(&tree, 10.0, item_h / 2.0)
-            .expect("expected a hit");
-
-        let hit_id = tree
-            .element_registry()
-            .get_id(hit.node)
-            .expect("hit node should have an id");
-        assert_eq!(hit_id, "item-10");
-    }
-
-    #[test]
-    fn test_hit_test_scroll_container_not_occluded_by_stack_absolute_children() {
-        // Regression test: Stack uses absolutely positioned children. Those absolute layers
-        // must still be positioned within the Stack's containing block (not the window/root),
-        // otherwise they can erroneously occlude sibling UI like sidebars.
-        let item_h = 40.0;
-        let item_count = 30usize;
-
-        let mut list = div().flex_col().w_full();
-        for i in 0..item_count {
-            list = list.child(
-                div()
-                    .id(format!("item-{i}"))
-                    .w_full()
-                    .h(item_h)
-                    .flex_shrink_0(),
-            );
-        }
-
-        let sidebar = div().w(280.0).h_full().child(
-            div()
-                .id("scroll")
-                .w_full()
-                .h_full()
-                .overflow_y_scroll()
-                .child(list),
-        );
-
-        // Main panel uses Stack (absolute children). This should not affect hit-testing
-        // inside the sidebar column.
-        let main = div().flex_1().h_full().child(
-            stack()
-                .w_full()
-                .h_full()
-                .child(div().id("main-layer").w_full().h_full()),
-        );
-
-        let ui = div()
-            .w(1200.0)
-            .h(420.0)
-            .flex_row()
-            .child(sidebar)
-            .child(main);
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(1200.0, 420.0);
-
-        // Scroll down by 12 items (visual content moves up).
-        let scroll_id = tree
-            .element_registry()
-            .get("scroll")
-            .expect("scroll container id registered");
-        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 12.0));
-
-        // Click within sidebar column; should hit item-12 (top of the list viewport).
-        let router = EventRouter::new();
-        let hit = router
-            .hit_test(&tree, 10.0, item_h / 2.0)
-            .expect("expected a hit");
-
-        let hit_id = tree
-            .element_registry()
-            .get_id(hit.node)
-            .expect("hit node should have an id");
-        assert_eq!(hit_id, "item-12");
-    }
-
-    #[test]
-    fn test_click_after_scroll_targets_visually_present_item() {
-        use std::sync::{Arc, Mutex};
-
-        let item_h = 40.0;
-        let item_count = 20usize;
-
-        let clicks: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let mut list = div().flex_col().w_full();
-        for i in 0..item_count {
-            let clicks = Arc::clone(&clicks);
-            list = list.child(
-                Stateful::new(ButtonState::Idle)
-                    .id(&format!("item-{i}"))
-                    .w_full()
-                    .h(item_h)
-                    .flex_shrink_0()
-                    .on_click(move |_| {
-                        clicks.lock().unwrap().push(i);
-                    }),
-            );
-        }
-
-        let ui = div().w(200.0).h(200.0).child(
-            div()
-                .id("scroll")
-                .w_full()
-                .h_full()
-                .overflow_y_scroll()
-                .child(list),
-        );
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(200.0, 200.0);
-
-        // Scroll down by 10 items (visual content moves up).
-        let scroll_id = tree
-            .element_registry()
-            .get("scroll")
-            .expect("scroll container id registered");
-        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
-
-        // Simulate a click in the top-left of the scroll viewport.
-        let (x, y) = (10.0, item_h / 2.0);
-        let mut router = EventRouter::new();
-
-        for (node, event_type) in router.on_mouse_down(&tree, x, y, MouseButton::Left) {
-            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
-            tree.dispatch_event_full(
-                node,
-                event_type,
-                x,
-                y,
-                x - bx,
-                y - by,
-                bx,
-                by,
-                bw,
-                bh,
-                0.0,
-                0.0,
-                1.0,
-            );
-        }
-
-        for (node, event_type) in router.on_mouse_up(&tree, x, y, MouseButton::Left) {
-            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
-            tree.dispatch_event_full(
-                node,
-                event_type,
-                x,
-                y,
-                x - bx,
-                y - by,
-                bx,
-                by,
-                bw,
-                bh,
-                0.0,
-                0.0,
-                1.0,
-            );
-        }
-
-        assert_eq!(clicks.lock().unwrap().as_slice(), &[10]);
     }
 }

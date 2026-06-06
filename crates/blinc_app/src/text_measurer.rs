@@ -3,8 +3,8 @@
 //! Provides accurate text measurement for layout by using the same font
 //! as the renderer.
 
-use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
+use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
 use std::sync::{Arc, Mutex};
 
@@ -151,7 +151,7 @@ impl TextMeasurer for FontTextMeasurer {
 
         // Fast path: use cached fonts only (never load during measurement)
         // Use weight and italic from options to get the correct font variant
-        let mut registry = self.font_registry.lock().unwrap();
+        let registry = self.font_registry.lock().unwrap();
         let font = match registry.get_for_render_with_style(
             options.font_name.as_deref(),
             generic_font,

@@ -11,7 +11,7 @@ use crate::keyframe::{Keyframe, KeyframeAnimation};
 use crate::spring::{Spring, SpringConfig};
 use crate::timeline::Timeline;
 use blinc_core::AnimationAccess;
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
@@ -141,6 +141,95 @@ struct SchedulerInner {
     tick_callbacks: SlotMap<TickCallbackId, TickCallback>,
     last_frame: Instant,
     target_fps: u32,
+    /// EMA-smoothed `dt` used for spring / keyframe / timeline
+    /// integration. `None` until the second tick.
+    ///
+    /// The bg thread targets `target_fps` (default = display refresh)
+    /// via `wait_timeout`, but `wait_timeout` on Linux futex /
+    /// Wayland / X11 has more wake-up jitter than macOS CFRunLoop —
+    /// a steady "every 16.67 ms" target can land at 14 ms / 22 ms /
+    /// 16 ms / 14 ms intervals under compositor load. Spring physics
+    /// stays mathematically correct under raw dt (RK4 substepping at
+    /// 8 ms keeps the integrator stable), but the *visual* sampling
+    /// is uneven — motion-bound elements appear to vibrate even
+    /// though the underlying trajectory is smooth. EMA blending
+    /// damps single-tick outliers while staying within ~1 % of true
+    /// elapsed wall time over the long run (verified in
+    /// `dt_smoothing_tracks_wall_clock`).
+    smoothed_dt: Option<f32>,
+    /// Springs whose `value()` moved by ≥ `DIRTY_EPSILON` during the
+    /// most recent tick, or whose target was just changed. Drained by
+    /// the windowed runner each frame via
+    /// [`SchedulerHandle::take_dirty_springs`] — the eventual consumer
+    /// is the animation-only fast Phase 4 path, which patches the
+    /// touched nodes' `GpuPrimitive` transform / opacity in place and
+    /// skips the full paint walker.
+    ///
+    /// Insert sites:
+    /// - `tick` / `tick_frame_inner` after `spring.step` if the value
+    ///   actually moved.
+    /// - `SchedulerHandle::set_spring_target` (so the very first
+    ///   frame after `set_target` is treated as dirty even if the
+    ///   subsequent step happens to be within epsilon).
+    /// - `AnimatedValue::set_immediate` when the value really changed.
+    /// - `register_spring` (a brand-new spring is implicitly dirty —
+    ///   its initial value just appeared and downstream consumers
+    ///   haven't seen it).
+    ///
+    /// Lifetime: drained whenever a consumer asks for it. Settled
+    /// springs that aren't touched stay out of the set, so an
+    /// off-screen spinner that's already at rest costs nothing.
+    dirty_springs: std::collections::HashSet<SpringId>,
+}
+
+/// Minimum value delta that counts as "this spring moved this tick".
+/// Below this we consider the spring effectively settled for the
+/// purposes of triggering a fast-path repaint. Matches the
+/// `EPSILON` used inside `Spring::is_settled` so the two stay in
+/// sync — a spring that's already "settled enough to skip the next
+/// integration step" shouldn't be dirtying GPU buffers either.
+const DIRTY_EPSILON: f32 = 0.01;
+
+/// Maximum dt (seconds) a single tick will advance animations by.
+/// When the time between ticks exceeds this — first-frame shader
+/// pipeline compile, GC pause, background-thread oversleep,
+/// debugger stop — the excess is dropped. Without the cap, a slow
+/// first paint substeps the spring through hundreds of iterations
+/// in one tick and the animation teleports to its target; with
+/// the cap, the spring pauses-and-resumes cleanly instead of
+/// fast-forwarding through wall-clock time the user didn't see.
+///
+/// 32 ms ≈ 2 vsync intervals at 60 Hz. Tight enough that natural
+/// frame jitter never hits it, loose enough that "skip a frame"
+/// pacing (`animation_fps_cap = 30`) doesn't truncate normal
+/// integration.
+const MAX_TICK_DT: f32 = 0.032;
+
+/// EMA blend factor for `dt` smoothing. `smoothed = α·raw + (1-α)·prev`.
+///
+/// `α = 0.6` damps a single 25 ms outlier at 60 Hz target (16.67 ms) to
+/// ~21 ms on the spike frame and ~18 ms / ~17 ms on the two ticks after,
+/// instead of letting the raw 25 ms reach the spring as-is. Total
+/// integrated time tracks wall clock within ~1 % over the long run.
+///
+/// Lower α (more smoothing) under-shoots true elapsed time more
+/// aggressively, which makes long animations appear to drift behind
+/// wall clock; higher α (less smoothing) lets more compositor jitter
+/// through. 0.6 is the empirical compromise.
+const DT_SMOOTH_ALPHA: f32 = 0.6;
+
+/// Apply EMA smoothing to a raw inter-tick `dt`, updating `prev` in
+/// place. Returns the smoothed value to use for stepping.
+///
+/// First call after `prev = None` passes the raw value through (no
+/// historical sample to blend with) and primes `prev`.
+fn smooth_dt(raw_dt: f32, prev: &mut Option<f32>) -> f32 {
+    let smoothed = match *prev {
+        Some(p) => DT_SMOOTH_ALPHA * raw_dt + (1.0 - DT_SMOOTH_ALPHA) * p,
+        None => raw_dt,
+    };
+    *prev = Some(smoothed);
+    smoothed
 }
 
 /// Callback type for waking up the main thread from the animation thread.
@@ -227,6 +316,8 @@ impl AnimationScheduler {
                 tick_callbacks: SlotMap::with_key(),
                 last_frame: Instant::now(),
                 target_fps: 120,
+                dirty_springs: std::collections::HashSet::new(),
+                smoothed_dt: None,
             })),
             stop_flag: Arc::new(AtomicBool::new(false)),
             needs_redraw: Arc::new(AtomicBool::new(false)),
@@ -335,13 +426,38 @@ impl AnimationScheduler {
         let (has_active, tick_callbacks_to_call, dt) = {
             let mut inner = inner.lock().unwrap();
             let now = Instant::now();
-            let dt = (now - inner.last_frame).as_secs_f32();
-            let dt_ms = dt * 1000.0;
+            // Cap the per-tick dt to avoid spring/keyframe/timeline
+            // teleports when a frame stalls — first-frame shader
+            // pipeline compile, GC pause, background-thread oversleep,
+            // anything that produces a >100 ms gap. Without the cap,
+            // a 280 ms first-paint causes the spring's RK4 substepping
+            // to run ~35 iterations in one tick, settling a 600 ms
+            // animation in a single frame (the user sees the bar jump
+            // straight to its target). Capping to 32 ms (≈ 2 vsync
+            // intervals) makes the animation pause-and-resume cleanly
+            // instead of fast-forwarding through real time the user
+            // didn't see.
+            let raw_dt = (now - inner.last_frame).as_secs_f32().min(MAX_TICK_DT);
             inner.last_frame = now;
+            // EMA-smooth dt before stepping. See [`smooth_dt`] for why.
+            let dt = smooth_dt(raw_dt, &mut inner.smoothed_dt);
+            let dt_ms = dt * 1000.0;
 
-            // Update all springs
-            for (_, spring) in inner.springs.iter_mut() {
-                spring.step(dt);
+            // Update all springs. A spring whose `value()` actually
+            // moves this tick is marked dirty for the fast-path
+            // Phase 4 consumer; springs that didn't move (already
+            // settled, or stepped within epsilon) stay out of the
+            // set so an off-screen spinner pinging tick at 120 Hz
+            // doesn't churn the GPU upload buffer.
+            let collected_ids: Vec<SpringId> = inner.springs.iter().map(|(id, _)| id).collect();
+            for id in &collected_ids {
+                if let Some(spring) = inner.springs.get_mut(*id) {
+                    let prev = spring.value();
+                    spring.step(dt);
+                    if (spring.value() - prev).abs() >= DIRTY_EPSILON {
+                        inner.dirty_springs.insert(*id);
+                    }
+                }
             }
 
             // Update all keyframe animations
@@ -578,8 +694,8 @@ impl AnimationScheduler {
     pub fn start_raf(&self) {
         use std::cell::RefCell;
         use std::rc::Rc;
-        use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
 
         let window = web_sys::window().expect("AnimationScheduler::start_raf needs `window`");
 
@@ -700,6 +816,7 @@ impl AnimationScheduler {
             inner: Arc::downgrade(&self.inner),
             needs_redraw: Arc::clone(&self.needs_redraw),
             wakeup: Arc::clone(&self.wakeup),
+            wake_callback: self.wake_callback.clone(),
         }
     }
 
@@ -751,12 +868,28 @@ impl AnimationScheduler {
         let (has_active, tick_callbacks_to_call, dt) = {
             let mut inner = self.inner.lock().unwrap();
             let now = Instant::now();
-            let dt = (now - inner.last_frame).as_secs_f32();
-            let dt_ms = dt * 1000.0;
+            // Same per-tick dt cap as `tick_frame_inner` — prevents
+            // spring/keyframe/timeline teleports on slow frames.
+            // See `MAX_TICK_DT` doc above.
+            let raw_dt = (now - inner.last_frame).as_secs_f32().min(MAX_TICK_DT);
             inner.last_frame = now;
+            // EMA-smooth dt before stepping. See [`smooth_dt`] for why.
+            let dt = smooth_dt(raw_dt, &mut inner.smoothed_dt);
+            let dt_ms = dt * 1000.0;
 
-            for (_, spring) in inner.springs.iter_mut() {
-                spring.step(dt);
+            // Step springs and record those whose value actually
+            // moved (≥ DIRTY_EPSILON) into `dirty_springs`. Mirrors
+            // the bg-thread tick_frame_inner path so both modes feed
+            // the same fast-path consumer.
+            let collected_ids: Vec<SpringId> = inner.springs.iter().map(|(id, _)| id).collect();
+            for id in &collected_ids {
+                if let Some(spring) = inner.springs.get_mut(*id) {
+                    let prev = spring.value();
+                    spring.step(dt);
+                    if (spring.value() - prev).abs() >= DIRTY_EPSILON {
+                        inner.dirty_springs.insert(*id);
+                    }
+                }
             }
             for (_, keyframe) in inner.keyframes.iter_mut() {
                 keyframe.tick(dt_ms);
@@ -790,6 +923,26 @@ impl AnimationScheduler {
             }
         }
 
+        // Mirror the bg-thread path: when work is still active, flip
+        // `needs_redraw` so the windowed runner's Phase 5
+        // `take_needs_redraw()` keeps re-arming the redraw chain.
+        // Without this, Main-mode loops sit in `ControlFlow::Wait`
+        // after the first paint — timelines / spring values /
+        // canvas-driven animations only advance on the next stray
+        // input event.
+        //
+        // Deliberately NOT OR'd with `continuous_redraw`: the
+        // bg-thread path includes it because the bg thread ticks
+        // autonomously and needs to signal main "render now". In
+        // Main mode the windowed runner reads
+        // `widgets::has_focused_text_input()` directly and paces
+        // cursor blinks via `wake_at(400ms)` (issue #28 follow-up);
+        // mirroring `continuous_redraw` here would defeat that
+        // pacing and pin focused-input idle at vsync (~30 % CPU).
+        if has_active {
+            self.needs_redraw.store(true, Ordering::Release);
+        }
+
         has_active
     }
 
@@ -804,6 +957,21 @@ impl AnimationScheduler {
     /// Get the number of active springs
     pub fn spring_count(&self) -> usize {
         self.inner.lock().unwrap().springs.len()
+    }
+
+    /// Drain springs that moved (or had their target set / were
+    /// freshly registered) since the last drain. Counterpart to
+    /// [`SchedulerHandle::take_dirty_springs`]; same semantics, just
+    /// accessible from `&AnimationScheduler` without going through a
+    /// handle. The windowed runner's frame-timing instrumentation
+    /// reads this without first cloning the handle.
+    pub fn take_dirty_springs(&self) -> Vec<SpringId> {
+        self.inner.lock().unwrap().dirty_springs.drain().collect()
+    }
+
+    /// Peek at the dirty-spring count without draining.
+    pub fn dirty_spring_count(&self) -> usize {
+        self.inner.lock().unwrap().dirty_springs.len()
     }
 
     /// Get the number of active keyframe animations
@@ -1091,15 +1259,45 @@ pub struct SchedulerHandle {
     inner: Weak<Mutex<SchedulerInner>>,
     needs_redraw: Arc<AtomicBool>,
     wakeup: Arc<(Mutex<bool>, Condvar)>,
+    /// Optional wake callback shared with the parent `AnimationScheduler`.
+    /// In `AnimationThreadMode::Main`, mutations from a background
+    /// thread (worker, timer, `on_ready` after the 200ms delay) need
+    /// to wake the main event loop or the next tick never fires.
+    /// Without this, calling `set_spring_target` from off-main does
+    /// nothing visible until some unrelated event happens to
+    /// schedule a redraw.
+    wake_callback: Option<WakeCallback>,
 }
 
+// SAFETY: Mirrors the wasm-only safety boundary on `AnimationScheduler`.
+// `SchedulerHandle` carries the same wake callback so web can capture
+// `Rc<RefCell<_>>`, but on `wasm32-unknown-unknown` all scheduler access is
+// driven on the browser main thread. Marking the handle keeps global caches
+// of scheduler-backed animation values usable without requiring native
+// `Send + Sync` bounds for web callbacks.
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for SchedulerHandle {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for SchedulerHandle {}
+
 impl SchedulerHandle {
-    /// Wake the scheduler's bg thread if it's parked. Called whenever
-    /// a mutation could transition `has_active` from false to true.
+    /// Wake the scheduler's bg thread if it's parked AND fire the
+    /// main-thread wake callback. Called whenever a mutation could
+    /// transition `has_active` from false to true.
+    ///
+    /// In `AnimationThreadMode::Background` the bg-thread wake is
+    /// what matters; in `Main` mode the wake_callback is the only
+    /// thing that gets the main thread out of `ControlFlow::Wait`.
+    /// Doing both makes the handle work correctly under either
+    /// mode without callers having to care which is active.
     fn wake(&self) {
         let mut pending = self.wakeup.0.lock().unwrap();
         *pending = true;
         self.wakeup.1.notify_one();
+        drop(pending);
+        if let Some(cb) = &self.wake_callback {
+            cb();
+        }
     }
 
     /// Request a redraw from anywhere — fires the scheduler's
@@ -1122,7 +1320,14 @@ impl SchedulerHandle {
             // Reset last_frame to now to prevent huge dt on first tick
             // This ensures new springs start animating smoothly from their current frame
             guard.last_frame = Instant::now();
-            guard.springs.insert(spring)
+            let id = guard.springs.insert(spring);
+            // A freshly registered spring is implicitly dirty — its
+            // initial value just materialized and downstream
+            // consumers haven't had a chance to observe it yet.
+            // Without this, the very first paint after a new motion
+            // binding mounts could miss the value for one frame.
+            guard.dirty_springs.insert(id);
+            id
         });
         if id.is_some() {
             self.wake();
@@ -1133,9 +1338,25 @@ impl SchedulerHandle {
     /// Update a spring's target
     pub fn set_spring_target(&self, id: SpringId, target: f32) {
         if let Some(inner) = self.inner.upgrade() {
-            if let Some(spring) = inner.lock().unwrap().springs.get_mut(id) {
+            let mut guard = inner.lock().unwrap();
+            if let Some(spring) = guard.springs.get_mut(id) {
                 spring.set_target(target);
             }
+            // Even if the next tick happens to settle within
+            // DIRTY_EPSILON (very short throw, tight spring), the
+            // intent here is "the user requested a new state" — mark
+            // dirty so the fast path repaints at least one frame.
+            guard.dirty_springs.insert(id);
+            // Reset the tick clock so the first post-target step uses
+            // a fresh, small dt. Without this, a spring that settled
+            // (so `last_frame` stopped advancing) and is re-armed
+            // seconds later sees `dt = idle time` on the very next
+            // tick — RK4 substepping then runs ~`idle / 8 ms`
+            // iterations and the value snaps almost the whole way
+            // to target in one frame, defeating the spring's
+            // perceived duration. Mirrors what `register_spring`
+            // already does for the same reason on fresh registration.
+            guard.last_frame = Instant::now();
         }
         self.wake();
     }
@@ -1168,8 +1389,47 @@ impl SchedulerHandle {
     /// Remove a spring
     pub fn remove_spring(&self, id: SpringId) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.lock().unwrap().springs.remove(id);
+            let mut guard = inner.lock().unwrap();
+            guard.springs.remove(id);
+            // Removed springs can't dirty anything later — drop the
+            // entry so a stale id never makes it into a fast-path
+            // drain (slotmap reuses the slot; without this you could
+            // chase a phantom binding).
+            guard.dirty_springs.remove(&id);
         }
+    }
+
+    /// Drain springs that moved (or had their target set / were
+    /// freshly registered) since the last drain. The returned ids
+    /// are intended for the windowed runner's fast Phase 4 path —
+    /// each id maps to a `(LayoutNodeId, target_property)` via a
+    /// bindings index, and the consumer patches the corresponding
+    /// `GpuPrimitive` field in place instead of running the full
+    /// paint walker.
+    ///
+    /// Calling this clears the set. Empty return means "no
+    /// scheduler-tracked animation changed this frame" — at which
+    /// point the fast path can return immediately without walking
+    /// the tree.
+    pub fn take_dirty_springs(&self) -> Vec<SpringId> {
+        self.inner
+            .upgrade()
+            .map(|inner| {
+                let mut guard = inner.lock().unwrap();
+                guard.dirty_springs.drain().collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Peek at the count of dirty springs without draining. Useful
+    /// for the windowed runner's "should we even bother taking the
+    /// fast path this frame" gate — at zero we know upfront there
+    /// is no scheduler-side change to consume.
+    pub fn dirty_spring_count(&self) -> usize {
+        self.inner
+            .upgrade()
+            .map(|inner| inner.lock().unwrap().dirty_springs.len())
+            .unwrap_or(0)
     }
 
     /// Pause a spring — freezes at current position
@@ -1521,8 +1781,28 @@ impl AnimatedValue {
         if let Some(id) = self.spring_id.take() {
             self.handle.remove_spring(id);
         }
+        // Symmetric with `set_target`: a value mutation that is going
+        // to drive a visual change needs to nudge the redraw chain.
+        // Without this nudge, drag-style flows like
+        // `cn::slider`/`motion_demo`'s pull-to-refresh only repaint
+        // when some other event coincidentally flips `frame_dirty`,
+        // because (a) `set_immediate` removes the spring so the
+        // binding-vsync paint-walker signal can't carry the change,
+        // and (b) bare mouse-moves on the input fast path skip
+        // `frame_dirty=true` to keep idle CPU down. Gated on a real
+        // value change so the previously-reverted unconditional
+        // version (which redraws on no-op writes, e.g.
+        // `set_immediate(self.current)` from idle ticks of
+        // `visual_animation`) stays gone. `wake` is what `set_target`
+        // already calls via `set_spring_target`; same code path,
+        // same idempotent dirty flip + wake-proxy ping.
+        let changed = (self.current - value).abs() > f32::EPSILON
+            || (self.target - value).abs() > f32::EPSILON;
         self.current = value;
         self.target = value;
+        if changed {
+            self.handle.wake();
+        }
     }
 
     /// Pause the spring — freezes at current position, step() is no-op
@@ -2243,6 +2523,66 @@ mod tests {
     }
 
     #[test]
+    fn test_dirty_springs_tracked_through_lifecycle() {
+        // The fast-path Phase 4 consumer drains this set every frame
+        // to decide which `GpuPrimitive`s need their transform / opacity
+        // patched in place. Lifecycle: register → set_target → tick
+        // (each step adds the id) → drain clears → next tick after
+        // settle stops adding.
+        let scheduler = AnimationScheduler::new();
+        let handle = scheduler.handle();
+
+        // Fresh registration is implicitly dirty (initial value just
+        // appeared; downstream hasn't seen it yet).
+        let spring = Spring::new(SpringConfig::stiff(), 0.0);
+        let id = handle.register_spring(spring).unwrap();
+        assert!(
+            handle.take_dirty_springs().contains(&id),
+            "register_spring should mark the new spring dirty"
+        );
+        assert_eq!(
+            handle.dirty_spring_count(),
+            0,
+            "take_dirty_springs should have drained"
+        );
+
+        // set_spring_target marks dirty even before any tick — the
+        // user requested a state change, fast path needs to repaint.
+        handle.set_spring_target(id, 100.0);
+        assert!(handle.take_dirty_springs().contains(&id));
+
+        // Ticks that move the spring mark it dirty. We may need a few
+        // iterations: `register_spring` resets `last_frame=now`, so
+        // the very first post-register tick has dt≈0 and may not
+        // cross `DIRTY_EPSILON`. Drive a few µs of real time between
+        // ticks and accumulate.
+        let mut saw_dirty = false;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            scheduler.tick();
+            if handle.take_dirty_springs().contains(&id) {
+                saw_dirty = true;
+                break;
+            }
+        }
+        assert!(saw_dirty, "a moving tick should mark the spring dirty");
+
+        // Removing the spring drops the dirty entry — a stale id
+        // must never make it into a downstream drain (slotmap
+        // reuses the slot). We rely on the next `set_spring_target`
+        // to re-arm; that flow is the one the runtime exercises.
+        let _ = handle.take_dirty_springs();
+        handle.set_spring_target(id, 200.0);
+        assert!(handle.dirty_spring_count() > 0);
+        handle.remove_spring(id);
+        assert_eq!(
+            handle.dirty_spring_count(),
+            0,
+            "remove_spring should drop the dirty entry"
+        );
+    }
+
+    #[test]
     fn test_animated_value() {
         let scheduler = AnimationScheduler::new();
         let handle = scheduler.handle();
@@ -2321,9 +2661,11 @@ mod tests {
         assert!(!handle.is_alive());
 
         // Operations should safely no-op
-        assert!(handle
-            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
-            .is_none());
+        assert!(
+            handle
+                .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+                .is_none()
+        );
     }
 
     #[test]
@@ -2357,5 +2699,60 @@ mod tests {
         assert_eq!(scheduler.spring_count(), 1);
         assert_eq!(scheduler.keyframe_count(), 1);
         assert_eq!(scheduler.timeline_count(), 1);
+    }
+
+    #[test]
+    fn dt_smoothing_damps_outliers() {
+        // A 25 ms spike at 16.67 ms steady state must be partially
+        // smoothed (not passed through raw) but not over-smoothed
+        // either.
+        let mut prev = Some(0.01667);
+        let smoothed = smooth_dt(0.025, &mut prev);
+        assert!(
+            smoothed < 0.025 && smoothed > 0.01667,
+            "outlier should be damped toward the running average, got {smoothed}"
+        );
+        // EMA weight: 0.6·0.025 + 0.4·0.01667 = 0.0217 ≈ 21.7 ms
+        assert!((smoothed - 0.02167).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dt_smoothing_first_tick_passes_through() {
+        // No history → no smoothing, just record.
+        let mut prev = None;
+        let smoothed = smooth_dt(0.0167, &mut prev);
+        assert_eq!(smoothed, 0.0167);
+        assert_eq!(prev, Some(0.0167));
+    }
+
+    #[test]
+    fn dt_smoothing_tracks_wall_clock() {
+        // EMA must not drift more than ~1 % from true elapsed time
+        // over a long run, otherwise spring animations would
+        // visibly fall behind wall clock. Simulate 600 ticks (10 s
+        // at 60 Hz) with a noisy stream and check the integrated
+        // smoothed dt is within 1 % of the raw sum.
+        let mut prev: Option<f32> = None;
+        let raw_dts: Vec<f32> = (0..600)
+            .map(|i| {
+                // Jittery 16.67 ms target: spike every 7 ticks to 24
+                // ms, otherwise normal jitter ±1 ms.
+                if i % 7 == 0 {
+                    0.024
+                } else if i % 2 == 0 {
+                    0.0157
+                } else {
+                    0.0176
+                }
+            })
+            .collect();
+        let raw_sum: f32 = raw_dts.iter().sum();
+        let smoothed_sum: f32 = raw_dts.iter().map(|&raw| smooth_dt(raw, &mut prev)).sum();
+        let drift = (smoothed_sum - raw_sum).abs() / raw_sum;
+        assert!(
+            drift < 0.01,
+            "smoothed integration drifted from wall clock by {:.3}% (raw={raw_sum}, smoothed={smoothed_sum})",
+            drift * 100.0
+        );
     }
 }

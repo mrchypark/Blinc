@@ -84,8 +84,8 @@ pub struct RichText {
     style: Style,
     /// Render layer
     render_layer: RenderLayer,
-    /// Drop shadow
-    shadow: Option<Shadow>,
+    /// Drop shadow stack
+    shadow: Vec<Shadow>,
     /// Transform
     transform: Option<Transform>,
     /// Whether to wrap text at container bounds (default: true)
@@ -138,18 +138,13 @@ impl RichText {
             font_family: FontFamily::default(),
             style: Style::default(),
             render_layer: RenderLayer::default(),
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             wrap: true,
             line_height: 1.2,
             measured_width: 0.0,
             ascender: 14.0 * 0.8,
-            // Use pointer cursor if there are links, otherwise text cursor
-            cursor: Some(if has_links {
-                crate::element::CursorStyle::Pointer
-            } else {
-                crate::element::CursorStyle::Text
-            }),
+            cursor: has_links.then_some(crate::element::CursorStyle::Pointer),
             word_spacing: 0.0,
             event_handlers: EventHandlers::new(),
             link_regions: Arc::new(Vec::new()),
@@ -204,17 +199,13 @@ impl RichText {
             font_family: FontFamily::default(),
             style: Style::default(),
             render_layer: RenderLayer::default(),
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             wrap: true,
             line_height: 1.2,
             measured_width: 0.0,
             ascender: 14.0 * 0.8,
-            cursor: Some(if has_links {
-                crate::element::CursorStyle::Pointer
-            } else {
-                crate::element::CursorStyle::Text
-            }),
+            cursor: has_links.then_some(crate::element::CursorStyle::Pointer),
             word_spacing: 0.0,
             event_handlers: EventHandlers::new(),
             link_regions: Arc::new(Vec::new()),
@@ -413,9 +404,15 @@ impl RichText {
         self.layer(RenderLayer::Foreground)
     }
 
-    /// Apply drop shadow
+    /// Apply a single drop shadow (replaces any existing stack).
     pub fn shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+        self
+    }
+
+    /// Apply a compound drop shadow stack.
+    pub fn shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
@@ -631,7 +628,7 @@ impl ElementBuilder for RichText {
     fn render_props(&self) -> RenderProps {
         RenderProps {
             layer: self.render_layer,
-            shadow: self.shadow,
+            shadow: self.shadow.clone(),
             transform: self.transform.clone(),
             cursor: self.cursor,
             ..Default::default()
@@ -708,6 +705,7 @@ mod tests {
         let rt = rich_text("Hello World");
         assert_eq!(rt.content(), "Hello World");
         assert!(rt.spans().is_empty());
+        assert_eq!(rt.render_props().cursor, None);
     }
 
     #[test]
@@ -748,6 +746,10 @@ mod tests {
         let rt = rich_text(r#"Visit <a href="https://example.com">our website</a> for info"#);
         assert_eq!(rt.content(), "Visit our website for info");
         assert_eq!(rt.spans().len(), 1);
+        assert_eq!(
+            rt.render_props().cursor,
+            Some(crate::element::CursorStyle::Pointer)
+        );
         assert_eq!(
             rt.spans()[0].link_url,
             Some("https://example.com".to_string())

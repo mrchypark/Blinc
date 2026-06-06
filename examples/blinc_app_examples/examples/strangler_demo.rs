@@ -56,8 +56,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use blinc_animation::get_scheduler;
 use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedContext;
-use blinc_canvas_kit::prelude::*;
 use blinc_canvas_kit::AutoFramer;
+use blinc_canvas_kit::prelude::*;
 use blinc_core::events::KeyCode;
 use blinc_core::{Color, DrawContext, Light, Mat4, MeshData, State, Vec3};
 use blinc_gltf::{GltfAnimation, GltfScene};
@@ -256,7 +256,7 @@ fn main() -> Result<()> {
     blinc_app::windowed::WindowedApp::run(config, build_ui)
 }
 
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     let scene_ready = ctx.use_state_keyed("strangler_scene_ready", || false);
     let camera_signal = ctx.use_state_keyed("strangler_demo_cam", OrbitCamera::default);
     let kit = SceneKit3D::new("strangler_demo")

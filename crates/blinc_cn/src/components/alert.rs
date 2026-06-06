@@ -61,12 +61,12 @@ pub struct Alert {
 
 impl Alert {
     /// Create a new alert with a message
-    pub fn new(message: impl ToString) -> Self {
+    pub fn new(message: impl Into<String>) -> Self {
         Self::with_variant(message, AlertVariant::default())
     }
 
-    fn with_variant(message: impl ToString, variant: AlertVariant) -> Self {
-        let message = message.to_string();
+    fn with_variant(message: impl Into<String>, variant: AlertVariant) -> Self {
+        let message = message.into();
         let inner = Self::build_div(&message, variant);
         Self {
             inner,
@@ -155,7 +155,7 @@ impl ElementBuilder for Alert {
 }
 
 /// Create a simple alert with a message
-pub fn alert(message: impl ToString) -> Alert {
+pub fn alert(message: impl Into<String>) -> Alert {
     Alert::new(message)
 }
 
@@ -198,13 +198,13 @@ impl AlertBox {
     }
 
     /// Set the alert title
-    pub fn title(mut self, title: impl ToString) -> Self {
+    pub fn title(mut self, title: impl Into<String>) -> Self {
         self.inner = self.inner.child(text(title).size(14.0).semibold());
         self
     }
 
     /// Set the alert description
-    pub fn description(mut self, desc: impl ToString) -> Self {
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.inner = self.inner.child(text(desc).size(14.0));
         self
     }

@@ -1,0 +1,103 @@
+// Live signal-binding canary — no `@stateful`, no `@fsm`.
+//
+// Click `Step`. The three swatches' opacity / corner_radius /
+// bg update in place: the FSM action mutates `ctx.pct`,
+// `ctx.radius`, `ctx.hue` in one body, the PropertyBindingRegistry
+// fires once per signal, and the renderer paints the updated
+// values through the same `apply_to` path the static-only render
+// uses. No subtree rebuild, no `@stateful` wrapper.
+//
+// Signals live on the Ticker's `context` block so they're owned by
+// the only thing that mutates them — co-located with the actions
+// that update them and the view that reads them.
+//
+// `@stateful` would create a structural rebuild hatch that defeats
+// the binding pipeline. If you need it here, either the prop isn't
+// binding-aware yet OR you're using f-string interpolation (which
+// reads the signal once and bakes the result into the text
+// primitive — that's why the demo avoids f-strings entirely).
+
+fsm Ticker {
+    context {
+        pct: f64 = 0.0
+        radius: f64 = 0.0
+        hue: i32 = 0
+    }
+    state Idle
+    initial Idle
+    on Idle.Step -> Idle {
+        ctx.pct += 0.1
+        ctx.radius += 6.0
+        ctx.hue += 1118481           // ~0x111111 step through hex
+    }
+    on Idle.Reset -> Idle {
+        ctx.pct = 0.0
+        ctx.radius = 0.0
+        ctx.hue = 0
+    }
+}
+
+component LiveBind {
+    style {
+        .panel {
+            background: #0f172a;
+            padding: 32px;
+            gap: 24px;
+            border-radius: 20px;
+            width: 560px;
+            color: #f8fafc;
+            flex-direction: column;
+        }
+
+        .swatch-row {
+            gap: 18px;
+            flex-direction: row;
+            justify-content: center;
+        }
+        .swatch {
+            width: 140px;
+            height: 140px;
+            background: #38bdf8;
+            border-radius: 16px;
+        }
+
+        .btn-row {
+            gap: 16px;
+            flex-direction: row;
+            justify-content: center;
+        }
+        .btn {
+            background: #3b82f6;
+            padding: 12px 18px;
+            border-radius: 10px;
+            color: #f8fafc;
+        }
+        .btn-reset {
+            background: #ef4444;
+            padding: 12px 18px;
+            border-radius: 10px;
+            color: #f8fafc;
+        }
+        .btn *, .btn-reset * { pointer-events: none }
+    }
+
+    view {
+        Div(class = "panel") {
+            Div(class = "swatch-row") {
+                Div(class = "swatch", opacity = Ticker.pct)
+                Div(class = "swatch", corner_radius = Ticker.radius)
+                Div(class = "swatch", bg = Ticker.hue)
+            }
+            Div(class = "btn-row") {
+                Div(class = "btn", on_click = || { Ticker.trigger("Step") }) {
+                    Text("Step")
+                }
+                Div(class = "btn-reset", on_click = || { Ticker.trigger("Reset") }) {
+                    Text("Reset")
+                }
+            }
+        }
+    }
+}
+
+view { LiveBind() }

@@ -52,7 +52,7 @@ use blinc_layout::widgets::text_input::{
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState, TypographyTokens};
 use std::ops::{Deref, DerefMut};
 
-use super::label::{label, LabelSize};
+use super::label::{LabelSize, label};
 
 /// Border color configuration for different input states
 #[derive(Clone, Debug, Default)]
@@ -91,21 +91,20 @@ pub enum InputSize {
 }
 
 impl InputSize {
-    fn height(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    pub fn height(&self, theme: &ThemeState) -> f32 {
+        // Use spacing tokens for consistent sizing
         match self {
-            InputSize::Small => tokens.control.height_sm,
-            InputSize::Medium => tokens.control.height_md,
-            InputSize::Large => tokens.control.height_lg,
+            InputSize::Small => theme.spacing_value(SpacingToken::Space8), // 32px
+            InputSize::Medium => theme.spacing_value(SpacingToken::Space10), // 40px
+            InputSize::Large => theme.spacing_value(SpacingToken::Space12), // 48px
         }
     }
 
-    fn font_size(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    pub fn font_size(&self, typography: &TypographyTokens) -> f32 {
         match self {
-            InputSize::Small => tokens.typography.body_sm,
-            InputSize::Medium => tokens.typography.body_md,
-            InputSize::Large => tokens.typography.body_lg,
+            InputSize::Small => typography.text_xs,   // 12px
+            InputSize::Medium => typography.text_sm,  // 14px
+            InputSize::Large => typography.text_base, // 16px
         }
     }
 }
@@ -130,16 +129,17 @@ impl Input {
     /// Create from a full configuration
     fn with_config(config: InputConfig) -> Self {
         let theme = ThemeState::get();
+        let typography = theme.typography();
 
-        // Sync visual error state to underlying data's is_valid field
-        if config.error_state {
+        // Sync error state to underlying data's is_valid field
+        if config.error.is_some() {
             if let Ok(mut data) = config.data.lock() {
                 data.is_valid = false;
             }
         }
 
         // Build the text input element
-        let text_input = Self::build_text_input(&config, theme);
+        let text_input = Self::build_text_input(&config, theme, &typography);
 
         // Determine the size-specific class
         let size_class = match config.size {
@@ -193,20 +193,24 @@ impl Input {
         container = container.child(text_input);
 
         // Error or description
-        let helper_size = theme.components().typography.helper;
         if let Some(ref error_text) = config.error {
             let error_color = theme.color(ColorToken::Error);
-            container = container.child(text(error_text).size(helper_size).color(error_color));
+            container =
+                container.child(text(error_text).size(typography.text_xs).color(error_color));
         } else if let Some(ref desc_text) = config.description {
             let desc_color = theme.color(ColorToken::TextTertiary);
-            container = container.child(text(desc_text).size(helper_size).color(desc_color));
+            container = container.child(text(desc_text).size(typography.text_xs).color(desc_color));
         }
 
         Self { inner: container }
     }
 
     /// Build the text input element from config
-    fn build_text_input(config: &InputConfig, theme: &ThemeState) -> TextInput {
+    fn build_text_input(
+        config: &InputConfig,
+        theme: &ThemeState,
+        typography: &TypographyTokens,
+    ) -> TextInput {
         // Get default theme colors for fallbacks
         let default_border = theme.color(ColorToken::Border);
         let default_border_hover = theme.color(ColorToken::BorderHover);
@@ -222,11 +226,11 @@ impl Input {
 
         let radius = config
             .corner_radius
-            .unwrap_or_else(|| theme.components().control.radius_md);
+            .unwrap_or_else(|| theme.radius(RadiusToken::Md));
 
         let mut input = blinc_layout::widgets::text_input::text_input(&config.data)
             .h(config.size.height(theme))
-            .text_size(config.size.font_size(theme))
+            .text_size(config.size.font_size(typography))
             .rounded(radius)
             .input_type(config.input_type)
             .disabled(config.disabled)
@@ -326,6 +330,25 @@ impl ElementBuilder for Input {
     fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.inner.element_classes()
     }
+
+    // Forward layout_style / event_handlers / element_id to the inner
+    // div so user-set width / height / event handlers / id reach the
+    // renderer. Without these forwards the default trait impls return
+    // `None` / `&[]`, so a `cn::input(&data).w(200.0)` chain sets
+    // `config.width = Some(200.0)` and builds the inner div with the
+    // correct taffy width — but the parent's layout query never sees
+    // it and the input still stretches to fill its flex container.
+    fn layout_style(&self) -> Option<&taffy::Style> {
+        ElementBuilder::layout_style(&self.inner)
+    }
+
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        ElementBuilder::event_handlers(&self.inner)
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        ElementBuilder::element_id(&self.inner)
+    }
 }
 
 /// Internal configuration for building an Input
@@ -336,7 +359,6 @@ struct InputConfig {
     label: Option<String>,
     description: Option<String>,
     error: Option<String>,
-    error_state: bool,
     disabled: bool,
     required: bool,
     input_type: InputType,
@@ -363,7 +385,6 @@ impl Default for InputConfig {
             label: None,
             description: None,
             error: None,
-            error_state: false,
             disabled: false,
             required: false,
             input_type: InputType::Text,
@@ -432,13 +453,6 @@ impl InputBuilder {
     /// Set an error message (shows in red, replaces description)
     pub fn error(mut self, error: impl Into<String>) -> Self {
         self.config.error = Some(error.into());
-        self.config.error_state = true;
-        self
-    }
-
-    /// Set visual error state without rendering an error message.
-    pub fn error_state(mut self, has_error: bool) -> Self {
-        self.config.error_state = has_error;
         self
     }
 
@@ -626,15 +640,6 @@ impl InputBuilder {
         self
     }
 
-    /// Conditionally apply builder configuration.
-    pub fn when(self, condition: bool, transform: impl FnOnce(Self) -> Self) -> Self {
-        if condition {
-            transform(self)
-        } else {
-            self
-        }
-    }
-
     /// Build the final Input component
     pub fn build_component(self) -> Input {
         Input::with_config(self.config)
@@ -661,6 +666,18 @@ impl ElementBuilder for InputBuilder {
     fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.get_or_build().element_classes()
     }
+
+    fn layout_style(&self) -> Option<&taffy::Style> {
+        ElementBuilder::layout_style(self.get_or_build())
+    }
+
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        ElementBuilder::event_handlers(self.get_or_build())
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        ElementBuilder::element_id(self.get_or_build())
+    }
 }
 
 /// Create a styled input component
@@ -684,19 +701,20 @@ mod tests {
     fn test_input_size_values() {
         init_theme();
         let theme = ThemeState::get();
+        let typography = TypographyTokens::default();
 
         // Sizes use spacing tokens
         assert!(InputSize::Small.height(theme) > 0.0);
         assert!(InputSize::Medium.height(theme) > InputSize::Small.height(theme));
         assert!(InputSize::Large.height(theme) > InputSize::Medium.height(theme));
 
-        let tokens = theme.components();
-        assert_eq!(InputSize::Small.font_size(theme), tokens.typography.body_sm);
+        // Font sizes use typography tokens
+        assert_eq!(InputSize::Small.font_size(&typography), typography.text_xs);
+        assert_eq!(InputSize::Medium.font_size(&typography), typography.text_sm);
         assert_eq!(
-            InputSize::Medium.font_size(theme),
-            tokens.typography.body_md
+            InputSize::Large.font_size(&typography),
+            typography.text_base
         );
-        assert_eq!(InputSize::Large.font_size(theme), tokens.typography.body_lg);
     }
 
     #[test]
@@ -707,14 +725,5 @@ mod tests {
             .label("Username")
             .placeholder("Enter username")
             .size(InputSize::Large);
-    }
-
-    #[test]
-    fn test_input_error_state_without_message() {
-        init_theme();
-        let data = blinc_layout::widgets::text_input::text_input_data();
-        let input = input(&data).error_state(true);
-        assert!(input.config.error.is_none());
-        assert!(input.config.error_state);
     }
 }

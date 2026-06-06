@@ -28,7 +28,7 @@ use blinc_core::{
 };
 use taffy::Style;
 
-use crate::div::{Div, ElementBuilder};
+use crate::div::{Div, ElementBuilder, ElementTypeId};
 use crate::element::{Material, RenderLayer, RenderProps};
 use crate::event_handler::EventHandlers;
 use crate::tree::LayoutNodeId;
@@ -92,6 +92,29 @@ impl DivHash {
     pub fn compute_structural_tree(element: &dyn ElementBuilder) -> Self {
         let mut hasher = DefaultHasher::new();
         hash_element_structural(element, &mut hasher);
+        DivHash(hasher.finish())
+    }
+
+    /// Compute a hash of the element's *topology* — element type, identity,
+    /// content (text / SVG / image source), and the same recursive shape of
+    /// the child tree, but **excluding** the taffy layout style.
+    ///
+    /// Pair with [`Self::compute_structural_tree`] to discriminate three
+    /// stateful-refresh paths:
+    /// - topology matches AND structural matches → visual-only update
+    ///   (just re-apply render props in place)
+    /// - topology matches AND structural differs → layout-prop update
+    ///   (patch taffy `Style` on existing nodes + recompute layout; no
+    ///   children teardown)
+    /// - topology differs → full structural rebuild
+    ///
+    /// The middle path is what makes spring-animated `.w()` / `.h()` /
+    /// `.left()` cheap. Without it, every spring tick tears down and
+    /// reconstructs the entire Stateful subtree because the layout
+    /// dimensions flow through the structural hash.
+    pub fn compute_topology_tree(element: &dyn ElementBuilder) -> Self {
+        let mut hasher = DefaultHasher::new();
+        hash_element_topology(element, &mut hasher);
         DivHash(hasher.finish())
     }
 }
@@ -202,7 +225,8 @@ pub enum ChildDiff {
 #[derive(Default)]
 pub struct ReconcileActions {
     /// Prop updates to queue (visual-only changes).
-    /// These go via `PENDING_PROP_UPDATES`.
+    /// Routed through `queue_prop_update` → the unified property channel
+    /// drained by every platform runner.
     pub prop_updates: Vec<(LayoutNodeId, RenderProps)>,
 
     /// Node IDs of subtrees that need rebuilding.
@@ -517,7 +541,7 @@ pub fn detect_visual_changes(old: &Div, new: &Div) -> bool {
         || old.border_radius != new.border_radius
         || old.render_layer != new.render_layer
         || !material_eq(&old.material, &new.material)
-        || !shadow_eq(&old.shadow, &new.shadow)
+        || !shadow_stack_eq(&old.shadow, &new.shadow)
         || !transform_eq(&old.transform, &new.transform)
         || !f32_eq(old.opacity, new.opacity)
 }
@@ -581,7 +605,7 @@ fn apply_visual_changes(old: &mut Div, new: &Div) {
     old.border_width = new.border_width;
     old.render_layer = new.render_layer;
     old.material = new.material.clone();
-    old.shadow = new.shadow;
+    old.shadow = new.shadow.clone();
     old.transform = new.transform.clone();
     old.opacity = new.opacity;
 }
@@ -629,7 +653,7 @@ fn hash_div_props(div: &Div, hasher: &mut impl Hasher) {
     hash_f32(div.border_width, hasher);
     hash_render_layer(&div.render_layer, hasher);
     hash_option_material(&div.material, hasher);
-    hash_option_shadow(&div.shadow, hasher);
+    hash_shadow_stack(&div.shadow, hasher);
     hash_option_transform(&div.transform, hasher);
     hash_f32(div.opacity, hasher);
 }
@@ -730,9 +754,6 @@ fn hash_element_structural(element: &dyn ElementBuilder, hasher: &mut impl Hashe
     if let Some(text_info) = element.text_render_info() {
         text_info.content.hash(hasher);
         hash_f32(text_info.font_size, hasher);
-        for c in &text_info.color {
-            hash_f32(*c, hasher);
-        }
     }
 
     if let Some(svg_info) = element.svg_render_info() {
@@ -751,6 +772,42 @@ fn hash_element_structural(element: &dyn ElementBuilder, hasher: &mut impl Hashe
     }
 }
 
+/// Like [`hash_element_structural`] but skips `hash_style` so that
+/// animated layout dimensions don't bump the hash. Element identity,
+/// element type, text / SVG / image content, and the child tree's
+/// own topology still participate, so anything that would actually
+/// require rebuilding nodes (a child added, a text content change,
+/// a new element_id) still trips the hash.
+fn hash_element_topology(element: &dyn ElementBuilder, hasher: &mut impl Hasher) {
+    std::mem::discriminant(&element.element_type_id()).hash(hasher);
+
+    if let Some(id) = element.element_id() {
+        1u8.hash(hasher);
+        id.hash(hasher);
+    } else {
+        0u8.hash(hasher);
+    }
+
+    if let Some(text_info) = element.text_render_info() {
+        text_info.content.hash(hasher);
+        hash_f32(text_info.font_size, hasher);
+    }
+
+    if let Some(svg_info) = element.svg_render_info() {
+        svg_info.source.hash(hasher);
+    }
+
+    if let Some(image_info) = element.image_render_info() {
+        image_info.source.hash(hasher);
+    }
+
+    let children = element.children_builders();
+    children.len().hash(hasher);
+    for child in children {
+        hash_element_topology(child.as_ref(), hasher);
+    }
+}
+
 /// Hash RenderProps.
 fn hash_render_props(props: &RenderProps, hasher: &mut impl Hasher) {
     hash_option_brush(&props.background, hasher);
@@ -765,7 +822,7 @@ fn hash_render_props(props: &RenderProps, hasher: &mut impl Hasher) {
     hash_f32(props.border_width, hasher);
     hash_render_layer(&props.layer, hasher);
     hash_option_material(&props.material, hasher);
-    hash_option_shadow(&props.shadow, hasher);
+    hash_shadow_stack(&props.shadow, hasher);
     hash_option_transform(&props.transform, hasher);
     hash_f32(props.opacity, hasher);
     props.clips_content.hash(hasher);
@@ -805,15 +862,10 @@ fn hash_shadow(shadow: &Shadow, hasher: &mut impl Hasher) {
     hash_color(&shadow.color, hasher);
 }
 
-fn hash_option_shadow(shadow: &Option<Shadow>, hasher: &mut impl Hasher) {
-    match shadow {
-        Some(s) => {
-            1u8.hash(hasher);
-            hash_shadow(s, hasher);
-        }
-        None => {
-            0u8.hash(hasher);
-        }
+fn hash_shadow_stack(shadows: &[Shadow], hasher: &mut impl Hasher) {
+    (shadows.len() as u32).hash(hasher);
+    for s in shadows {
+        hash_shadow(s, hasher);
     }
 }
 
@@ -824,7 +876,12 @@ fn hash_glass_style(glass: &GlassStyle, hasher: &mut impl Hasher) {
     hash_f32(glass.brightness, hasher);
     hash_f32(glass.noise, hasher);
     hash_f32(glass.border_thickness, hasher);
-    hash_option_shadow(&glass.shadow, hasher);
+    if let Some(s) = &glass.shadow {
+        1u8.hash(hasher);
+        hash_shadow(s, hasher);
+    } else {
+        0u8.hash(hasher);
+    }
 }
 
 fn hash_gradient_stop(stop: &GradientStop, hasher: &mut impl Hasher) {
@@ -1204,18 +1261,16 @@ fn color_eq(a: &Color, b: &Color) -> bool {
     f32_eq(a.r, b.r) && f32_eq(a.g, b.g) && f32_eq(a.b, b.b) && f32_eq(a.a, b.a)
 }
 
-fn shadow_eq(a: &Option<Shadow>, b: &Option<Shadow>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => {
-            f32_eq(a.offset_x, b.offset_x)
-                && f32_eq(a.offset_y, b.offset_y)
-                && f32_eq(a.blur, b.blur)
-                && f32_eq(a.spread, b.spread)
-                && color_eq(&a.color, &b.color)
-        }
-        _ => false,
-    }
+fn shadow_eq(a: &Shadow, b: &Shadow) -> bool {
+    f32_eq(a.offset_x, b.offset_x)
+        && f32_eq(a.offset_y, b.offset_y)
+        && f32_eq(a.blur, b.blur)
+        && f32_eq(a.spread, b.spread)
+        && color_eq(&a.color, &b.color)
+}
+
+fn shadow_stack_eq(a: &[Shadow], b: &[Shadow]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| shadow_eq(x, y))
 }
 
 fn transform_eq(a: &Option<Transform>, b: &Option<Transform>) -> bool {
@@ -1247,7 +1302,11 @@ fn brush_eq(a: &Option<Brush>, b: &Option<Brush>) -> bool {
                 && f32_eq(a.brightness, b.brightness)
                 && f32_eq(a.noise, b.noise)
                 && f32_eq(a.border_thickness, b.border_thickness)
-                && shadow_eq(&a.shadow, &b.shadow)
+                && match (&a.shadow, &b.shadow) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => shadow_eq(x, y),
+                    _ => false,
+                }
         }
         (Some(Brush::Image(a)), Some(Brush::Image(b))) => {
             a.source == b.source
@@ -1320,7 +1379,7 @@ pub fn render_props_eq(a: &RenderProps, b: &RenderProps) -> bool {
         && a.border_radius == b.border_radius
         && a.layer == b.layer
         && material_eq(&a.material, &b.material)
-        && shadow_eq(&a.shadow, &b.shadow)
+        && shadow_stack_eq(&a.shadow, &b.shadow)
         && transform_eq(&a.transform, &b.transform)
         && f32_eq(a.opacity, b.opacity)
         && a.clips_content == b.clips_content
@@ -1334,6 +1393,7 @@ pub fn render_props_eq(a: &RenderProps, b: &RenderProps) -> bool {
 mod tests {
     use super::*;
     use crate::div::div;
+    use crate::text::text;
 
     #[test]
     fn test_hash_stability() {
@@ -1422,6 +1482,66 @@ mod tests {
         assert!(
             result.changes.visual,
             "Opacity change should be detected as visual change"
+        );
+    }
+
+    #[test]
+    fn test_structural_hash_ignores_text_color() {
+        let div1 = div().child(text("2").color(Color::WHITE));
+        let div2 = div().child(text("2").color(Color::BLACK));
+        let div3 = div().child(text("3").color(Color::WHITE));
+
+        assert_eq!(
+            DivHash::compute_structural_tree(&div1),
+            DivHash::compute_structural_tree(&div2),
+            "Text color is visual-only and should not force a structural rebuild"
+        );
+        assert_ne!(
+            DivHash::compute_structural_tree(&div1),
+            DivHash::compute_structural_tree(&div3),
+            "Text content changes must still force a structural rebuild"
+        );
+    }
+
+    #[test]
+    fn topology_hash_ignores_layout_dimensions() {
+        // The whole point of the topology hash: spring-animated `.w()`
+        // / `.h()` / `.left()` must NOT trip it. Without this guarantee,
+        // every animation frame would full-rebuild the Stateful subtree.
+        let div1 = div().w(100.0).h(50.0).child(text("x"));
+        let div2 = div().w(200.0).h(80.0).child(text("x"));
+
+        assert_eq!(
+            DivHash::compute_topology_tree(&div1),
+            DivHash::compute_topology_tree(&div2),
+            "Width / height changes must not bump the topology hash — that's what enables the layout-prop fast path"
+        );
+        assert_ne!(
+            DivHash::compute_structural_tree(&div1),
+            DivHash::compute_structural_tree(&div2),
+            "Width / height changes still bump the structural hash, so we know to recompute layout"
+        );
+    }
+
+    #[test]
+    fn topology_hash_catches_real_structural_changes() {
+        // Adding/removing a child, changing text content, swapping
+        // element type — all must trip the topology hash so the
+        // layout-prop fast path doesn't try to patch a tree whose
+        // shape actually changed.
+        let one_child = div().w(100.0).child(text("x"));
+        let two_children = div().w(100.0).child(text("x")).child(text("y"));
+        let different_text = div().w(100.0).child(text("z"));
+
+        assert_ne!(
+            DivHash::compute_topology_tree(&one_child),
+            DivHash::compute_topology_tree(&two_children),
+            "Adding a child must bump the topology hash"
+        );
+        assert_ne!(
+            DivHash::compute_topology_tree(&one_child),
+            DivHash::compute_topology_tree(&different_text),
+            "Text content change must bump the topology hash"
         );
     }
 }

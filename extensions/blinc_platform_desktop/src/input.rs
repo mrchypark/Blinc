@@ -1,13 +1,10 @@
 //! Desktop input conversion (winit -> blinc_platform)
 
 use blinc_platform::{
-    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key, KeyState,
-    KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
+    InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
+    TouchEvent,
 };
-use winit::event::{
-    ElementState, Ime as WinitIme, KeyEvent as WinitKeyEvent, MouseButton as WinitMouseButton,
-    Touch, TouchPhase,
-};
+use winit::event::{ElementState, MouseButton as WinitMouseButton, Touch, TouchPhase};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 /// Convert winit mouse button to blinc MouseButton
@@ -162,66 +159,11 @@ pub fn convert_keyboard_event(
     state: ElementState,
     modifiers: ModifiersState,
 ) -> InputEvent {
-    keyboard_input_event(key, None, convert_key_state(state), modifiers)
-}
-
-/// Convert a full winit key event so committed text can be preserved.
-pub fn convert_key_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> InputEvent {
-    keyboard_input_event(
-        &event.logical_key,
-        event.text.as_deref(),
-        convert_key_state(event.state),
-        modifiers,
-    )
-}
-
-fn keyboard_input_event(
-    key: &WinitKey,
-    text: Option<&str>,
-    state: KeyState,
-    modifiers: ModifiersState,
-) -> InputEvent {
-    let is_shortcut_tab = modifiers.control_key() || modifiers.alt_key() || modifiers.super_key();
-
-    if state == KeyState::Pressed
-        && !is_shortcut_tab
-        && matches!(key, WinitKey::Named(NamedKey::Tab))
-    {
-        let intent = if modifiers.shift_key() {
-            FocusTraversalIntent::Previous
-        } else {
-            FocusTraversalIntent::Next
-        };
-        return InputEvent::FocusTraversal(intent);
-    }
-
     InputEvent::Keyboard(KeyboardEvent {
         key: convert_key(key),
-        text: text.map(str::to_string),
-        state,
+        state: convert_key_state(state),
         modifiers: convert_modifiers(modifiers),
     })
-}
-
-/// Convert winit IME event to blinc InputEvent.
-pub fn convert_ime_event(event: &WinitIme) -> Option<InputEvent> {
-    match event {
-        WinitIme::Enabled => Some(InputEvent::CompositionStarted),
-        WinitIme::Preedit(text, cursor) => {
-            Some(InputEvent::CompositionUpdated(ImeCompositionUpdate::new(
-                text.clone(),
-                cursor.map(|(start, end)| ImeCompositionSelection::new(start, end)),
-            )))
-        }
-        WinitIme::Commit(text) => {
-            if text.is_empty() {
-                None
-            } else {
-                Some(InputEvent::CompositionCommitted(text.clone()))
-            }
-        }
-        WinitIme::Disabled => Some(InputEvent::CompositionCancelled),
-    }
 }
 
 /// Convert winit touch event to blinc InputEvent
@@ -291,52 +233,4 @@ pub fn scroll_event(delta_x: f32, delta_y: f32, phase: TouchPhase) -> InputEvent
 /// Create a scroll end event (momentum finished)
 pub fn scroll_end_event() -> InputEvent {
     InputEvent::ScrollEnd
-}
-
-/// Convert trackpad/touchpad magnify (pinch) to blinc InputEvent.
-///
-/// `scale` is a ratio delta per update (1.0 = no change).
-pub fn pinch_event(scale: f32) -> InputEvent {
-    InputEvent::Pinch {
-        scale,
-        phase: ScrollPhase::Moved,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::keyboard_input_event;
-    use blinc_platform::{InputEvent, Key, KeyState};
-    use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
-
-    #[test]
-    fn convert_keyboard_event_preserves_committed_text() {
-        let input = keyboard_input_event(
-            &WinitKey::Character("a".into()),
-            Some("a"),
-            KeyState::Pressed,
-            ModifiersState::empty(),
-        );
-
-        match input {
-            InputEvent::Keyboard(kb) => {
-                assert_eq!(kb.key, Key::A);
-                assert_eq!(kb.text.as_deref(), Some("a"));
-                assert_eq!(kb.state, KeyState::Pressed);
-            }
-            other => panic!("expected keyboard input, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn convert_keyboard_event_keeps_tab_focus_traversal_behavior() {
-        let input = keyboard_input_event(
-            &WinitKey::Named(NamedKey::Tab),
-            None,
-            KeyState::Pressed,
-            ModifiersState::empty(),
-        );
-
-        assert!(matches!(input, InputEvent::FocusTraversal(_)));
-    }
 }

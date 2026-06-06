@@ -10,21 +10,17 @@
 //!
 //! # Building
 //!
-//! This example is documentation-only while the in-tree Fuchsia runtime remains
-//! unsupported.
-//!
 //! ```bash
 //! # Add Fuchsia target
 //! rustup target add x86_64-unknown-fuchsia
 //!
-//! # Optional: compile the example artifact for external experiments
+//! # Build for Fuchsia
 //! cargo build --example fuchsia_hello --target x86_64-unknown-fuchsia --features fuchsia
 //! ```
 //!
-//! # Runtime status
+//! # Running in Fuchsia Emulator
 //!
-//! Running this example through `FuchsiaApp::run` is not supported by the
-//! current in-tree runtime.
+//! See docs/fuchsia/SETUP.md for emulator setup instructions.
 
 #[cfg(target_os = "fuchsia")]
 use blinc_app::fuchsia::FuchsiaApp;
@@ -113,12 +109,14 @@ fn main() {
                     .color([0.5, 0.5, 0.6, 1.0]),
             )
     })
-    .expect("Fuchsia runtime is currently unsupported in-tree");
+    .expect("Failed to run Fuchsia app");
 }
 
 #[cfg(not(target_os = "fuchsia"))]
 fn main() {
     eprintln!("This example can only run on Fuchsia OS.");
-    eprintln!("Build with: cargo build --example fuchsia_hello --target x86_64-unknown-fuchsia --features fuchsia");
+    eprintln!(
+        "Build with: cargo build --example fuchsia_hello --target x86_64-unknown-fuchsia --features fuchsia"
+    );
     std::process::exit(1);
 }

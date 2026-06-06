@@ -1,5 +1,0 @@
-demo-title = Blinc i18n Demo
-demo-locale = Locale: { $locale }
-demo-toggle = Toggle English/Korean
-demo-hello = Hello, { $name }!
-

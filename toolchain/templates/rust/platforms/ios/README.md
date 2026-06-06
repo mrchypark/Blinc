@@ -1,7 +1,6 @@
 # {{project_name}} iOS Platform
 
-A Blinc UI application template for iOS. The generated Xcode project wires the
-native bridge and render loop scaffolding for the current iOS runtime.
+A Blinc UI application for iOS with Metal rendering.
 
 ## Requirements
 
@@ -78,8 +77,7 @@ The integration uses C FFI (Foreign Function Interface):
 1. `CADisplayLink` fires at ~60fps
 2. Swift checks `blinc_needs_render()` to see if UI changed
 3. If needed, `blinc_build_frame()` rebuilds the UI tree
-4. `blinc_render_frame()` renders to the Metal surface when the runtime
-   requests a frame
+4. `blinc_render_frame()` renders to the Metal surface
 
 ### Touch Events
 
@@ -113,14 +111,6 @@ Ensure:
 1. The view controller is receiving touch events (check `touchesBegan` is called)
 2. The render context was created successfully
 3. A UI builder is registered via `blinc_set_ui_builder()`
-
-## Notes
-
-- The template now calls `BlincNativeBridge.shared.registerDefaults()` and
-  `connectToRust()` from `AppDelegate.swift`.
-- iOS support is still evolving. Treat the generated project as working
-  scaffolding around the current bridge and renderer, not as a fully finished
-  platform shell.
 
 ## Architecture
 

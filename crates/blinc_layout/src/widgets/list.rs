@@ -33,7 +33,7 @@ use std::ops::{Deref, DerefMut};
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::div::{div, Div, ElementBuilder};
+use crate::div::{Div, ElementBuilder, div};
 use crate::element::RenderProps;
 use crate::svg::svg;
 use crate::text::text;
@@ -203,6 +203,12 @@ impl UnorderedList {
         self
     }
 
+    /// Add a boxed child element.
+    pub fn child_box(mut self, element: Box<dyn ElementBuilder>) -> Self {
+        self.inner = self.inner.child_box(element);
+        self
+    }
+
     /// Set the marker style
     pub fn marker(mut self, marker: ListMarker) -> Self {
         self.marker = marker;
@@ -347,6 +353,12 @@ impl OrderedList {
     /// Add any element as a child (for nesting lists)
     pub fn child_element(mut self, element: impl ElementBuilder + 'static) -> Self {
         self.inner = self.inner.child(element);
+        self
+    }
+
+    /// Add a boxed child element.
+    pub fn child_box(mut self, element: Box<dyn ElementBuilder>) -> Self {
+        self.inner = self.inner.child_box(element);
         self
     }
 

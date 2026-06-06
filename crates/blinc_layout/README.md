@@ -10,7 +10,6 @@ Flexbox layout engine for Blinc UI, powered by [Taffy](https://github.com/Dioxus
 ## Overview
 
 `blinc_layout` provides a declarative, builder-style API for constructing UI layouts. It combines Taffy's flexbox implementation with a rich set of interactive elements and rendering capabilities.
-It provides primitives and widget defaults, while polished design-system defaults are expected to live in `blinc_cn`.
 
 ## Features
 

@@ -73,6 +73,120 @@ fn bc_eligible(source_uri: &str, width: u32, height: u32) -> bool {
 }
 
 /// Intersect two axis-aligned clip rects [x, y, w, h], returning their overlap.
+/// Union AABB (`[x, y, w, h]` in screen pixels) of every primitive
+/// in `range`, computed from each primitive's `bounds`. Skips zero-
+/// size primitives so they don't pull the union to the origin.
+/// Returns `None` for empty ranges or ranges of degenerate prims.
+fn bounds_union_of_range(
+    primitives: &[blinc_gpu::primitives::GpuPrimitive],
+    range: &std::ops::Range<usize>,
+) -> Option<[f32; 4]> {
+    if range.start >= range.end || range.end > primitives.len() {
+        return None;
+    }
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for p in &primitives[range.start..range.end] {
+        let [x, y, w, h] = p.bounds;
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x + w);
+        max_y = max_y.max(y + h);
+    }
+    if min_x.is_finite() && max_x > min_x && max_y > min_y {
+        Some([min_x, min_y, max_x - min_x, max_y - min_y])
+    } else {
+        None
+    }
+}
+
+/// Union of two optional AABBs. Returns `None` when both are `None`,
+/// the populated one when only one is set, and the bounding box of
+/// both otherwise.
+fn union_aabbs(a: Option<[f32; 4]>, b: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(r), None) | (None, Some(r)) => Some(r),
+        (Some([ax, ay, aw, ah]), Some([bx, by, bw, bh])) => {
+            let min_x = ax.min(bx);
+            let min_y = ay.min(by);
+            let max_x = (ax + aw).max(bx + bw);
+            let max_y = (ay + ah).max(by + bh);
+            Some([min_x, min_y, max_x - min_x, max_y - min_y])
+        }
+    }
+}
+
+/// Union AABB of a slice of damage rects. Returns `None` for empty
+/// or all-degenerate input.
+fn damage_union(rects: &[[f32; 4]]) -> Option<[f32; 4]> {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for [x, y, w, h] in rects.iter().copied() {
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x + w);
+        max_y = max_y.max(y + h);
+    }
+    if min_x.is_finite() && max_x > min_x && max_y > min_y {
+        Some([min_x, min_y, max_x - min_x, max_y - min_y])
+    } else {
+        None
+    }
+}
+
+/// Convert a union AABB into a `set_scissor_rect`-ready
+/// `(x, y, w, h)` tuple, clamped to the renderer's static layer
+/// extent. Returns `None` if the rect is empty after clamping.
+fn damage_scissor_from_union(
+    rect: Option<[f32; 4]>,
+    renderer: &blinc_gpu::GpuRenderer,
+) -> Option<(u32, u32, u32, u32)> {
+    let [x, y, w, h] = rect?;
+    let (lw, lh) = renderer.viewport_size();
+    let layer_width = lw as f32;
+    let layer_height = lh as f32;
+    let scissor_x = x.max(0.0).floor() as u32;
+    let scissor_y = y.max(0.0).floor() as u32;
+    let scissor_right = (x + w).min(layer_width).ceil() as u32;
+    let scissor_bottom = (y + h).min(layer_height).ceil() as u32;
+    if scissor_right <= scissor_x || scissor_bottom <= scissor_y {
+        return None;
+    }
+    Some((
+        scissor_x,
+        scissor_y,
+        scissor_right - scissor_x,
+        scissor_bottom - scissor_y,
+    ))
+}
+
+/// `true` when `bounds` (x, y, w, h) intersects any rect in `rects`.
+/// Used to filter cached glyphs / SVGs / images down to those that
+/// fall inside the damage region before scissored re-dispatch.
+fn aabb_intersects_any(bounds: [f32; 4], rects: &[[f32; 4]]) -> bool {
+    let [bx, by, bw, bh] = bounds;
+    if bw <= 0.0 || bh <= 0.0 {
+        return false;
+    }
+    rects.iter().any(|[rx, ry, rw, rh]| {
+        if *rw <= 0.0 || *rh <= 0.0 {
+            return false;
+        }
+        bx + bw > *rx && rx + rw > bx && by + bh > *ry && ry + rh > by
+    })
+}
+
 fn intersect_clip_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let x1 = a[0].max(b[0]);
     let y1 = a[1].max(b[1]);
@@ -100,6 +214,85 @@ fn effective_single_clip(primary: Option<[f32; 4]>, scroll: Option<[f32; 4]>) ->
 
 // Rasterized SVG textures are now packed into SvgAtlas (single shared GPU texture)
 
+/// Everything a canvas overlay pass needs to dispatch in one frame.
+///
+/// Compositor-mode rendering skips the canvas's `render_fn` during
+/// the static-cache paint (the walker's `skip_canvas_drawing` flag)
+/// and re-invokes the closure into a scratch
+/// `GpuPaintContext` each frame inside `collect_canvas_overlay`.
+/// A canvas closure can emit three different kinds of draw output,
+/// and ALL of them need to reach the GPU for the canvas to render
+/// correctly:
+///
+/// - **`primitives`** — SDF / glass / text primitives, the
+///   common case (drawn rounded boxes, gradients, glyphs).
+/// - **`dynamic_images`** — raw-RGBA blits via
+///   `ctx.draw_rgba_pixels(...)`. Used by video players (one
+///   blit per video frame) and the camera-preview demos.
+/// - **`meshes`** — 3D mesh draws via `ctx.draw_mesh_data(...)`.
+///   `blinc_canvas_kit::SceneKit3D` and `mesh_3d_demo.rs` go
+///   through this path.
+///
+/// Before this struct existed, the overlay collection only drained
+/// `primitives` from the scratch batch; the other two channels
+/// were dropped on the floor when the scratch context dropped at
+/// end-of-frame, so video frames and 3D content never reached the
+/// GPU under compositor mode.
+#[derive(Default)]
+pub struct CanvasOverlay {
+    pub primitives: Vec<blinc_gpu::primitives::GpuPrimitive>,
+    pub dynamic_images: Vec<blinc_gpu::primitives::DynamicImage>,
+    pub meshes: Vec<blinc_gpu::PendingMesh>,
+    /// User-defined GPU passes scheduled via `DrawContext::run_gpu_pass`
+    /// inside canvas closures. Drained from each canvas's scratch paint
+    /// context and dispatched alongside `meshes`, after the SDF static
+    /// cache has been blitted onto the frame target.
+    pub gpu_passes: Vec<blinc_gpu::paint::PendingGpuPass>,
+    /// Aux-data emitted by canvas closures (polygon-clip vertices, 3D
+    /// group shape descriptors). Concatenated across closures; per-
+    /// primitive offsets that referenced the closure's own
+    /// `PrimitiveBatch::aux_data` are shifted by the accumulated
+    /// length so they index into the merged buffer.
+    pub aux_data: Vec<[f32; 4]>,
+}
+
+/// Outcome of [`RenderContext::apply_css_deltas`]. Tells the caller
+/// which follow-up work the CSS-only fast path needs this frame.
+///
+/// The `last_css_damage_rects` slot is written before the function
+/// returns regardless of variant — callers can read it for both
+/// [`Self::Patched`] and [`Self::PatchedWithReemits`]. On
+/// [`Self::Bail`] the field is cleared (caller must take the slow
+/// path anyway, so damage rects are irrelevant).
+#[derive(Debug, Clone)]
+pub enum CssDeltaResult {
+    /// Every record was patched in place. Caller dispatches the
+    /// damaged-cache repaint and the cached text / SVG / image
+    /// re-dispatch.
+    Patched,
+    /// In-scope records were patched, but one or more records carried
+    /// an out-of-scope property (width / height / padding / margin /
+    /// gap / clip-path geometry / filter blur / backdrop blur). The
+    /// listed subtrees still hold stale primitives in
+    /// `cached_bg_batch`; the caller must re-emit them via a scratch
+    /// walker pass and splice the new primitives back into the cache
+    /// before dispatching the damaged-cache repaint.
+    PatchedWithReemits { reemit_nodes: Vec<LayoutNodeId> },
+    /// The patch path couldn't proceed (cache missing, lock poisoned,
+    /// opacity-zero ratio, layer-push-index drift). Caller takes the
+    /// full slow path.
+    Bail,
+}
+
+/// Captures the cached_bg_batch state of one CSS-animated record at
+/// the moment `try_reemit_and_splice_css_subtrees` starts. The
+/// walker overwrites the live record during the re-walk; we keep
+/// these snapshots to (a) position each splice into the right
+/// `primitive_range` after the walker has clobbered the live values
+/// with scratch-batch indices, and (b) AABB-intersect cached glyphs
+/// for the Phase 4 text-bail check.
+type ReemitSnapshot = (LayoutNodeId, std::ops::Range<usize>, Option<[f32; 4]>);
+
 /// Internal render context that manages GPU resources and rendering
 pub struct RenderContext {
     renderer: GpuRenderer,
@@ -116,6 +309,75 @@ pub struct RenderContext {
     image_cache: LruCache<String, GpuImage>,
     // Tracks when each image first appeared in the cache (for fade-in animation)
     image_load_times: std::collections::HashMap<String, web_time::Instant>,
+    /// Damage rectangles populated by the most recent
+    /// `apply_binding_deltas` call. Each entry is the union of a
+    /// motion-bound subtree's previous on-screen AABB and its new
+    /// AABB after delta patching, in screen pixels (post-DPI).
+    ///
+    /// The compositor v2 damage-rect path reads this after the fast
+    /// path runs and re-renders just these regions of the static
+    /// cache (with scissor + `LoadOp::Load`) instead of invalidating
+    /// the whole layer.
+    last_binding_damage_rects: Vec<[f32; 4]>,
+    /// Damage rectangles populated by the most recent
+    /// `apply_css_deltas` call. One entry per `CssAnimPaintMeta`
+    /// whose properties actually changed this frame; each is the
+    /// node's `last_screen_aabb` (screen pixels, post-DPI) captured
+    /// by the walker. The Phase 4d Opt 2 CSS-damage-rect path
+    /// passes these to `render_static_layer_damaged` so the cache
+    /// repaint is scissored to just the animated regions instead of
+    /// re-rendering the whole layer.
+    ///
+    /// Visual-only Phase 4c properties (opacity / colour /
+    /// corner_radius / shadow / filter / rotate_x / rotate_y) keep
+    /// the AABB stable, so the walker's recorded last_screen_aabb
+    /// covers both the pre- and post-patch pixel footprints — no
+    /// union with a new AABB needed.
+    last_css_damage_rects: Vec<[f32; 4]>,
+    /// Prepared text glyphs from the most recent full paint, keyed
+    /// by `z_index`. Populated by `render_tree_with_motion_opt`'s
+    /// body right after the text-shaping loop, drained by the
+    /// damage-rect fast path so text inside the damaged region can
+    /// be re-dispatched (the scissored clear in
+    /// `render_static_layer_damaged` would otherwise wipe those
+    /// pixels). Invalidated alongside `cached_texts`.
+    cached_glyphs_by_layer: Option<std::collections::BTreeMap<u32, Vec<GpuGlyph>>>,
+    /// Same as `cached_glyphs_by_layer` but for the foreground-text
+    /// pass — glyphs inside `.foreground()` elements, dispatched
+    /// after the rest of the scene.
+    cached_fg_glyphs: Option<Vec<GpuGlyph>>,
+    /// Cached text *primitives* (PRIM_TEXT GpuPrimitives) for text that
+    /// lives inside a motion-bound subtree. Stored as primitives (not
+    /// glyphs) so the SDF pipeline can apply `local_affine` — that's
+    /// where the motion container's scale / translate is baked in. The
+    /// glyph pipeline (`render_text`) doesn't carry per-glyph affine,
+    /// so a fade-in animation that scales the bg would leave plain
+    /// glyphs at full size while the bg shrank.
+    ///
+    /// Dispatched via `render_primitives_overlay` onto the surface
+    /// *after* `composite_frame`'s overlay pass so they sit on top of
+    /// the motion-bound bg primitives (which route through the dynamic
+    /// batch / overlay). Without this, text inside motion containers
+    /// gets covered by their bg paint.
+    cached_motion_subtree_text_prims: Option<Vec<GpuPrimitive>>,
+    /// SVGs inside motion subtrees — same routing as the text prims
+    /// above. Re-dispatched via `render_rasterized_svgs` after the
+    /// overlay so the icon lands on top of its motion container's bg.
+    cached_motion_subtree_svgs: Option<Vec<SvgElement>>,
+    /// Same as `cached_glyphs_by_layer` but for CSS-transformed text
+    /// primitives (text with a `transform:` style — routed through
+    /// the SDF pipeline, not the glyph pipeline).
+    cached_css_transformed_text_prims: Option<Vec<GpuPrimitive>>,
+    /// Per-source fade end deadline (`loaded_at + fade_duration_ms`).
+    /// Populated only when the element that triggered the load specified
+    /// `fade_duration_ms > 0`. Used at the frame boundary to decide
+    /// whether the redraw chain should stay alive — once `now >= deadline`
+    /// the fade has visually settled and we can stop firing frames.
+    ///
+    /// Stored separately from `image_load_times` (which is just the
+    /// load timestamp consumed by `fade_factor` calc) so existing
+    /// fade-factor code paths stay unchanged.
+    image_fade_deadlines: std::collections::HashMap<String, web_time::Instant>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
     svg_cache: LruCache<u64, SvgDocument>,
     // Texture atlas for rasterized SVGs (single shared GPU texture, shelf-packed)
@@ -129,6 +391,15 @@ pub struct RenderContext {
     cursor_pos: [f32; 2],
     // Whether the last render contained @flow shader elements (triggers continuous redraw)
     has_active_flows: bool,
+    /// Whether any image emitted during the last render is in the
+    /// middle of its load-time fade-in (`fade_factor < 1.0`). Kept
+    /// separate from `has_active_flows` because the flows flag is
+    /// authoritatively reset to `!flow_elements.is_empty()` at the
+    /// end of dispatch — image-fade signals set in the middle of
+    /// dispatch get overwritten otherwise. Read by the windowed
+    /// runner's redraw-gate via `has_pending_image_fade()` so the
+    /// chain keeps firing until every image's fade completes.
+    has_pending_image_fade: bool,
     // Frame counter for periodic cache stats logging
     frame_count: u64,
     // Alpha value used when clearing the main render target. 1.0 for
@@ -138,6 +409,137 @@ pub struct RenderContext {
     // desktop runner updates it per-window so a mix of opaque and
     // transparent windows can share the same RenderContext.
     clear_alpha: f32,
+    // Cached `PrimitiveBatch` from the most recent full Phase 4
+    // paint. Lives across frames so the compositor-path fast Phase 4
+    // can patch primitives in place (using
+    // `RenderTree::composite_bindings` ranges) and re-render without
+    // re-walking the tree.
+    //
+    // Invalidated (set to `None`) any time the next frame can't
+    // safely reuse the cache — tree rebuild, layout change, CSS state
+    // change, stylesheet reparse, scroll offset change. The fast
+    // path is opt-in per frame: callers must check
+    // `cached_bg_batch.is_some()` AND that no invalidator fired this
+    // frame before consuming.
+    //
+    // Memory: roughly `bytes_per_primitive * primitive_count`. For
+    // cn_demo (~400 primitives at ~256 bytes each = 100 KB), this
+    // is a small fixed cost in exchange for skipping a 1 ms paint
+    // walker + 1 ms collect every frame.
+    cached_bg_batch: Option<blinc_gpu::PrimitiveBatch>,
+    /// Compositor v2 dynamic batch — primitives emitted inside
+    /// motion-bound subtrees, separated by the walker via
+    /// `push_motion_subtree`/`pop_motion_subtree`. Stays out of the
+    /// static cache so motion-binding animations don't have to
+    /// invalidate it; dispatched per-frame as an overlay after the
+    /// cache blit. `apply_binding_deltas` patches its primitives in
+    /// place, so subsequent frames show the new positions without
+    /// re-running the walker.
+    cached_dynamic_batch: Option<blinc_gpu::PrimitiveBatch>,
+    /// True while `try_render_with_compositor` is running its inner
+    /// `render_tree_with_motion_opt(target=static_view, target_texture=None)`
+    /// step. The inner step paints the static cache; the compositor
+    /// then drives `composite_frame` separately to overlay the
+    /// `cached_dynamic_batch` onto the surface. Without this flag the
+    /// inner step also dispatched `cached_dynamic_batch` onto the
+    /// static-layer texture, so the static cache ended up containing
+    /// the motion-bound primitives at the slow-paint rotation —
+    /// subsequent frames blitted that into the surface AND
+    /// composite_frame painted them again at the current rotation,
+    /// producing two visible motion-bound primitives (the cn::spinner
+    /// double-arc symptom). The non-compositor path needs the
+    /// dispatch; the compositor path doesn't.
+    in_compositor_inner_call: bool,
+    /// Per-node `LayerTexture` cache for composite-promoted CSS
+    /// subtrees. The walker peels each promoted subtree's primitives
+    /// into a per-node scratch batch (see
+    /// `GpuPaintContext::push_composite_layer`); at end of paint we
+    /// rasterize each scratch batch into a tight texture and stash
+    /// it here keyed by the node's slotmap key
+    /// (`LayoutNodeId::data().as_ffi()`).
+    ///
+    /// On animation frames the per-frame composite reads these
+    /// textures by key (looked up via the matching `DynamicRegion`)
+    /// and blits each with the active CSS animation transform
+    /// applied — no walker re-entry. Textures stay resident across
+    /// frames until the subtree's intrinsic content changes (Phase
+    /// 5 dirty tracking) or the node demotes out of the dynamic
+    /// set.
+    /// The `(u32, u32)` is the ALLOCATED texture size — bucket-rounded
+    /// up from the natural content size by `render_subtree_to_layer_texture`
+    /// (64-px increments for atlas reuse). The blit's `source_size`
+    /// argument must be this allocated size, NOT the natural content
+    /// size, because the layer-composite shader's `source_rect` is in
+    /// normalized 0–1 UVs of the ALLOCATED texture. Passing natural
+    /// size collapses the bucket padding into the dest rect — a 16-px
+    /// indicator in a 64-px bucket renders at 25% height (the visible
+    /// thin-bar artefact users hit when the dest happens to land at a
+    /// dimension below the bucket granularity).
+    css_composited_textures:
+        std::collections::HashMap<u64, (blinc_gpu::renderer::LayerTexture, (u32, u32))>,
+    /// Hash of the scratch `PrimitiveBatch` that produced the texture
+    /// currently in [`Self::css_composited_textures`] for each node.
+    /// On every slow-path frame the walker re-emits primitives into a
+    /// fresh scratch batch; comparing the new hash against the cached
+    /// one tells us whether the subtree's intrinsic content actually
+    /// changed. When it hasn't — the steady-state case for a pulse /
+    /// glow node whose only animation is composite-promotable opacity
+    /// — we skip the GPU rasterize and reuse the existing texture.
+    /// Saves ~render_layer_range_tight per promoted region per slow-
+    /// path frame; on cn_demo with a single pulse on screen and a
+    /// non-promotable sibling driving the slow path that's ~200 µs
+    /// GPU time per frame.
+    css_composited_scratch_hash: std::collections::HashMap<u64, u64>,
+    /// Per-node `LayerTexture` cache for motion-bound subtrees that the
+    /// P4.1 predicate promoted into the `subtree_texture_candidates`
+    /// set. Mirror of [`Self::css_composited_textures`] for the motion
+    /// path — the walker peels each promoted motion-bound subtree's
+    /// primitives into a per-node scratch batch (the walker pushes the
+    /// composite layer at the same site that the CSS path uses), and
+    /// the end-of-paint bake hook below rasterizes each batch into a
+    /// tight texture and stashes it here keyed by the node's slotmap
+    /// key.
+    ///
+    /// On motion-driven animation frames the per-frame motion overlay
+    /// (`composite_motion_layers_overlay`) blits each texture with the
+    /// current `MotionBindings` (translate / scale / rotation /
+    /// opacity) applied at composite time — no walker re-entry, no
+    /// SDF re-emission. Textures stay resident across frames until the
+    /// subtree's intrinsic content changes or the node demotes out of
+    /// the bake registry (see
+    /// `RenderTree::demote_lapsed_motion_bake_records`).
+    motion_subtree_textures:
+        std::collections::HashMap<u64, (blinc_gpu::renderer::LayerTexture, (u32, u32))>,
+    /// Hash of the scratch `PrimitiveBatch` that produced the texture
+    /// currently in [`Self::motion_subtree_textures`] for each node.
+    /// Same dirty-skip mechanism the CSS path uses: on every paint the
+    /// walker re-emits the subtree's intrinsic content into a fresh
+    /// scratch batch; if the hash matches we skip the GPU rasterize
+    /// and reuse the existing texture. Steady-state motion frames — a
+    /// `cn::switch` thumb at a stable colour, a toast at its base
+    /// background — pay zero raster cost per frame; only the blit
+    /// runs.
+    motion_subtree_scratch_hash: std::collections::HashMap<u64, u64>,
+    // Collected text / SVG / image elements from the most recent
+    // full paint. Lives alongside `cached_bg_batch` so the
+    // compositor fast path can skip `collect_render_elements_with_state`
+    // (a 0.8–1.0 ms pass on cn_demo). On a successful fast path the
+    // cached vecs are cloned into the per-frame scratch and used
+    // exactly as if the collector had just run — translate-delta
+    // patching of text/SVG positions is folded into the same
+    // `apply_binding_deltas` helper that patches GPU primitives.
+    //
+    // Cloning costs ~bytes-per-element × element-count per frame:
+    // ~150 B × N for text, less for SVG / image. cn_demo's progress
+    // section has <30 elements total, so the clone is well under
+    // 10 µs.
+    //
+    // `Some` only when [`Self::cached_bg_batch`] is also `Some` —
+    // they're populated and invalidated together.
+    cached_texts: Option<Vec<TextElement>>,
+    cached_svgs: Option<Vec<SvgElement>>,
+    cached_images: Option<Vec<ImageElement>>,
+    cached_flows: Option<Vec<FlowElement>>,
 }
 
 struct CachedTexture {
@@ -215,6 +617,17 @@ struct TextElement {
     transform_3d_layer: Option<Transform3DLayerInfo>,
     /// Whether this text is inside a foreground-layer element (rendered after foreground primitives)
     is_foreground: bool,
+    /// Whether this text sits inside a motion-bound subtree (one that
+    /// has `motion_bindings` or a motion FSM config on any ancestor).
+    /// Motion-subtree primitives are routed to the dynamic batch and
+    /// dispatched as an overlay on top of the static cache, so text
+    /// rendered into the static cache would otherwise be covered by
+    /// the overlay's bg paint. Texts with this flag are deferred from
+    /// the static-cache text pass and re-dispatched after the overlay
+    /// in `composite_frame`'s flow so they land on top of the motion
+    /// bg primitives. Same routing principle as foreground text but
+    /// triggered by ancestor motion instead of a foreground layer.
+    in_motion_subtree: bool,
 }
 
 /// Image element data for rendering
@@ -305,6 +718,20 @@ struct SvgElement {
     tag_overrides: std::collections::HashMap<String, blinc_layout::element::SvgTagStyle>,
     /// 3D layer info if this SVG is inside a perspective-transformed parent
     transform_3d_layer: Option<Transform3DLayerInfo>,
+    /// Whether this SVG sits inside a motion-bound subtree. Same
+    /// routing principle as `TextElement.in_motion_subtree`: deferred
+    /// from the static-cache SVG pass and re-dispatched after the
+    /// motion overlay so the SVG icon lands on top of its motion-bound
+    /// container's bg paint instead of being covered.
+    in_motion_subtree: bool,
+    /// Stack-layer z used to interleave with primitives + text. Higher
+    /// values render on top. Captured from the walker's `z_layer`
+    /// counter — bumped by `stack_layer()` (overlay layers, toast
+    /// tray, foreground content) and by explicit `z_index`. Without
+    /// this, icons inside an overlay subtree would all collapse to
+    /// z=0 and render *under* the dialog/sheet/drawer card their
+    /// container z-layered above the main UI.
+    z_layer: u32,
 }
 
 /// Flow shader element — an element with `flow: <name>` that renders via a custom GPU pipeline
@@ -360,6 +787,14 @@ impl RenderContext {
             msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
             image_load_times: std::collections::HashMap::new(),
+            image_fade_deadlines: std::collections::HashMap::new(),
+            last_binding_damage_rects: Vec::new(),
+            last_css_damage_rects: Vec::new(),
+            cached_glyphs_by_layer: None,
+            cached_fg_glyphs: None,
+            cached_motion_subtree_text_prims: None,
+            cached_motion_subtree_svgs: None,
+            cached_css_transformed_text_prims: None,
             svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
             svg_atlas,
             scratch_glyphs: Vec::with_capacity(1024), // Pre-allocate for typical text
@@ -368,8 +803,20 @@ impl RenderContext {
             scratch_images: Vec::with_capacity(32),   // Pre-allocate for image elements
             cursor_pos: [0.0; 2],
             has_active_flows: false,
+            has_pending_image_fade: false,
             frame_count: 0,
             clear_alpha: 1.0,
+            cached_bg_batch: None,
+            cached_dynamic_batch: None,
+            in_compositor_inner_call: false,
+            css_composited_textures: std::collections::HashMap::new(),
+            css_composited_scratch_hash: std::collections::HashMap::new(),
+            motion_subtree_textures: std::collections::HashMap::new(),
+            motion_subtree_scratch_hash: std::collections::HashMap::new(),
+            cached_texts: None,
+            cached_svgs: None,
+            cached_images: None,
+            cached_flows: None,
         }
     }
 
@@ -382,6 +829,2093 @@ impl RenderContext {
     /// can see through to whatever is behind the window.
     pub fn set_clear_alpha(&mut self, alpha: f32) {
         self.clear_alpha = alpha;
+    }
+
+    /// Drop the cached primitive batch + companion element lists. Called
+    /// by the windowed runner any time the next frame can't safely
+    /// reuse the cache — tree rebuild, layout recompute, CSS state
+    /// transition, stylesheet reparse, scroll offset change, scale
+    /// factor change, surface resize. The next paint will run the
+    /// full walker and repopulate the cache.
+    ///
+    /// Safe to call even when no cache is set (clears the companion
+    /// vecs unconditionally for symmetry).
+    pub fn invalidate_render_cache(&mut self) {
+        self.invalidate_render_cache_tagged("unspecified");
+    }
+
+    pub fn invalidate_render_cache_tagged(&mut self, source: &'static str) {
+        if self.cached_bg_batch.is_some() {
+            tracing::trace!(
+                target: "blinc_app::frame_timing",
+                source,
+                "invalidate_render_cache",
+            );
+        }
+        self.cached_bg_batch = None;
+        self.cached_dynamic_batch = None;
+        self.cached_texts = None;
+        self.cached_svgs = None;
+        self.cached_images = None;
+        self.cached_flows = None;
+        self.cached_glyphs_by_layer = None;
+        self.cached_fg_glyphs = None;
+        self.cached_motion_subtree_text_prims = None;
+        self.cached_motion_subtree_svgs = None;
+        self.cached_css_transformed_text_prims = None;
+        // Compositor static cache rides on the same lifecycle as the
+        // primitive-batch cache — anything that would invalidate the
+        // batch (rebuild, layout change, scroll, hover state change,
+        // CSS state change) also makes the cached texture stale.
+        self.renderer.invalidate_static_layer();
+    }
+
+    /// Whether the renderer has a usable cached batch from the most
+    /// recent full paint. The Phase-4 fast path checks this before
+    /// attempting the compositor route — if `false` (first paint
+    /// after rebuild, after invalidate, etc.) the runner must take
+    /// the full path.
+    pub fn has_render_cache(&self) -> bool {
+        self.cached_bg_batch.is_some()
+    }
+
+    /// Apply motion-binding deltas to the cached primitive batch in
+    /// place. Mirrors what the paint walker would have re-emitted if
+    /// it ran this frame, but in O(bound-nodes × primitives-per-node)
+    /// instead of O(whole tree). The caller drives the fast Phase-4
+    /// path:
+    ///
+    ///   1. The runner detects that only motion bindings changed
+    ///      this frame (no rebuild / no layout / etc.) and that
+    ///      [`Self::has_render_cache`] returns `true`.
+    ///   2. The runner calls `apply_binding_deltas(tree, scale)`.
+    ///   3. On `Ok(())`, the runner re-renders from the patched
+    ///      cached batch (currently still through the full GPU
+    ///      pipeline — see follow-ups for partial uploads / command
+    ///      list reuse).
+    ///   4. On `Err(())`, the runner falls back to the full paint
+    ///      path. Returning `Err` is conservative: any binding that
+    ///      changed a property the patcher doesn't handle yet
+    ///      (scale, rotation, anything affecting bounds of children
+    ///      with their own CSS transforms) routes to the full path.
+    ///
+    /// Properties handled today: `translate_x` / `translate_y`
+    /// (delta-applied to `bounds.xy`) and `opacity` (ratio-applied
+    /// to every `color.a` / `border_color.a` / `shadow_color.a` in
+    /// the binding's primitive range). Scale / rotation are
+    /// deferred — they need `local_affine` updates plus
+    /// bounds-around-centre recomputation that interacts with
+    /// existing CSS transforms in non-trivial ways.
+    ///
+    /// `scale` is the DPI scale factor — needed because
+    /// `last_translate` is recorded in logical pixels (matches the
+    /// motion-binding API) but `bounds.xy` is in physical pixels.
+    /// The function multiplies the delta by `scale` before
+    /// applying.
+    ///
+    /// After a successful patch, the function updates each
+    /// binding's `last_translate` / `last_opacity` on the
+    /// `composite_bindings` map so the next frame's delta is
+    /// computed against the value just written to the GPU, not the
+    /// original paint-time value (otherwise multiple fast-path
+    /// Re-invoke every recorded canvas's `render_fn` and splice the
+    /// resulting primitives back into the cached `bg_batch` at the
+    /// range the walker recorded for that canvas.
+    ///
+    /// Lets the compositor fast path stay engaged when there's an
+    /// in-viewport canvas: only the ~tens of primitives the canvas
+    /// emits get refreshed, the surrounding ~thousand primitives in
+    /// the cache stay untouched, and the full paint walker doesn't
+    /// run. On `cn_demo` (3 spinners on screen, ~1000 primitives in
+    /// the tree) this is the difference between ~46 % CPU and a
+    /// fraction of that.
+    ///
+    /// Bails (returns `false`, caller falls back to full paint) when:
+    ///   - There's no cached batch.
+    ///   - A canvas emits a different primitive count this frame than
+    ///     it did on the last full paint. A count change shifts every
+    ///     subsequent range stored in `composite_bindings` /
+    ///     `canvas_paint_records`, and rebuilding that bookkeeping
+    ///     correctly is more work than re-walking the tree.
+    ///
+    /// Returns `true` when every canvas replayed successfully OR
+    /// there were no canvases to redraw (no-op fast-path).
+    pub fn redraw_canvases(
+        &mut self,
+        tree: &blinc_layout::RenderTree,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        use blinc_core::{DrawContext, Rect, Transform, layer::Affine2D};
+        use blinc_gpu::GpuPaintContext;
+
+        let batch = match self.cached_bg_batch.as_mut() {
+            Some(b) => b,
+            None => return false,
+        };
+
+        let records_ref = tree.canvas_paint_records();
+        if records_ref.is_empty() {
+            return true;
+        }
+        // Clone records out of the RefCell so we don't hold the
+        // borrow across the canvas closure invocation (closures can
+        // reach back into the scheduler / state and we don't want
+        // to deadlock the renderer's bookkeeping).
+        let mut sorted: Vec<blinc_layout::renderer::CanvasPaintRecord> =
+            records_ref.values().cloned().collect();
+        drop(records_ref);
+        sorted.sort_by_key(|r| r.primitive_range.start);
+
+        for record in &sorted {
+            // Scratch context. Width / height match the real frame
+            // so any viewport-dependent calculations inside fill_*
+            // (currently none, but defensively correct) get the
+            // right reference frame.
+            let mut scratch = GpuPaintContext::new(width as f32, height as f32);
+
+            // Replay the transform stack. `push_transform` composes
+            // with `Affine2D::IDENTITY` from the fresh stack, so
+            // pushing the saved affine reproduces the exact affine
+            // the walker had at canvas paint time.
+            scratch.push_transform(Transform::Affine2D(Affine2D {
+                elements: record.affine,
+            }));
+            scratch.push_opacity(record.opacity);
+            scratch.set_z_layer(record.z_layer);
+
+            let local_clip_rect = if record.clips_content {
+                let clip_rect = Rect::new(0.0, 0.0, record.bounds_wh.0, record.bounds_wh.1);
+                scratch.push_clip(blinc_core::layer::ClipShape::rect(clip_rect));
+                Some(clip_rect)
+            } else {
+                None
+            };
+            let _ = local_clip_rect;
+
+            let canvas_bounds = blinc_layout::canvas::CanvasBounds {
+                x: 0.0,
+                y: 0.0,
+                width: record.bounds_wh.0,
+                height: record.bounds_wh.1,
+            };
+            (record.render_fn)(&mut scratch as &mut dyn DrawContext, canvas_bounds);
+
+            if record.clips_content {
+                scratch.pop_clip();
+            }
+
+            // Capture the freshly emitted primitives. The scratch
+            // context's batch only contains what `render_fn` just
+            // emitted (we pushed nothing else into it that produces
+            // primitives) so we can splice the whole `primitives`
+            // vec back into the cached batch.
+            let new_batch = scratch.take_batch();
+            let new_count = new_batch.primitives.len();
+            let old_count = record.primitive_range.end - record.primitive_range.start;
+            if new_count != old_count {
+                // Splice would shift every subsequent range — bail.
+                return false;
+            }
+            for (i, p) in new_batch.primitives.into_iter().enumerate() {
+                batch.primitives[record.primitive_range.start + i] = p;
+            }
+        }
+
+        true
+    }
+
+    /// Re-invoke every recorded canvas closure into a fresh scratch
+    /// context and return the union of their emitted primitives.
+    ///
+    /// Used by the layer compositor as the dynamic overlay batch:
+    /// every frame, the static texture (containing the
+    /// canvas-skipped paint) is blitted onto the surface, and the
+    /// fresh `Vec<GpuPrimitive>` this returns is then dispatched on
+    /// top with `LoadOp::Load` — so the canvas content animates at
+    /// vsync while the surrounding tree never re-renders.
+    pub fn collect_canvas_overlay_primitives(
+        &self,
+        tree: &blinc_layout::RenderTree,
+        width: u32,
+        height: u32,
+    ) -> Vec<blinc_gpu::primitives::GpuPrimitive> {
+        self.collect_canvas_overlay(tree, width, height).primitives
+    }
+
+    /// Full canvas overlay collection: re-invokes every recorded
+    /// canvas's `render_fn` into a scratch context and returns
+    /// every kind of draw output the closure produced:
+    ///
+    /// - `primitives`: SDF / mesh / text primitives (the main batch)
+    /// - `dynamic_images`: raw-RGBA blits like video frames
+    ///   (`ctx.draw_rgba_pixels(...)`)
+    /// - `meshes`: 3D mesh draws (`ctx.draw_mesh_data(...)`) from
+    ///   `blinc_canvas_kit::SceneKit3D` or direct API users
+    ///
+    /// The legacy `collect_canvas_overlay_primitives` is preserved
+    /// as a thin shim that returns only `.primitives` — callers
+    /// that need the full overlay state (video, 3D) should call
+    /// this method instead.
+    ///
+    /// Canvas paint records are sorted by `z_layer` before
+    /// invocation so canvases at higher z-indexes render on top
+    /// of canvases at lower z-indexes within the overlay batch.
+    pub fn collect_canvas_overlay(
+        &self,
+        tree: &blinc_layout::RenderTree,
+        width: u32,
+        height: u32,
+    ) -> CanvasOverlay {
+        use blinc_core::{DrawContext, Rect, Transform, layer::Affine2D};
+        use blinc_gpu::GpuPaintContext;
+
+        let records_ref = tree.canvas_paint_records();
+        if records_ref.is_empty() {
+            return CanvasOverlay::default();
+        }
+        let mut records: Vec<blinc_layout::renderer::CanvasPaintRecord> =
+            records_ref.values().cloned().collect();
+        drop(records_ref);
+
+        // Sort by z_layer so overlays render bottom-up. Stable
+        // sort on (z_layer, primitive_range.start) keeps siblings
+        // at the same z in tree-emit order (the order the walker
+        // recorded them).
+        records.sort_by(|a, b| {
+            a.z_layer
+                .cmp(&b.z_layer)
+                .then_with(|| a.primitive_range.start.cmp(&b.primitive_range.start))
+        });
+
+        // Reuse a single scratch `GpuPaintContext` across every
+        // canvas in the frame. `GpuPaintContext::new` allocates a
+        // handful of `Vec`s + a `PrimitiveBatch`, all of which
+        // benefit from reuse — cn_demo's three spinners running at
+        // 30 fps would otherwise build 90 fresh contexts per
+        // second. `take_batch` returns the emitted primitives and
+        // leaves the batch empty for the next iteration; the
+        // transform / opacity stacks get explicit `pop`s after each
+        // canvas so the scratch ends every loop iteration in the
+        // same fresh state.
+        let mut scratch = GpuPaintContext::new(width as f32, height as f32);
+        let mut overlay = CanvasOverlay::default();
+        for record in records {
+            // Replay the ancestor clip stack BEFORE pushing the
+            // canvas's affine. `push_clip` transforms the supplied
+            // rect by the current affine, so pushing a screen-coord
+            // rect on the fresh stack (current affine = identity)
+            // keeps it in screen coords — exactly what we want for
+            // a scissor that comes from a scroll-container ancestor.
+            //
+            // `ancestor_clip_aabb` already includes the canvas's
+            // own clip (the snapshot was taken AFTER `clips_content`
+            // had been pushed during the walker pass), so we skip
+            // the per-canvas `clips_content` re-push below — the
+            // intersection is already baked into the single rect we
+            // push here.
+            let mut pushed_ancestor_clip = false;
+            if let Some([cx, cy, cw, ch]) = record.ancestor_clip_aabb {
+                if cw > 0.0 && ch > 0.0 {
+                    scratch.push_clip(blinc_core::layer::ClipShape::rect(Rect::new(
+                        cx, cy, cw, ch,
+                    )));
+                    pushed_ancestor_clip = true;
+                } else {
+                    // Empty intersection — canvas is fully clipped
+                    // out, emit no primitives this frame.
+                    continue;
+                }
+            }
+
+            scratch.push_transform(Transform::Affine2D(Affine2D {
+                elements: record.affine,
+            }));
+            scratch.push_opacity(record.opacity);
+            scratch.set_z_layer(record.z_layer);
+
+            // Only push the canvas's own clip when we don't have an
+            // ancestor snapshot (e.g. root-level canvas). When the
+            // ancestor snapshot exists it already includes the
+            // canvas's own clip.
+            let push_local_clip = record.clips_content && record.ancestor_clip_aabb.is_none();
+            if push_local_clip {
+                scratch.push_clip(blinc_core::layer::ClipShape::rect(Rect::new(
+                    0.0,
+                    0.0,
+                    record.bounds_wh.0,
+                    record.bounds_wh.1,
+                )));
+            }
+            let canvas_bounds = blinc_layout::canvas::CanvasBounds {
+                x: 0.0,
+                y: 0.0,
+                width: record.bounds_wh.0,
+                height: record.bounds_wh.1,
+            };
+            (record.render_fn)(&mut scratch as &mut dyn DrawContext, canvas_bounds);
+            if push_local_clip {
+                scratch.pop_clip();
+            }
+            // Pop the affine + opacity we pushed before invoking
+            // the closure so the scratch context returns to its
+            // initial state for the next canvas. `take_batch`
+            // returns the primitives and resets the internal
+            // batch, but transform/opacity stacks need explicit
+            // pops to keep the reuse correct.
+            scratch.pop_transform();
+            scratch.pop_opacity();
+            if pushed_ancestor_clip {
+                scratch.pop_clip();
+            }
+
+            // Drain everything the closure emitted: SDF/text
+            // primitives go to `overlay.primitives`, raw-RGBA
+            // blits (video frames, camera previews) go to
+            // `overlay.dynamic_images`, and 3D mesh draws go to
+            // `overlay.meshes`. Without draining all three, the
+            // compositor-mode overlay path drops video / mesh /
+            // image content while the non-compositor path renders
+            // them correctly — the canonical "video doesn't
+            // render" / "3D helmet missing" bugs.
+            let new_batch = scratch.take_batch();
+            overlay.primitives.extend(new_batch.primitives);
+            overlay.dynamic_images.extend(new_batch.dynamic_images);
+            overlay.meshes.extend(scratch.take_pending_meshes());
+            overlay.gpu_passes.extend(scratch.take_pending_gpu_passes());
+        }
+        overlay
+    }
+
+    /// Re-walk every `DynamicRegion` in the tree onto a scratch
+    /// `GpuPaintContext` and return the combined emitted batch.
+    /// Used by the compositor fast path on CSS-only animation frames
+    /// to refresh the per-region primitives without re-walking the
+    /// whole tree (or re-painting the static cache).
+    ///
+    /// The scratch context is pushed into `motion_subtree` for the
+    /// duration of each region's re-walk so primitive emissions go
+    /// to `dynamic_batch`. Both batches (`batch` + `dynamic_batch`)
+    /// are drained at the end and concatenated — content emitted
+    /// outside a nested motion-subtree push still lands in `batch`
+    /// for correctness (e.g. a CSS-animated parent whose primitive
+    /// is emitted before push_motion_subtree fires for a
+    /// motion-bound child).
+    ///
+    /// Aux-data offsets in the returned primitives index into the
+    /// returned `aux_data`; callers forward both to `composite_frame`.
+    fn collect_dynamic_region_primitives(
+        &self,
+        tree: &blinc_layout::RenderTree,
+        render_state: &blinc_layout::RenderState,
+        width: u32,
+        height: u32,
+    ) -> blinc_gpu::PrimitiveBatch {
+        use blinc_core::DrawContext;
+        use blinc_gpu::{GpuPaintContext, PrimitiveBatch};
+
+        let regions = tree.dynamic_regions();
+        if regions.is_empty() {
+            return PrimitiveBatch::new();
+        }
+
+        // One scratch context handles every region — its transform /
+        // opacity / clip stacks return to identity between regions
+        // because `render_dynamic_region` is balanced. `batch` and
+        // `dynamic_batch` accumulate across the iteration; we collect
+        // both at the end and merge into the returned batch.
+        let mut scratch = GpuPaintContext::new(width as f32, height as f32);
+
+        // Order by z_layer so the per-frame overlay paints
+        // higher-layer regions on top of lower-layer ones (stable
+        // sort on (z, root) keeps the walker's tree-order as the
+        // tiebreaker — same convention `collect_canvas_overlay`
+        // uses).
+        //
+        // CssAnimated regions are EXCLUDED: their pixels live in
+        // `css_composited_textures` and get blitted by
+        // `composite_css_layers_overlay`. Re-walking them here would
+        // re-enter `render_layer_with_motion` from the scratch
+        // context, which then writes a fresh `dynamic_regions` entry
+        // — but the scratch's cumulative transform already has DPI
+        // pushed once (by the outer `push_transform` below) AND
+        // again via the region's `ambient.affine` (captured from the
+        // main walker, which had DPI baked in). The result compounds
+        // DPI by an extra factor every fast-path frame; the new
+        // `screen_aabb` is DPI² physical, then DPI³ next frame,
+        // then DPI⁴... visible as `dest_w` / `dest_h` / `dest_pos`
+        // doubling each tick until the texture blits land far
+        // off-screen and pulse / glow vanish.
+        let mut ordered: Vec<_> = regions
+            .values()
+            .filter(|r| {
+                !matches!(
+                    r.kind,
+                    blinc_layout::renderer::DynamicKind::CssAnimated { .. }
+                )
+            })
+            .cloned()
+            .collect();
+        drop(regions);
+        if ordered.is_empty() {
+            return PrimitiveBatch::new();
+        }
+        ordered.sort_by(|a, b| {
+            a.ambient
+                .z_layer
+                .cmp(&b.ambient.z_layer)
+                .then_with(|| a.root.cmp(&b.root))
+        });
+
+        for region in &ordered {
+            // Apply DPI scale just like `render_with_motion` does for
+            // the root pass — the ambient affine was captured in
+            // physical-pixel space already, but the walker's
+            // `Transform::translate(bounds.x, bounds.y)` adds logical
+            // coordinates, so the DPI scale needs to wrap the call.
+            let has_scale = tree.scale_factor() != 1.0;
+            if has_scale {
+                scratch.push_transform(blinc_core::Transform::scale(
+                    tree.scale_factor(),
+                    tree.scale_factor(),
+                ));
+            }
+            // The region's root is dynamic by definition — wrap the
+            // re-walk in `push_motion_subtree` so emit routes into
+            // `dynamic_batch` for consistency with the slow-path
+            // walker's routing.
+            scratch.push_motion_subtree();
+            tree.render_dynamic_region(&mut scratch as &mut dyn DrawContext, region, render_state);
+            scratch.pop_motion_subtree();
+            if has_scale {
+                scratch.pop_transform();
+            }
+        }
+
+        // Drain the dynamic batch. The collect-time `push_motion_subtree`
+        // around each region's re-walk routes every emit into
+        // `dynamic_batch`, so the scratch's `batch` should always
+        // come back empty here. If a future change breaks that
+        // invariant we'd silently drop primitives, so debug-assert
+        // it and ignore the static batch's contents (any primitive
+        // there carries `aux_data` offsets pointing into a different
+        // batch's aux array and can't be safely merged without
+        // re-indexing them).
+        let out = scratch.take_dynamic_batch();
+        debug_assert!(
+            scratch.take_batch().primitives.is_empty(),
+            "collect_dynamic_region_primitives: scratch.batch should be empty — \
+             region re-walk emitted outside its motion-subtree gate"
+        );
+        out
+    }
+
+    /// Hash a composite-layer scratch `PrimitiveBatch` for the
+    /// rasterize-skip check in the slow-path texture step. Hashes
+    /// only the channels that affect rendered pixels: the SDF
+    /// primitives, foreground primitives, and the `aux_data` buffer
+    /// (polygon-clip vertices, 3D group descriptors). Glass / nested-
+    /// glass primitives don't appear in composited subtrees today
+    /// (the walker doesn't promote glass) so they're omitted; if a
+    /// future change ever lets glass land in a composite scratch,
+    /// promotability would have to be reconsidered anyway.
+    ///
+    /// `GpuPrimitive` and `aux_data` are `bytemuck::Pod`, so we hash
+    /// their raw bytes — cheap, allocation-free, deterministic.
+    fn hash_composite_scratch(batch: &blinc_gpu::primitives::PrimitiveBatch) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytemuck::cast_slice::<_, u8>(&batch.primitives).hash(&mut hasher);
+        bytemuck::cast_slice::<_, u8>(&batch.foreground_primitives).hash(&mut hasher);
+        bytemuck::cast_slice::<_, u8>(&batch.aux_data).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Composite each promoted CSS-animated layer's texture onto the
+    /// surface with the active animation's current opacity / 2D
+    /// transform applied at composite time.
+    ///
+    /// Called after `composite_frame` blits the static cache and
+    /// dispatches the motion-binding overlay. The layer textures
+    /// were rasterized at base state (the walker skipped applying
+    /// the composite-promotable CSS properties), so the animated
+    /// values read from the css-anim store here apply directly to
+    /// `blit_tight_texture_to_target`'s `dest_pos` / `dest_size` /
+    /// `opacity` — no delta math needed.
+    ///
+    /// Skips silently for any region whose texture isn't yet in
+    /// `css_composited_textures` (first-frame race after promotion,
+    /// or `LayerTexture` released on demotion).
+    fn composite_css_layers_overlay(
+        &mut self,
+        tree: &blinc_layout::RenderTree,
+        target_view: &wgpu::TextureView,
+    ) {
+        use slotmap::Key as _;
+
+        // Collect (key, screen_aabb, natural_size, stable_id) up-front
+        // so we don't hold the `dynamic_regions` borrow across the
+        // `&mut self.renderer` blit calls.
+        struct CompositeJob {
+            key: u64,
+            screen_aabb: [f32; 4],
+            natural_size: (u32, u32),
+            stable_id: Option<blinc_layout::tree::StableNodeId>,
+            ambient_clip: Option<([f32; 4], [f32; 4])>,
+            visit_seq: u32,
+        }
+        let mut jobs: Vec<CompositeJob> = {
+            let regions = tree.dynamic_regions();
+            regions
+                .iter()
+                .filter_map(|(node, region)| match region.kind {
+                    blinc_layout::renderer::DynamicKind::CssAnimated {
+                        natural_size,
+                        ambient_clip,
+                    } if natural_size.0 > 0 && natural_size.1 > 0 => Some(CompositeJob {
+                        key: node.data().as_ffi(),
+                        screen_aabb: region.screen_aabb,
+                        natural_size,
+                        stable_id: tree.stable_id(*node),
+                        ambient_clip,
+                        visit_seq: region.visit_seq,
+                    }),
+                    _ => None,
+                })
+                .collect()
+        };
+        // HashMap iteration is non-deterministic; sort by walker
+        // visit order so overlapping subtrees composite back-to-front
+        // (matches tree paint order). z_layer alone is insufficient
+        // because flex siblings share the same z_layer.
+        jobs.sort_by_key(|j| j.visit_seq);
+        if jobs.is_empty() {
+            return;
+        }
+        // Snapshot current animated properties per stable id under a
+        // single lock acquisition. We need: opacity / translate / scale
+        // to apply to the blit.
+        let mut anim_props: std::collections::HashMap<
+            blinc_layout::tree::StableNodeId,
+            blinc_animation::KeyframeProperties,
+        > = std::collections::HashMap::new();
+        if let Ok(store) = tree.css_anim_store().lock() {
+            for job in &jobs {
+                let Some(sid) = job.stable_id else { continue };
+                if let Some(anim) = store.animations.get(&sid) {
+                    if anim.is_playing {
+                        anim_props.insert(sid, anim.current_properties.clone());
+                        continue;
+                    }
+                }
+                if let Some(trans) = store.transitions.get(&sid) {
+                    if trans.is_playing {
+                        anim_props.insert(sid, trans.current_properties.clone());
+                    }
+                }
+            }
+        }
+        // Issue the per-region blits. Texture was rendered at base
+        // state, so animated values map straight through:
+        //   dest_pos = screen_aabb.xy + translate (physical pixels)
+        //   dest_size = natural_size * scale
+        //   opacity = current opacity (default 1.0)
+        // 2D rotation is in the predicate but skipped in the blit
+        // until the shader gains a `rotate_z` path (next follow-up).
+        for job in jobs {
+            let Some((texture, content_size)) = self.css_composited_textures.get(&job.key) else {
+                continue;
+            };
+            let allocated_size = *content_size;
+            let props = job
+                .stable_id
+                .and_then(|sid| anim_props.get(&sid))
+                .cloned()
+                .unwrap_or_default();
+            let translate = (
+                props.translate_x.unwrap_or(0.0),
+                props.translate_y.unwrap_or(0.0),
+            );
+            let scale = (props.scale_x.unwrap_or(1.0), props.scale_y.unwrap_or(1.0));
+            let opacity = props.opacity.unwrap_or(1.0);
+
+            let dpi = tree.scale_factor().max(1.0);
+            let dest_pos = (
+                job.screen_aabb[0] + translate.0 * dpi,
+                job.screen_aabb[1] + translate.1 * dpi,
+            );
+            let dest_size = (
+                job.natural_size.0 as f32 * scale.0,
+                job.natural_size.1 as f32 * scale.1,
+            );
+
+            // P4.3 Option B: ancestor clip captured at promotion time
+            // gets re-applied here as the blit scissor. The captured
+            // tuple is `(aabb, radius)` — radius is `[0; 4]` when the
+            // ancestor chain has no rounded-rect clip (the blit
+            // shader treats that as a plain AABB scissor). Without
+            // the rounded radius path, a CSS animation on a subtree
+            // inside an `overflow_clip` rounded ancestor would get
+            // its corners squared off at every blit.
+            let blit_clip = job.ambient_clip;
+
+            // `source_size` must be the ALLOCATED texture size (the
+            // bucket-rounded content_size returned by
+            // `render_subtree_to_layer_texture`), NOT the natural
+            // content area — see `css_composited_textures` doc for
+            // the squeezed-bar artefact this prevents.
+            self.renderer.blit_tight_texture_to_target(
+                &texture.view,
+                allocated_size,
+                target_view,
+                dest_pos,
+                dest_size,
+                opacity,
+                blinc_core::BlendMode::Normal,
+                blit_clip,
+                None,
+                0.0,
+            );
+        }
+    }
+
+    /// Phase 4.3 motion sibling of [`Self::composite_css_layers_overlay`].
+    /// Blits each baked motion-subtree texture onto the surface with
+    /// the current `MotionBindings` (translate / scale / opacity)
+    /// applied at composite time — no walker re-entry, no SDF re-
+    /// emission for the steady-state motion case.
+    ///
+    /// 2D rotation from `MotionBindings::get_rotation()` is read here
+    /// for the dirty-skip predicate path (P4.4) but NOT applied to
+    /// the blit until the shader gains a `rotate_z` path — same gap
+    /// as the CSS overlay. Rotation-bound subtrees still bake; the
+    /// rotation is just elided until the shader update lands.
+    ///
+    /// Skips silently for any region whose texture isn't yet in
+    /// `motion_subtree_textures` (first-frame race: the bake hook
+    /// ran at end of paint but the very first motion-driven frame
+    /// after promotion may not have the texture yet — next frame
+    /// catches up).
+    fn composite_motion_layers_overlay(
+        &mut self,
+        tree: &blinc_layout::RenderTree,
+        target_view: &wgpu::TextureView,
+    ) {
+        use slotmap::Key as _;
+
+        struct MotionCompositeJob {
+            key: u64,
+            node: blinc_layout::tree::LayoutNodeId,
+            screen_aabb: [f32; 4],
+            natural_size: (u32, u32),
+            ambient_clip: Option<([f32; 4], [f32; 4])>,
+            visit_seq: u32,
+        }
+        let mut jobs: Vec<MotionCompositeJob> = {
+            let regions = tree.dynamic_regions();
+            regions
+                .iter()
+                .filter_map(|(node, region)| match region.kind {
+                    blinc_layout::renderer::DynamicKind::MotionSubtreeTexture {
+                        natural_size,
+                        ambient_clip,
+                    } if natural_size.0 > 0 && natural_size.1 > 0 => Some(MotionCompositeJob {
+                        key: node.data().as_ffi(),
+                        node: *node,
+                        screen_aabb: region.screen_aabb,
+                        natural_size,
+                        ambient_clip,
+                        visit_seq: region.visit_seq,
+                    }),
+                    _ => None,
+                })
+                .collect()
+        };
+        // `dynamic_regions` is a HashMap → iteration order is non-
+        // deterministic. Sort by walker visit_seq so the blit
+        // sequence matches tree paint order — children later in the
+        // parent's child list have higher visit_seq and paint on top.
+        // Symptom this fixes: cn::switch's on_layer (earlier child)
+        // and thumb (later sibling) both promote; HashMap order may
+        // blit on_layer AFTER the thumb, covering it. As on_layer's
+        // opacity ramps 0→1 (OFF→ON), the thumb visibly "fades off"
+        // — but only on OFF→ON; the inverse animation hides the bug
+        // because the on_layer fades OUT, revealing the thumb. Flex
+        // siblings share the same z_layer (no stack context), so
+        // z_layer alone can't distinguish them — visit_seq must.
+        jobs.sort_by_key(|j| j.visit_seq);
+        if jobs.is_empty() {
+            return;
+        }
+        let bindings_map = tree.motion_bindings_map().clone();
+        for job in jobs {
+            let Some((texture, content_size)) = self.motion_subtree_textures.get(&job.key) else {
+                continue;
+            };
+            let allocated_size = *content_size;
+
+            // Default to identity if the node lost its bindings
+            // between paint and overlay (shouldn't happen — bindings
+            // are stable across the frame — but stay defensive so a
+            // missing entry produces a static blit rather than panic).
+            let (translate, scale, opacity, rotate_deg) =
+                if let Some(bindings) = bindings_map.get(&job.node) {
+                    let translate = match bindings.get_transform() {
+                        Some(blinc_core::Transform::Affine2D(a)) => (a.elements[4], a.elements[5]),
+                        _ => (0.0, 0.0),
+                    };
+                    let scale = bindings.get_scale().unwrap_or((1.0, 1.0));
+                    let opacity = bindings.get_opacity().unwrap_or(1.0);
+                    // Rotation is in DEGREES from MotionBindings
+                    // (covers both spring-based `rotation` and
+                    // continuous `rotation_timeline`). Shader takes
+                    // sin/cos radians, so convert at the blit site.
+                    let rotate = bindings.get_rotation().unwrap_or(0.0);
+                    (translate, scale, opacity, rotate)
+                } else {
+                    ((0.0, 0.0), (1.0, 1.0), 1.0, 0.0)
+                };
+            let rotate_z_rad = rotate_deg.to_radians();
+
+            let dpi = tree.scale_factor().max(1.0);
+            let dest_pos = (
+                job.screen_aabb[0] + translate.0 * dpi,
+                job.screen_aabb[1] + translate.1 * dpi,
+            );
+            let dest_size = (
+                job.natural_size.0 as f32 * scale.0,
+                job.natural_size.1 as f32 * scale.1,
+            );
+
+            // Ambient clip → blit scissor. The captured tuple is
+            // `(aabb, radius)` — the blit shader applies the rounded-
+            // rect SDF clip when radius is non-zero. This keeps a
+            // motion-bound subtree inside a rounded ancestor (e.g.
+            // progress_animated indicator inside an overflow_clip
+            // rounded track) clipped along the parent's actual
+            // outline instead of getting its corners squared off.
+            let blit_clip = job.ambient_clip;
+
+            // `source_size` is the ALLOCATED texture size (bucket-
+            // rounded), not natural_size — see the analogous comment
+            // in `composite_css_layers_overlay` for the squeeze
+            // artefact this prevents.
+            self.renderer.blit_tight_texture_to_target(
+                &texture.view,
+                allocated_size,
+                target_view,
+                dest_pos,
+                dest_size,
+                opacity,
+                blinc_core::BlendMode::Normal,
+                blit_clip,
+                None,
+                rotate_z_rad,
+            );
+        }
+    }
+
+    /// Re-walk a CSS-animated subtree and return the resulting bg
+    /// `PrimitiveBatch`. Used by Phase 3 of the per-element slow path:
+    /// when `apply_css_deltas` reports `PatchedWithReemits` for a
+    /// node whose active animation touched an out-of-scope property
+    /// (width / height / padding / etc.), the caller calls this to
+    /// produce fresh primitives at the post-`compute_layout()` bounds,
+    /// then splices them into `cached_bg_batch.primitives` at the
+    /// record's old `primitive_range`.
+    ///
+    /// Returns `None` when:
+    /// - The node has no entry in `dynamic_regions` (walker didn't
+    ///   record one — should not happen for a node that produced a
+    ///   `CssAnimPaintMeta`).
+    /// - The region's kind isn't `CssAnimated` (motion / canvas
+    ///   regions take different code paths).
+    /// - The re-walk emitted complex batch state we can't safely
+    ///   splice yet (layer_commands, paths, glass, foreground prims,
+    ///   3D viewports, aux_data, glyphs). Caller falls back to the
+    ///   full slow path. Documented limitation; future commits can
+    ///   widen the splice surface.
+    fn reemit_css_subtree_bg(
+        &self,
+        tree: &blinc_layout::RenderTree,
+        render_state: &blinc_layout::RenderState,
+        node_id: LayoutNodeId,
+        width: u32,
+        height: u32,
+    ) -> Option<blinc_gpu::PrimitiveBatch> {
+        use blinc_core::DrawContext;
+        use blinc_gpu::GpuPaintContext;
+
+        let regions = tree.dynamic_regions();
+        let region = regions.get(&node_id)?.clone();
+        drop(regions);
+
+        if !matches!(
+            region.kind,
+            blinc_layout::renderer::DynamicKind::CssAnimated { .. }
+        ) {
+            return None;
+        }
+
+        let mut scratch = GpuPaintContext::new(width as f32, height as f32);
+
+        // DPI scale mirrors what `collect_dynamic_region_primitives`
+        // does — ambient affine is physical-pixel-space; logical
+        // walker translates need wrapping by the scale.
+        let scale = tree.scale_factor();
+        let has_scale = scale != 1.0;
+        if has_scale {
+            scratch.push_transform(blinc_core::Transform::scale(scale, scale));
+        }
+
+        // Unlike `collect_dynamic_region_primitives`, do NOT
+        // push_motion_subtree — CSS subtrees stay in the bg batch
+        // (the static cache contract; routing them to the overlay
+        // breaks text z-order, see motion.rs:464). The walker's emit
+        // routes into `scratch.batch` (== bg batch).
+        tree.render_dynamic_region(&mut scratch as &mut dyn DrawContext, &region, render_state);
+
+        if has_scale {
+            scratch.pop_transform();
+        }
+
+        let new_batch = scratch.take_batch();
+
+        // Conservative: the splice is only safe today for the
+        // primitive vector. Any other field carrying cross-primitive
+        // indices (paths, layer_commands referencing aux_data
+        // offsets) needs index re-numbering we don't yet do. Bail to
+        // slow path when those are present.
+        if !new_batch.layer_commands.is_empty()
+            || !new_batch.foreground_primitives.is_empty()
+            || !new_batch.glass_primitives.is_empty()
+            || !new_batch.nested_glass_primitives.is_empty()
+            || !new_batch.paths.vertices.is_empty()
+            || !new_batch.foreground_paths.vertices.is_empty()
+            || !new_batch.glyphs.is_empty()
+            || !new_batch.viewports_3d.is_empty()
+            || !new_batch.particle_viewports.is_empty()
+            || !new_batch.aux_data.is_empty()
+            || !new_batch.dynamic_images.is_empty()
+        {
+            tracing::trace!(
+                target: "blinc_app::frame_timing",
+                "reemit_css_subtree_complex_batch_bail",
+            );
+            return None;
+        }
+
+        Some(new_batch)
+    }
+
+    /// Phase 4 helper: scan the cached text glyph vectors for any
+    /// glyph whose bounds intersect any of the supplied reemit
+    /// subtree AABBs. Returns `true` if any glyph falls inside a
+    /// reemit subtree, signalling the caller to bail to the slow
+    /// path. The text-shaping pipeline isn't subtree-aware today
+    /// — re-shaping just the affected subtree would require a
+    /// significant refactor of `collect_elements_recursive` — so
+    /// when the cache contains text inside a layout-animating
+    /// subtree, the safe choice is the full slow path.
+    fn glyphs_intersect_any_aabb(&self, snapshots: &[ReemitSnapshot]) -> bool {
+        let aabbs: Vec<[f32; 4]> = snapshots.iter().filter_map(|(_, _, aabb)| *aabb).collect();
+        if aabbs.is_empty() {
+            return false;
+        }
+        let intersects = |g_bounds: [f32; 4], a: [f32; 4]| -> bool {
+            let (gx, gy, gw, gh) = (g_bounds[0], g_bounds[1], g_bounds[2], g_bounds[3]);
+            let (ax, ay, aw, ah) = (a[0], a[1], a[2], a[3]);
+            !(gx + gw <= ax || gy + gh <= ay || gx >= ax + aw || gy >= ay + ah)
+        };
+        if let Some(by_layer) = self.cached_glyphs_by_layer.as_ref() {
+            for glyphs in by_layer.values() {
+                for g in glyphs {
+                    for a in &aabbs {
+                        if intersects(g.bounds, *a) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(fg) = self.cached_fg_glyphs.as_ref() {
+            for g in fg {
+                for a in &aabbs {
+                    if intersects(g.bounds, *a) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Phase 3 of the per-element slow path: re-emit each listed
+    /// CSS-animated subtree via the walker and splice the resulting
+    /// primitives back into `cached_bg_batch.primitives` at the
+    /// record's original `primitive_range`. Returns `true` if the
+    /// splice succeeded (caller proceeds with the damaged-cache
+    /// repaint) or `false` if any subtree's re-emit produced complex
+    /// batch state we can't safely splice yet (caller falls back to
+    /// the full slow path).
+    ///
+    /// Splice details:
+    /// - Snapshot every reemit node's original `primitive_range`
+    ///   before any walker call; the walker mutates records during
+    ///   the walk and we need the original indices to position the
+    ///   splice into `cached_bg_batch`.
+    /// - Sort splices by `old_range.start` descending. Processing
+    ///   from the highest index first means each splice only shifts
+    ///   elements *after* the splice point, so we don't have to
+    ///   compose deltas across earlier splices.
+    /// - For each splice, `primitives.splice(old_range, new)` does
+    ///   the work. Other records whose `primitive_range.start >=
+    ///   old_range.end` shift by `new_len - old_len`.
+    fn try_reemit_and_splice_css_subtrees(
+        &mut self,
+        tree: &blinc_layout::RenderTree,
+        render_state: &blinc_layout::RenderState,
+        reemit_nodes: &[LayoutNodeId],
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if reemit_nodes.is_empty() {
+            return true;
+        }
+
+        // Step 1: snapshot old primitive_range AND screen AABB for
+        // each reemit node BEFORE any walker call. The walker
+        // overwrites `css_anim_paint_records[node].primitive_range`
+        // with scratch batch indices; we need the cached_bg_batch
+        // indices to position the splice. The AABB lets us check
+        // for cached text inside the subtree (Phase 4 bail below).
+        let snapshots: Vec<ReemitSnapshot> = {
+            let records = tree.css_anim_paint_records();
+            reemit_nodes
+                .iter()
+                .filter_map(|&n| {
+                    records
+                        .get(&n)
+                        .map(|m| (n, m.primitive_range.clone(), m.last_screen_aabb))
+                })
+                .collect()
+        };
+        if snapshots.is_empty() {
+            return true;
+        }
+
+        // Phase 4 conservative bail: if any cached glyph falls
+        // inside a reemit subtree's old AABB, the cache for that
+        // region contains text shaped at the previous layout's
+        // bounds. We can't re-shape it from here (the text-shaping
+        // pipeline isn't subtree-aware), so the post-splice
+        // damaged-cache repaint would land new bg primitives next
+        // to stale text glyphs — text would appear offset relative
+        // to the moved background. Fall back to the full slow path
+        // so taffy + the text collector run end-to-end and produce
+        // a coherent frame.
+        let any_text_in_reemit = self.glyphs_intersect_any_aabb(&snapshots);
+        if any_text_in_reemit {
+            tracing::trace!(
+                target: "blinc_app::frame_timing",
+                "reemit_text_intersect_bail",
+            );
+            return false;
+        }
+
+        // Step 2: re-walk each subtree into a fresh scratch context
+        // and collect the produced primitives. Any subtree whose
+        // re-walk emits complex batch state (layer_commands, paths,
+        // glass, etc. — see `reemit_css_subtree_bg`) returns None
+        // and we bail to the slow path.
+        let mut new_prims: Vec<(
+            LayoutNodeId,
+            std::ops::Range<usize>,
+            Vec<blinc_gpu::primitives::GpuPrimitive>,
+        )> = Vec::with_capacity(snapshots.len());
+        for (node, old_range, _aabb) in snapshots {
+            match self.reemit_css_subtree_bg(tree, render_state, node, width, height) {
+                Some(batch) => new_prims.push((node, old_range, batch.primitives)),
+                None => return false,
+            }
+        }
+
+        // Step 3: splice in reverse order of old_range.start. This
+        // keeps each splice from invalidating earlier (smaller-start)
+        // splices' indices.
+        new_prims.sort_by_key(|entry| std::cmp::Reverse(entry.1.start));
+
+        let Some(batch) = self.cached_bg_batch.as_mut() else {
+            return false;
+        };
+        let mut records = tree.css_anim_paint_records_mut();
+        for (node, old_range, prims) in new_prims {
+            let old_len = old_range.end - old_range.start;
+            let new_len = prims.len();
+            let delta = new_len as isize - old_len as isize;
+            batch.primitives.splice(old_range.clone(), prims);
+
+            // Update THIS reemit's record to point into the patched
+            // cached_bg_batch. The walker already wrote the NEW
+            // screen AABB to `meta.last_screen_aabb` during the
+            // re-walk; carry it into `last_css_damage_rects` so the
+            // damaged-cache repaint scissor covers the new geometry.
+            // Without this, layout animations that grow the element
+            // past its previous AABB leave stale pixels in the
+            // exposed area (the OLD aabb pushed by apply_css_deltas
+            // doesn't extend that far).
+            if let Some(meta) = records.get_mut(&node) {
+                meta.primitive_range = old_range.start..(old_range.start + new_len);
+                if let Some(rect) = meta.last_screen_aabb {
+                    self.last_css_damage_rects.push(rect);
+                }
+            }
+
+            // Shift every other record's range when its start is at
+            // or past `old_range.end` — i.e., it lived in the
+            // cache *after* the spliced region.
+            if delta != 0 {
+                for (other_node, other_meta) in records.iter_mut() {
+                    if *other_node == node {
+                        continue;
+                    }
+                    if other_meta.primitive_range.start >= old_range.end {
+                        let new_start =
+                            (other_meta.primitive_range.start as isize + delta) as usize;
+                        let new_end = (other_meta.primitive_range.end as isize + delta) as usize;
+                        other_meta.primitive_range = new_start..new_end;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// frames in a row would double-apply).
+    pub fn apply_binding_deltas(&mut self, tree: &blinc_layout::RenderTree, scale: f32) -> bool {
+        self.last_binding_damage_rects.clear();
+        // Compositor v2: motion-bound subtree primitives live in
+        // `cached_dynamic_batch`, not `cached_bg_batch`. The walker
+        // routes them there via `push_motion_subtree`, and
+        // `composite_bindings[node].primitive_range` indexes into
+        // the dynamic batch. Patching `cached_bg_batch` here would
+        // corrupt unrelated static primitives at those indices.
+        let batch = match self.cached_dynamic_batch.as_mut() {
+            Some(b) => b,
+            None => return false,
+        };
+        let mut bindings = tree.composite_bindings_mut();
+        if bindings.is_empty() {
+            // Cache is valid but nothing animated changed — fast
+            // path can re-use the cache as-is. Caller still needs
+            // to dispatch a render to present a fresh frame
+            // (otherwise the surface shows the previous frame).
+            return true;
+        }
+
+        // Walk every recorded binding. Read the current spring
+        // values (post-tick), compute the delta vs the values baked
+        // into the cached batch, and patch every primitive in the
+        // binding's range.
+        //
+        // Track whether any binding's value moved this frame so we
+        // can flag `visible_anim_active` on the tree below. The
+        // walker is the other writer of that flag (called from
+        // `render_with_motion`'s entry, then updated as it visits
+        // bound nodes), but on the fast path the walker doesn't run
+        // — without this manual mark the flag stays at whatever the
+        // previous full paint left it at, and Phase 5's redraw
+        // chain gates `needs_animation_redraw && visible_anim` →
+        // false → no next frame → spring stops ticking → animation
+        // freezes until something else (mouse move, scroll) wakes
+        // the loop. That's the "animation doesn't play until I move
+        // the mouse" symptom this addresses.
+        let motion_bindings = tree.motion_bindings_map();
+
+        // Pre-pass: compute each binding's translate delta this frame
+        // and the SUM of ancestor bindings' translate deltas
+        // ("inherited shift"). An "ancestor" here is any other binding
+        // whose `primitive_range` strictly contains this one's — which
+        // mirrors emission order, so it captures the motion-binding
+        // parent chain without needing a tree walk.
+        //
+        // Why this matters: the walker records `meta.centre` from
+        // `get_absolute_bounds(node)` — the LAYOUT centre, not the
+        // post-translate world centre. If an ancestor motion binding
+        // translates the subtree, this binding's primitives have
+        // shifted but its stored centre hasn't. Applying scale around
+        // the stale centre produces a positional error of
+        // `ancestor_translate × (new_scale - 1)`. Symptom (seen in
+        // cn::slider with halo): the inner scale binding paints the
+        // halo at the right position only when the thumb sits at
+        // translate=0; at any non-zero offset the halo drifts toward
+        // the layout origin, leaving a ghost trail.
+        //
+        // Fix: pre-compute each binding's inherited shift, then add it
+        // to the centre before applying scale (and persist the shifted
+        // centre so subsequent frames see the new world position as
+        // the baseline). Since we collect raw deltas BEFORE applying
+        // any patches, iteration order doesn't matter.
+        //
+        // Cost: O(N²) over composite_bindings — N is the count of
+        // motion-bound nodes in the rendered frame (~10-50 in cn_demo),
+        // so ~2500 max iterations of cheap range comparisons. The
+        // existing main loop is also O(N) with mutex locks per
+        // binding; this pre-pass is dominated by it.
+        let mut raw_translate_deltas: std::collections::HashMap<
+            blinc_layout::tree::LayoutNodeId,
+            (f32, f32),
+        > = std::collections::HashMap::new();
+        for (node, meta) in bindings.iter() {
+            let Some(b) = motion_bindings.get(node) else {
+                continue;
+            };
+            let tx = b
+                .translate_x
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(0.0);
+            let ty = b
+                .translate_y
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(0.0);
+            raw_translate_deltas.insert(
+                *node,
+                (tx - meta.last_translate.0, ty - meta.last_translate.1),
+            );
+        }
+        let mut inherited_shifts: std::collections::HashMap<
+            blinc_layout::tree::LayoutNodeId,
+            (f32, f32),
+        > = std::collections::HashMap::new();
+        for (node, meta) in bindings.iter() {
+            let mut shift = (0.0f32, 0.0f32);
+            for (other_node, other_meta) in bindings.iter() {
+                if other_node == node {
+                    continue;
+                }
+                // "other strictly contains me" — handles the common
+                // case (ancestor has its own primitives outside the
+                // child's emission span). Equal-range pairs are
+                // excluded; that case only arises when a parent emits
+                // nothing of its own, and a translate on it composes
+                // through the existing translate patch on the SAME
+                // primitive set, so no centre adjustment is needed.
+                let contains = other_meta.primitive_range.start <= meta.primitive_range.start
+                    && other_meta.primitive_range.end >= meta.primitive_range.end
+                    && (other_meta.primitive_range.start < meta.primitive_range.start
+                        || other_meta.primitive_range.end > meta.primitive_range.end);
+                if contains {
+                    if let Some(&(dx, dy)) = raw_translate_deltas.get(other_node) {
+                        shift.0 += dx;
+                        shift.1 += dy;
+                    }
+                }
+            }
+            inherited_shifts.insert(*node, shift);
+        }
+
+        let mut any_binding_active = false;
+        for (node, meta) in bindings.iter_mut() {
+            let bindings_for_node = match motion_bindings.get(node) {
+                Some(b) => b,
+                None => continue,
+            };
+            // Snapshot the AABB before any patching this frame. The
+            // damage rect for this binding = union of the AABB before
+            // and after — whichever pixels the static cache might be
+            // showing stale need re-painting.
+            let aabb_before = meta.last_screen_aabb;
+            let mut binding_moved = false;
+
+            // Is this binding mid-flight? Mirrors `walker_motion_bindings_ref.
+            // is_any_animating()`. A binding can be active even if no value
+            // actually moved this frame — e.g. the very first tick after a
+            // fresh `set_target` has `dt ≈ 0` (because `set_spring_target`
+            // resets `last_frame = now`), so the spring sits at its old value
+            // for one frame before integration starts producing real
+            // displacement. Without flagging visible_anim_active on those
+            // frames, Phase 5's redraw chain dies and the animation freezes
+            // until something else wakes the loop.
+            if bindings_for_node.is_any_animating() {
+                any_binding_active = true;
+            }
+
+            // ----------------------------------------------------------------
+            // Translate: read new (tx, ty), compute pixel-space delta,
+            // shift every primitive's `bounds.xy` by it.
+            // ----------------------------------------------------------------
+            let (binding_tx, binding_ty) = {
+                let tx = bindings_for_node
+                    .translate_x
+                    .as_ref()
+                    .and_then(|v| v.lock().ok().map(|g| g.get()))
+                    .unwrap_or(0.0);
+                let ty = bindings_for_node
+                    .translate_y
+                    .as_ref()
+                    .and_then(|v| v.lock().ok().map(|g| g.get()))
+                    .unwrap_or(0.0);
+                (tx, ty)
+            };
+            let new_translate = (binding_tx, binding_ty);
+            let dx_logical = new_translate.0 - meta.last_translate.0;
+            let dy_logical = new_translate.1 - meta.last_translate.1;
+            if dx_logical.abs() > f32::EPSILON || dy_logical.abs() > f32::EPSILON {
+                let dx_phys = dx_logical * scale;
+                let dy_phys = dy_logical * scale;
+                if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                    for p in prims.iter_mut() {
+                        p.bounds[0] += dx_phys;
+                        p.bounds[1] += dy_phys;
+                    }
+                }
+                meta.last_translate = new_translate;
+                any_binding_active = true;
+                binding_moved = true;
+            }
+
+            // ----------------------------------------------------------------
+            // Opacity: read new value, compute ratio against the
+            // baked-in value, scale every alpha-bearing channel by it.
+            //
+            // Skip when last_opacity is ~0 (would divide by zero) —
+            // any node painted with opacity 0 wasn't visible last
+            // frame, so the delta-apply isn't meaningful and the
+            // caller should fall back to the full path. Returning
+            // `Err` is the conservative choice.
+            // ----------------------------------------------------------------
+            let new_opacity = bindings_for_node
+                .opacity
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(meta.last_opacity);
+            if (new_opacity - meta.last_opacity).abs() > f32::EPSILON {
+                if let Some(push_idx) = meta.layer_push_index {
+                    // Layered path (motion-binding opacity always
+                    // takes this path post-Phase 4a): patch
+                    // `LayerConfig.opacity` at the push command's
+                    // index. The renderer's layer-composite blit
+                    // reads `config.opacity` and the new spring
+                    // value becomes visible the next composite.
+                    //
+                    // No divide-by-zero hazard here because we're
+                    // writing an absolute value, not computing a
+                    // ratio against `last_opacity`.
+                    use blinc_gpu::primitives::LayerCommand;
+                    match batch.layer_commands.get_mut(push_idx) {
+                        Some(entry) => {
+                            if let LayerCommand::Push { config } = &mut entry.command {
+                                config.opacity = new_opacity;
+                            } else {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                    meta.last_opacity = new_opacity;
+                    any_binding_active = true;
+                } else {
+                    if meta.last_opacity.abs() < f32::EPSILON {
+                        return false;
+                    }
+                    let ratio = new_opacity / meta.last_opacity;
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            p.color[3] *= ratio;
+                            p.border_color[3] *= ratio;
+                            p.shadow_color[3] *= ratio;
+                        }
+                    }
+                    meta.last_opacity = new_opacity;
+                    any_binding_active = true;
+                }
+                binding_moved = true;
+            }
+
+            // ----------------------------------------------------------------
+            // Scale: scale around the binding's recorded centre. For each
+            // primitive in the range, transform `bounds` from the
+            // last_scale to the new scale, keeping the binding centre
+            // fixed.
+            //
+            //   bounds_local = (old_bounds - centre) / last_scale
+            //   new_bounds   = centre + new_scale * bounds_local
+            //                = centre + (new_scale / last_scale) * (old_bounds - centre)
+            //   delta        = (new_scale/last_scale - 1) * (old_bounds - centre)
+            //
+            // Size scales by the same ratio: bounds.w *= new_scale/last_scale.
+            //
+            // Bails (fast-path falls back to full walker) when
+            // `last_scale` is degenerate (~0) — that ratio would
+            // explode. The centre stored in `composite_bindings` is in
+            // logical pixels (pre-DPI); bounds are in physical pixels,
+            // so we scale the centre by `scale` before computing the
+            // delta.
+            // ----------------------------------------------------------------
+            let binding_scale = bindings_for_node
+                .scale
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(1.0);
+            let binding_scale_x = bindings_for_node
+                .scale_x
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(1.0);
+            let binding_scale_y = bindings_for_node
+                .scale_y
+                .as_ref()
+                .and_then(|v| v.lock().ok().map(|g| g.get()))
+                .unwrap_or(1.0);
+            // Track the inherited translate shift on EVERY frame, even
+            // when the local scale didn't change. Without this, an
+            // ancestor binding can advance its translate while this
+            // binding sits idle — and the next time scale moves, it
+            // pivots around a stale centre. Persisting the shift each
+            // frame keeps the centre tracking world space continuously.
+            // Each frame's shift is the frame delta (ancestor.current
+            // - ancestor.last), and the ancestor's `last_translate`
+            // moves to `current` further down in this loop, so this
+            // does NOT double-count across frames.
+            if let Some(&(sx_shift, sy_shift)) = inherited_shifts.get(node) {
+                if sx_shift.abs() > f32::EPSILON || sy_shift.abs() > f32::EPSILON {
+                    meta.centre.0 += sx_shift;
+                    meta.centre.1 += sy_shift;
+                }
+            }
+            let new_sx = binding_scale_x * binding_scale;
+            let new_sy = binding_scale_y * binding_scale;
+            if (new_sx - meta.last_scale.0).abs() > f32::EPSILON
+                || (new_sy - meta.last_scale.1).abs() > f32::EPSILON
+            {
+                if meta.last_scale.0.abs() < f32::EPSILON || meta.last_scale.1.abs() < f32::EPSILON
+                {
+                    return false;
+                }
+                let ratio_x = new_sx / meta.last_scale.0;
+                let ratio_y = new_sy / meta.last_scale.1;
+                let cx_phys = meta.centre.0 * scale;
+                let cy_phys = meta.centre.1 * scale;
+                // For corner_radius the GPU primitive carries a
+                // single radius per corner that's used uniformly for
+                // the SDF rounded-rect (the renderer's `scale_corner_radius`
+                // pre-multiplies by the current affine's avg-scale at
+                // bake time). Use the geometric mean of the two
+                // ratios so a non-uniform scale still scales the
+                // radius coherently — for the uniform-scale case (the
+                // common one, e.g. cn::slider's halo) this is just
+                // `ratio_x = ratio_y`. Without this step a halo that's
+                // baked at scale=0.5 with corner_radius=halo_size/4
+                // (because the walker multiplied by 0.5) but then
+                // patched up to scale=1 by growing `bounds[2,3]`
+                // leaves the radius unchanged — width is now
+                // 2 × radius doubled, so the previously-circular halo
+                // renders as a rounded SQUARE.
+                let ratio_radius = (ratio_x * ratio_y).sqrt();
+                if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                    for p in prims.iter_mut() {
+                        p.bounds[0] = cx_phys + (p.bounds[0] - cx_phys) * ratio_x;
+                        p.bounds[1] = cy_phys + (p.bounds[1] - cy_phys) * ratio_y;
+                        p.bounds[2] *= ratio_x;
+                        p.bounds[3] *= ratio_y;
+                        p.corner_radius[0] *= ratio_radius;
+                        p.corner_radius[1] *= ratio_radius;
+                        p.corner_radius[2] *= ratio_radius;
+                        p.corner_radius[3] *= ratio_radius;
+                    }
+                }
+                meta.last_scale = (new_sx, new_sy);
+                any_binding_active = true;
+                binding_moved = true;
+            }
+
+            // ----------------------------------------------------------------
+            // Rotation: spring `binding.rotation` (degrees) plus
+            // timeline-driven `rotation_timeline` (also degrees) both
+            // accumulate via `MotionBindings::get_rotation()`. Apply
+            // the delta vs the rotation baked into the cached batch
+            // by composing onto each primitive's existing rotation
+            // sin/cos and local_affine, and by rotating every
+            // primitive's centre around the binding centre.
+            //
+            // The walker applies binding rotation as
+            // `T(c) * R(θ) * T(-c)` *after* any parent CSS transform
+            // had already populated the transform stack, so the
+            // baked-in rotation/affine values are
+            //     parent_affine * R(old_θ)
+            // and each primitive's centre is in physical pixels.
+            // Composing a *delta* `δ = new_θ − old_θ` as a rotation
+            // around the SAME binding centre updates both correctly:
+            //
+            //   new_total = parent_affine * R(new_θ)
+            //             = parent_affine * R(old_θ) * R(δ)
+            //
+            // and the centres pivot the same way:
+            //
+            //   p' − c = R(δ) · (p − c)
+            //
+            // which is what the loop below does in two passes (one
+            // for the rotation/local_affine fields, one for the
+            // centre / `bounds.xy`). Independent of any parent CSS
+            // rotation that was on the stack at paint time — the
+            // delta application doesn't depend on knowing it.
+            // ----------------------------------------------------------------
+            let new_rotation_rad = bindings_for_node
+                .get_rotation()
+                .map(|deg| deg.to_radians())
+                .unwrap_or(0.0);
+            let drot = new_rotation_rad - meta.last_rotation_rad;
+            if drot.abs() > f32::EPSILON {
+                let (sin_d, cos_d) = drot.sin_cos();
+                let cx_phys = meta.centre.0 * scale;
+                let cy_phys = meta.centre.1 * scale;
+                if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                    for p in prims.iter_mut() {
+                        // Rotate the primitive's centre around the
+                        // binding centre by `δ`. `p.bounds` is the
+                        // axis-aligned AABB at the (DPI-scaled)
+                        // centre; the GPU vertex shader rebuilds the
+                        // post-rotation AABB at draw time off the
+                        // rotation sin/cos fields, so we only need
+                        // the centre to track the pivot.
+                        let cx = p.bounds[0] + p.bounds[2] * 0.5;
+                        let cy = p.bounds[1] + p.bounds[3] * 0.5;
+                        let dx = cx - cx_phys;
+                        let dy = cy - cy_phys;
+                        let new_dx = dx * cos_d - dy * sin_d;
+                        let new_dy = dx * sin_d + dy * cos_d;
+                        let new_cx = cx_phys + new_dx;
+                        let new_cy = cy_phys + new_dy;
+                        p.bounds[0] = new_cx - p.bounds[2] * 0.5;
+                        p.bounds[1] = new_cy - p.bounds[3] * 0.5;
+
+                        // Compose δ onto the stored rotation
+                        // `[sin α, cos α, sin_ry, cos_ry]`. Working
+                        // in (sin, cos) avoids any atan2 round-trip.
+                        // `α + δ` keeps the Y-rotation slots intact.
+                        let sin_a = p.rotation[0];
+                        let cos_a = p.rotation[1];
+                        p.rotation[0] = sin_a * cos_d + cos_a * sin_d;
+                        p.rotation[1] = cos_a * cos_d - sin_a * sin_d;
+
+                        // Compose δ onto local_affine. The walker
+                        // builds local_affine as the parent affine
+                        // post-multiplied by every transform on the
+                        // stack, so the binding rotation that's
+                        // baked in is in the same position (rightmost
+                        // factor). To advance the rotation by `δ`,
+                        // post-multiply by R(δ):
+                        //
+                        //   new = old · R(δ)
+                        //
+                        // Column 0 of new = R(δ)ᵀ applied to col 0
+                        // of old, etc., which in flat [a, b, c, d]
+                        // layout is the formula below. Works for
+                        // any old that's `parent · R(α)` — the parent
+                        // factor passes through unchanged.
+                        let a = p.local_affine[0];
+                        let b = p.local_affine[1];
+                        let c = p.local_affine[2];
+                        let d = p.local_affine[3];
+                        p.local_affine[0] = a * cos_d + c * sin_d;
+                        p.local_affine[1] = b * cos_d + d * sin_d;
+                        p.local_affine[2] = -a * sin_d + c * cos_d;
+                        p.local_affine[3] = -b * sin_d + d * cos_d;
+                    }
+                }
+                meta.last_rotation_rad = new_rotation_rad;
+                any_binding_active = true;
+                binding_moved = true;
+            }
+
+            // Update the cached screen AABB even when we skip the
+            // damage-rect push below — `meta.last_screen_aabb` is
+            // also consumed by hit-test / scroll bookkeeping, not
+            // just damage rects.
+            if binding_moved {
+                let aabb_after = bounds_union_of_range(&batch.primitives, &meta.primitive_range);
+                meta.last_screen_aabb = aabb_after;
+            }
+            // No damage-rect push intentionally. Motion-bound
+            // primitives live in `cached_dynamic_batch` (see the
+            // function-header comment), not `cached_bg_batch`. The
+            // static-cache pixels under a rotating spinner / a
+            // sliding switch thumb / a spring-y progress bar don't
+            // change between frames — those primitives never landed
+            // in the static cache to begin with. The dispatch step
+            // after this function (composite_frame) repaints the
+            // dynamic batch on top of the unchanged static cache.
+            //
+            // Earlier (pre-PR-#42) motion-bound primitives lived in
+            // the bg batch and the damage-rect path here was
+            // necessary to scrub their stale pixels off the static
+            // cache. After PR #42 routed motion subtrees through
+            // `push_motion_subtree`, the damage rect repaint became
+            // ~500 µs of wasted work per frame on cn_demo's three
+            // visible spinners — clearing card-background pixels and
+            // re-rendering identical ones in their place, plus the
+            // text/SVG re-dispatch chain. Dropping it is the single
+            // biggest steady-state win for motion-binding-only
+            // frames.
+            //
+            // `aabb_before` is intentionally unused now; kept
+            // computed above for readability + so a future
+            // re-introduction (if motion bindings ever route back
+            // through the bg batch) doesn't need extra plumbing.
+            let _ = aabb_before;
+        }
+        self.last_binding_damage_rects.clear();
+        // Authoritatively write `visible_anim_active` from what we
+        // observed this frame. The walker resets it to `false` at the
+        // top of every full paint and sets `true` only if it visits a
+        // node that's actually animating — but on the fast path the
+        // walker doesn't run. If we only set `true` (the previous
+        // posture), a `true` set by the last full paint stays latched
+        // forever once the spring settles: `is_any_animating()`
+        // returns false, no value moved, `any_binding_active` stays
+        // false, we leave the flag alone — but the flag is still
+        // `true` from before, so Phase 5's `needs_animation_redraw =
+        // raw && visible_anim` stays `true`, the chain keeps firing
+        // request_redraw, and CPU pins at vsync forever.
+        //
+        // Writing authoritatively works on the fast path because the
+        // gate (`try_fast_paint`) already requires no rebuild / no
+        // relayout / no CSS activity / no scroll — the only remaining
+        // dynamic source is motion bindings, which we track. Motion
+        // FSM (enter/exit) drives its own redraw signal
+        // (`needs_motion_redraw`) and Statefuls drive
+        // `has_visible_animating_statefuls`, so neither relies on
+        // `visible_anim_active` to stay alive.
+        tree.set_visible_anim_active(any_binding_active);
+
+        // Motion-subtree text / SVG primitives live in their own
+        // post-overlay caches (`cached_motion_subtree_text_prims`,
+        // `cached_motion_subtree_svgs`) — `apply_binding_deltas`
+        // patches the dynamic batch in place but doesn't touch those
+        // caches, so a spring snap-back after release would translate
+        // the bg correctly while the text / SVG stayed at the old
+        // position. Force the slow path when bindings are mid-flight
+        // *and* we have motion-subtree text or SVG cached: the slow
+        // path's walker + collect_elements_recursive re-shapes them
+        // at the current binding values.
+        //
+        // Returning false here flows back to the caller, which
+        // invalidates the static layer and falls through to the slow
+        // path. The cost is one full re-walk per binding-animating
+        // frame — same cost CSS / FLIP / FSM animations already pay
+        // — but only when motion-subtree text / SVG is in scope. Pure
+        // SDF motion bindings (cn_demo's switch / slider / progress
+        // bar without text inside the motion subtree) still get the
+        // fast in-place patch.
+        let has_motion_overlay_glyphs = self
+            .cached_motion_subtree_text_prims
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+            || self
+                .cached_motion_subtree_svgs
+                .as_ref()
+                .is_some_and(|v| !v.is_empty());
+        if any_binding_active && has_motion_overlay_glyphs {
+            return false;
+        }
+        true
+    }
+
+    /// Re-bind the latest glyph atlas views onto the SDF pipeline.
+    /// Called right before `composite_frame` (and before any other
+    /// `PRIM_TEXT`-dispatching pass) on the compositor path so
+    /// canvas-emitted `draw_text` primitives — whose glyphs are
+    /// added to `text_ctx`'s atlas *after* the slow-path's
+    /// `set_glyph_atlas` call inside `render_tree_with_motion_opt` —
+    /// reach the GPU through a bind group that points at the
+    /// post-growth atlas texture rather than the stale pre-growth
+    /// view.
+    ///
+    /// Pre-fix the SDF bind group was set once per slow-path frame
+    /// (line ~7110), then `collect_canvas_overlay` ran canvas
+    /// closures whose `draw_text` calls could grow the atlas
+    /// texture (capacity exceeded). When the atlas re-allocated,
+    /// the view pointer changed but the bind group still
+    /// referenced the old view. Canvas-text PRIM_TEXT primitives
+    /// then sampled blank UVs and rendered invisibly — symptom:
+    /// canvas_demo's "Canvas Text" sample shows the background
+    /// plate but none of the headings.
+    ///
+    /// `set_glyph_atlas` no-ops on pointer equality so calling
+    /// before every `composite_frame` is cheap when the atlas
+    /// didn't grow.
+    fn rebind_glyph_atlas_for_overlay(&mut self) {
+        if let (Some(atlas), Some(color_atlas)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            self.renderer.set_glyph_atlas(atlas, color_atlas);
+        }
+    }
+
+    /// Patch the cached background batch's CSS-animated regions in
+    /// place from current `css_anim_store` values, without
+    /// re-walking the tree. Mirror of [`Self::apply_binding_deltas`]
+    /// for the CSS keyframe / transition path.
+    ///
+    /// Returns a `CssDeltaResult` indicating what the caller must
+    /// do next:
+    ///
+    /// - `Patched`: all records handled in place; caller dispatches
+    ///   the damaged-cache repaint and the text / SVG / image
+    ///   re-dispatch step. No walker work needed.
+    /// - `PatchedWithReemits { reemit_nodes }`: in-scope records were
+    ///   patched, but one or more records carried out-of-scope
+    ///   properties (width / height / padding / margin / gap /
+    ///   clip-path geometry / filter blur / backdrop blur). Caller
+    ///   must re-emit the listed subtrees via a scratch walker pass
+    ///   into `cached_bg_batch` before the cache repaint, then run
+    ///   the normal damaged-cache repaint. The corresponding damage
+    ///   rects are already in `last_css_damage_rects`.
+    /// - `Bail`: the patch path couldn't reach a coherent state
+    ///   (cache missing, lock poisoned, opacity-zero divide-by-zero,
+    ///   layer push index out of bounds, etc.). Caller must take
+    ///   the full slow path.
+    ///
+    /// Returns `false` (caller falls back to slow path) when:
+    /// - No cached batch exists yet (cold start; slow path will
+    ///   populate it).
+    /// - The animation targets an out-of-scope property (clip-path
+    ///   geometry, filter blur, layout dimensions) — Phase 4 first
+    ///   cut doesn't patch those.
+    /// - The cache shape changed since recording (layer push index
+    ///   out of bounds, etc.).
+    /// - A property went through a divide-by-zero (opacity zero on
+    ///   the previous frame).
+    ///
+    /// Returns `true` even when no actual patches happened — that's
+    /// the steady-state case where the animation tick produced the
+    /// same value as last frame (settled, paused, or at a flat
+    /// portion of the curve). The caller still needs to dispatch a
+    /// render to present a fresh frame.
+    ///
+    /// Property coverage (first cut):
+    /// - opacity (LayerConfig.opacity when push index present, OR
+    ///   primitive alpha channels via ratio multiplication)
+    /// - background_color (matching-based: only patches primitives
+    ///   whose current color equals `meta.last_background_color`,
+    ///   leaving children with their own backgrounds intact)
+    /// - border_color, border_width (matching-based)
+    /// - corner_radius (matching-based)
+    /// - shadow params + color (matching-based)
+    /// - rotate_x, rotate_y (absolute write across the range —
+    ///   3D rotation applies to the whole subtree per CSS spec)
+    /// - filter values (absolute write across the range)
+    ///
+    /// Properties that trigger a bail-to-slow-path:
+    /// - clip_inset / clip_circle_radius / clip_ellipse_radii
+    ///   (polygon vertices live in aux_data with cross-primitive
+    ///   offset bookkeeping)
+    /// - filter_blur (lives in LayerConfig.effects Vec)
+    /// - width / height / min_* / max_* / padding / margin / gap
+    ///   (layout — needs `compute_layout`)
+    /// - backdrop_* (glass material; separate dispatch path)
+    pub fn apply_css_deltas(
+        &mut self,
+        tree: &blinc_layout::RenderTree,
+        _scale: f32,
+    ) -> CssDeltaResult {
+        // CSS-animated primitives live on `cached_bg_batch` (the
+        // walker doesn't push a `motion_subtree` for CSS animations
+        // — that routing is motion-binding only). Patch through the
+        // bg batch.
+        let batch = match self.cached_bg_batch.as_mut() {
+            Some(b) => b,
+            None => {
+                self.last_css_damage_rects.clear();
+                return CssDeltaResult::Bail;
+            }
+        };
+        let mut records = tree.css_anim_paint_records_mut();
+        if records.is_empty() {
+            // No CSS-animated nodes recorded at last paint. Nothing
+            // to patch — caller re-uses the cache as-is.
+            self.last_css_damage_rects.clear();
+            return CssDeltaResult::Patched;
+        }
+        let store_arc = tree.css_anim_store();
+        let store = match store_arc.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                self.last_css_damage_rects.clear();
+                return CssDeltaResult::Bail;
+            }
+        };
+
+        // Tracks whether anything changed this frame. Always true
+        // for now (we always return `true` on no-op patches), but
+        // kept for future damage-rect collection (Phase 4d).
+        let mut any_changed = false;
+        // Phase 4d Opt 2: collect per-record damage rects. The
+        // caller's `last_css_damage_rects` slot is overwritten at
+        // the end of the function; if `apply_css_deltas` bails the
+        // caller falls back to the slow path and ignores rects.
+        // One entry per record whose patch actually moved a pixel.
+        let mut damage_rects: Vec<[f32; 4]> = Vec::new();
+        // Bail sentinel — set inside the per-record loop when a
+        // record can't be patched coherently (opacity-zero ratio,
+        // layer push index out of bounds, layer command shape
+        // mismatch). We can't `return CssDeltaResult::Bail` directly
+        // from inside the loop because the live `&mut self` borrow
+        // (through `batch`) plus the `records` / `store` borrows on
+        // `tree` block the post-return `self.last_css_damage_rects`
+        // write. Setting the flag + breaking out lets the borrows
+        // drop naturally before we touch `self`.
+        let mut bail = false;
+        // Phase 2 of the per-element slow path: records whose active
+        // animation / transition touches an out-of-scope property
+        // (layout, clip-path geometry, blur) get marked for walker
+        // re-emission instead of bailing the whole frame. The
+        // record's screen AABB still goes into `damage_rects` so the
+        // cache repaint clears that area before Phase 3 splices in
+        // the fresh primitives.
+        let mut reemit_nodes: Vec<LayoutNodeId> = Vec::new();
+
+        for (&node, meta) in records.iter_mut() {
+            // Per-record patch tracking — distinct from `any_changed`
+            // which spans the whole loop. Only push a damage rect
+            // when at least one property on THIS record moved.
+            let mut record_changed = false;
+            // Look up the active animation / transition for this
+            // node. Prefer animations (CSS `animation: ...`); fall
+            // back to transitions (CSS `transition: ...`). Both can
+            // target the same node in theory, but
+            // `apply_all_css_animation_props` runs before
+            // `apply_all_css_transition_props` so animations win in
+            // the slow-path render too.
+            let active_anim = store
+                .animations
+                .get(&meta.stable_id)
+                .filter(|a| a.is_playing);
+            let active_trans = store
+                .transitions
+                .get(&meta.stable_id)
+                .filter(|t| t.is_playing);
+
+            let props_anim = active_anim.map(|a| &a.current_properties);
+            let props_trans = active_trans.map(|t| &t.current_properties);
+
+            // Bail if either source targets a property we can't
+            // patch in place. The slow path handles those correctly.
+            let touches_out_of_scope = |p: &blinc_animation::KeyframeProperties| {
+                p.clip_inset.is_some()
+                    || p.clip_circle_radius.is_some()
+                    || p.clip_ellipse_radii.is_some()
+                    || p.filter_blur.is_some()
+                    || p.width.is_some()
+                    || p.height.is_some()
+                    || p.min_width.is_some()
+                    || p.max_width.is_some()
+                    || p.min_height.is_some()
+                    || p.max_height.is_some()
+                    || p.padding.is_some()
+                    || p.margin.is_some()
+                    || p.gap.is_some()
+                    || p.backdrop_blur.is_some()
+                    || p.backdrop_saturation.is_some()
+                    || p.backdrop_brightness.is_some()
+            };
+            if props_anim.is_some_and(touches_out_of_scope)
+                || props_trans.is_some_and(touches_out_of_scope)
+            {
+                // Mark this node for walker re-emission. Push its
+                // AABB so the cache repaint clears that area before
+                // Phase 3 splices fresh primitives. Skip the rest of
+                // this record's property branches — the walker will
+                // re-emit with all current animated values applied
+                // together (including in-scope properties like
+                // opacity that we'd otherwise patch here), so
+                // patching now would just be overwritten.
+                //
+                // Replaces the previous `return false` +
+                // `apply_css_deltas_bail_out_of_scope` trace from
+                // PR #46 — the bail-on-first-out-of-scope behaviour
+                // is gone; the equivalent diagnostic is
+                // `apply_css_deltas_reemit_pending` emitted once
+                // after the loop with the total count.
+                reemit_nodes.push(node);
+                if let Some(rect) = meta.last_screen_aabb {
+                    damage_rects.push(rect);
+                }
+                continue;
+            }
+
+            // Helper: read a property from animation first, else
+            // transition, else default to `None` (no change).
+            let read_f32 = |get: fn(&blinc_animation::KeyframeProperties) -> Option<f32>| {
+                props_anim
+                    .and_then(get)
+                    .or_else(|| props_trans.and_then(get))
+            };
+            let read_arr = |get: fn(&blinc_animation::KeyframeProperties) -> Option<[f32; 4]>| {
+                props_anim
+                    .and_then(get)
+                    .or_else(|| props_trans.and_then(get))
+            };
+
+            // ---- opacity ----
+            if let Some(new_opacity) = read_f32(|p| p.opacity) {
+                if (new_opacity - meta.last_opacity).abs() > f32::EPSILON {
+                    if meta.last_opacity.abs() < f32::EPSILON {
+                        // Divide-by-zero — primitives were emitted
+                        // at zero alpha last paint; can't recover
+                        // the original color via ratio. Slow path.
+                        bail = true;
+                        break;
+                    }
+                    if let Some(push_idx) = meta.layer_push_index {
+                        use blinc_gpu::primitives::LayerCommand;
+                        match batch.layer_commands.get_mut(push_idx) {
+                            Some(entry) => {
+                                if let LayerCommand::Push { config } = &mut entry.command {
+                                    config.opacity = new_opacity;
+                                } else {
+                                    bail = true;
+                                    break;
+                                }
+                            }
+                            None => {
+                                bail = true;
+                                break;
+                            }
+                        }
+                    } else if let Some(prims) =
+                        batch.primitives.get_mut(meta.primitive_range.clone())
+                    {
+                        let ratio = new_opacity / meta.last_opacity;
+                        for p in prims.iter_mut() {
+                            p.color[3] *= ratio;
+                            p.color2[3] *= ratio;
+                            p.border_color[3] *= ratio;
+                            p.shadow_color[3] *= ratio;
+                        }
+                    }
+                    meta.last_opacity = new_opacity;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- background_color ----
+            // Matching-based: only patches primitives whose `color`
+            // matches `meta.last_background_color` exactly, so a
+            // child with its own bg stays untouched.
+            if let Some(new_bg) = read_arr(|p| p.background_color) {
+                if let Some(last_bg) = meta.last_background_color {
+                    if new_bg != last_bg {
+                        if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone())
+                        {
+                            for p in prims.iter_mut() {
+                                if p.color == last_bg {
+                                    p.color = new_bg;
+                                }
+                            }
+                        }
+                        meta.last_background_color = Some(new_bg);
+                        any_changed = true;
+                        record_changed = true;
+                    }
+                }
+            }
+
+            // ---- border_color ----
+            if let Some(new_bc) = read_arr(|p| p.border_color) {
+                if let Some(last_bc) = meta.last_border_color {
+                    if new_bc != last_bc {
+                        if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone())
+                        {
+                            for p in prims.iter_mut() {
+                                if p.border_color == last_bc {
+                                    p.border_color = new_bc;
+                                }
+                            }
+                        }
+                        meta.last_border_color = Some(new_bc);
+                        any_changed = true;
+                        record_changed = true;
+                    }
+                }
+            }
+
+            // ---- border_width ----
+            if let Some(new_bw) = read_f32(|p| p.border_width) {
+                if (new_bw - meta.last_border_width).abs() > f32::EPSILON {
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            if (p.border[0] - meta.last_border_width).abs() < f32::EPSILON {
+                                p.border[0] = new_bw;
+                            }
+                        }
+                    }
+                    meta.last_border_width = new_bw;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- corner_radius ----
+            if let Some(new_cr) = read_arr(|p| p.corner_radius) {
+                if new_cr != meta.last_corner_radius {
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            if p.corner_radius == meta.last_corner_radius {
+                                p.corner_radius = new_cr;
+                            }
+                        }
+                    }
+                    meta.last_corner_radius = new_cr;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- shadow_params ----
+            if let Some(new_sp) = read_arr(|p| p.shadow_params) {
+                if new_sp != meta.last_shadow_params {
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            if p.shadow == meta.last_shadow_params {
+                                p.shadow = new_sp;
+                            }
+                        }
+                    }
+                    meta.last_shadow_params = new_sp;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- shadow_color ----
+            if let Some(new_sc) = read_arr(|p| p.shadow_color) {
+                if new_sc != meta.last_shadow_color {
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            if p.shadow_color == meta.last_shadow_color {
+                                p.shadow_color = new_sc;
+                            }
+                        }
+                    }
+                    meta.last_shadow_color = new_sc;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- rotate_x (3D tilt) ----
+            // perspective[0] = sin(rx), perspective[1] = cos(rx)
+            if let Some(new_rx_deg) = read_f32(|p| p.rotate_x) {
+                let new_rx_rad = new_rx_deg.to_radians();
+                if (new_rx_rad - meta.last_rotate_x_rad).abs() > f32::EPSILON {
+                    let sin_rx = new_rx_rad.sin();
+                    let cos_rx = new_rx_rad.cos();
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            p.perspective[0] = sin_rx;
+                            p.perspective[1] = cos_rx;
+                        }
+                    }
+                    meta.last_rotate_x_rad = new_rx_rad;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- rotate_y (3D turn) ----
+            // rotation[2] = sin(ry), rotation[3] = cos(ry)
+            if let Some(new_ry_deg) = read_f32(|p| p.rotate_y) {
+                let new_ry_rad = new_ry_deg.to_radians();
+                if (new_ry_rad - meta.last_rotate_y_rad).abs() > f32::EPSILON {
+                    let sin_ry = new_ry_rad.sin();
+                    let cos_ry = new_ry_rad.cos();
+                    if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                        for p in prims.iter_mut() {
+                            p.rotation[2] = sin_ry;
+                            p.rotation[3] = cos_ry;
+                        }
+                    }
+                    meta.last_rotate_y_rad = new_ry_rad;
+                    any_changed = true;
+                    record_changed = true;
+                }
+            }
+
+            // ---- filter values ----
+            // filter_a = (grayscale, invert, sepia, hue_rotate_rad)
+            // filter_b = (brightness, contrast, saturate, 0)
+            let new_fa = [
+                read_f32(|p| p.filter_grayscale).unwrap_or(meta.last_filter_a[0]),
+                read_f32(|p| p.filter_invert).unwrap_or(meta.last_filter_a[1]),
+                read_f32(|p| p.filter_sepia).unwrap_or(meta.last_filter_a[2]),
+                read_f32(|p| p.filter_hue_rotate)
+                    .map(|d| d.to_radians())
+                    .unwrap_or(meta.last_filter_a[3]),
+            ];
+            let new_fb = [
+                read_f32(|p| p.filter_brightness).unwrap_or(meta.last_filter_b[0]),
+                read_f32(|p| p.filter_contrast).unwrap_or(meta.last_filter_b[1]),
+                read_f32(|p| p.filter_saturate).unwrap_or(meta.last_filter_b[2]),
+                0.0,
+            ];
+            if new_fa != meta.last_filter_a || new_fb != meta.last_filter_b {
+                if let Some(prims) = batch.primitives.get_mut(meta.primitive_range.clone()) {
+                    for p in prims.iter_mut() {
+                        p.filter_a = new_fa;
+                        p.filter_b = new_fb;
+                    }
+                }
+                meta.last_filter_a = new_fa;
+                meta.last_filter_b = new_fb;
+                any_changed = true;
+                record_changed = true;
+            }
+
+            // Phase 4d Opt 2: if any property on this record moved,
+            // its `last_screen_aabb` is the damage rect for the
+            // cache repaint. Visual-only properties (opacity / colour
+            // / corner / shadow / filter / rotate_x / rotate_y) keep
+            // the AABB stable, so the walker's captured rect covers
+            // both pre- and post-patch pixel footprints. Records
+            // with no AABB (empty primitive range — text-only
+            // subtrees, off-screen) contribute nothing.
+            if record_changed {
+                if let Some(rect) = meta.last_screen_aabb {
+                    damage_rects.push(rect);
+                }
+            }
+        }
+
+        // Mirror `apply_binding_deltas`: drop the lock + the
+        // record borrow before the caller composes the frame.
+        let _ = any_changed;
+        drop(store);
+        drop(records);
+        if bail {
+            // Partial-patch state may have landed in cached_bg_batch
+            // — the loop ran some property branches before hitting
+            // the bail condition. Damage rects are unreliable, the
+            // slow path will repaint the whole cache anyway, so
+            // clear and signal Bail.
+            self.last_css_damage_rects.clear();
+            return CssDeltaResult::Bail;
+        }
+        self.last_css_damage_rects = damage_rects;
+        if reemit_nodes.is_empty() {
+            CssDeltaResult::Patched
+        } else {
+            tracing::trace!(
+                target: "blinc_app::frame_timing",
+                count = reemit_nodes.len(),
+                "apply_css_deltas_reemit_pending",
+            );
+            CssDeltaResult::PatchedWithReemits { reemit_nodes }
+        }
     }
 
     /// Update the current cursor position in physical pixels (for @flow pointer input)
@@ -406,6 +2940,14 @@ impl RenderContext {
     /// Used to trigger continuous redraws for animated flow shaders.
     pub fn has_active_flows(&self) -> bool {
         self.has_active_flows
+    }
+
+    /// Whether any image emitted during the last render is mid load-time
+    /// fade-in. Read by the windowed runner's redraw-gate; without
+    /// this signal, the fade ticks invisibly and the user has to
+    /// jiggle the cursor for the image to finish fading in.
+    pub fn has_pending_image_fade(&self) -> bool {
+        self.has_pending_image_fade
     }
 
     /// Set the current render target texture for blend mode two-pass compositing.
@@ -982,6 +3524,7 @@ impl RenderContext {
         for k in &dropped {
             self.image_cache.pop(k);
             self.image_load_times.remove(k);
+            self.image_fade_deadlines.remove(k);
         }
         if !dropped.is_empty() {
             tracing::info!(
@@ -1411,8 +3954,21 @@ impl RenderContext {
             // LruCache::put evicts oldest entry if at capacity
             self.image_cache.put(image.source.clone(), gpu_image);
             // Record load time for fade-in animation
-            self.image_load_times
-                .insert(image.source.clone(), web_time::Instant::now());
+            let now = web_time::Instant::now();
+            self.image_load_times.insert(image.source.clone(), now);
+            // Record the exact fade-end deadline so the frame-boundary
+            // redraw gate can stop firing as soon as the fade settles,
+            // instead of a conservative 2 s upper bound that pinned
+            // CPU for ~1.5 s of doing-nothing redraws after the fade
+            // was visually done. Skip when no fade requested.
+            if image.fade_duration_ms > 0 {
+                if let Some(deadline) = now.checked_add(std::time::Duration::from_millis(
+                    image.fade_duration_ms as u64,
+                )) {
+                    self.image_fade_deadlines
+                        .insert(image.source.clone(), deadline);
+                }
+            }
         }
     }
 
@@ -1561,7 +4117,7 @@ impl RenderContext {
         viewport_height: f32,
         scale_factor: f32,
     ) {
-        use blinc_image::{calculate_fit_rects, src_rect_to_uv, ObjectFit, ObjectPosition};
+        use blinc_image::{ObjectFit, ObjectPosition, calculate_fit_rects, src_rect_to_uv};
 
         for image in images {
             // Get cached GPU image
@@ -1579,10 +4135,11 @@ impl RenderContext {
             } else {
                 1.0
             };
-            if fade_factor < 1.0 {
-                // Force continuous redraw while fade is in progress
-                self.has_active_flows = true;
-            }
+            // `has_pending_image_fade` is now set at the top of
+            // `try_render_with_compositor` from `image_load_times`
+            // — it has to be known BEFORE the cache decision so
+            // the slow path is forced; the per-image dispatch
+            // here doesn't need to set anything.
 
             // If image is not loaded and has a placeholder, render placeholder
             if gpu_image.is_none() && image.placeholder_type != 0 {
@@ -1754,6 +4311,7 @@ impl RenderContext {
                             bottom_right: image.clip_radius[2],
                             bottom_left: image.clip_radius[3],
                         },
+                        corner_shape: blinc_core::CornerShape::ROUND,
                     });
                 }
                 let shadow_rect =
@@ -1809,7 +4367,7 @@ impl RenderContext {
 
     /// Render images to target from references (images must be preloaded first)
     fn render_images_ref(&mut self, target: &wgpu::TextureView, images: &[&ImageElement]) {
-        use blinc_image::{calculate_fit_rects, src_rect_to_uv, ObjectFit, ObjectPosition};
+        use blinc_image::{ObjectFit, ObjectPosition, calculate_fit_rects, src_rect_to_uv};
 
         for image in images {
             // Get cached GPU image
@@ -1828,9 +4386,9 @@ impl RenderContext {
             } else {
                 1.0
             };
-            if fade_factor < 1.0 {
-                self.has_active_flows = true;
-            }
+            // Fade signal lives on `has_pending_image_fade`, set
+            // at the top of `try_render_with_compositor` from
+            // `image_load_times`. No per-dispatch set needed here.
 
             // Convert object_fit byte to ObjectFit enum
             let object_fit = match image.object_fit {
@@ -2695,11 +5253,13 @@ impl RenderContext {
                 &mut svgs,
                 &mut images,
                 &mut flows,
-                None, // No initial CSS transform
-                1.0,  // Initial inherited CSS opacity
-                None, // No parent node
-                None, // No initial scroll clip
-                None, // No 3D layer ancestor
+                None,  // No initial CSS transform
+                1.0,   // Initial inherited CSS opacity
+                None,  // No parent node
+                None,  // No initial scroll clip
+                None,  // No 3D layer ancestor
+                false, // No ancestor pending motion at root
+                false, // No ancestor motion container at root
             );
         }
 
@@ -2749,6 +5309,22 @@ impl RenderContext {
         // Text/SVGs/images inside 3D layers are rendered to offscreen textures
         // and blitted with the same perspective transform.
         inside_3d_layer: Option<Transform3DLayerInfo>,
+        // True if any ancestor on the recursion stack has a pending
+        // motion binding / FSM animation. When set, the opacity ≤ 0.001
+        // early-out below is suppressed so a transient motion's child
+        // text doesn't get filtered out on the opacity=0 first frame
+        // (the descendant has no motion of its own, so its local
+        // `has_pending_motion` would otherwise be false, dropping the
+        // whole subtree).
+        ancestor_pending_motion: bool,
+        // True if any ancestor is a motion-bound container (has
+        // `motion_bindings` or a motion FSM config). Used to flag
+        // collected text / SVG / image elements so they're deferred
+        // from the static-cache pass and re-dispatched on top of the
+        // motion overlay — the static cache otherwise sits *under* the
+        // motion-bound bg primitives and text gets covered by the
+        // overlay's bg paint.
+        inside_motion_subtree: bool,
     ) {
         use blinc_layout::Material;
 
@@ -2778,6 +5354,21 @@ impl RenderContext {
         // Only RenderState motion values need to be inherited through effective_motion_translate.
         let binding_scale = tree.get_motion_scale(node);
         let binding_opacity = tree.get_motion_opacity(node);
+
+        // Is this node itself a motion container? Either it owns
+        // continuous AnimatedValue bindings (motion bindings — used by
+        // springs / scrubs) or it carries a motion FSM config (enter /
+        // exit animations from the router or transient `motion()`). The
+        // walker pushes such nodes onto `motion_subtree_depth` and
+        // routes their primitives to the dynamic batch. We mirror that
+        // here so descendants' text / SVG / image flags can be marked
+        // for the post-overlay re-dispatch path.
+        let is_motion_container_node = tree.motion_bindings_map().contains_key(&node)
+            || tree
+                .get_render_node(node)
+                .map(|n| n.props.motion.is_some() || n.props.is_overlay_root)
+                .unwrap_or(false);
+        let child_inside_motion_subtree = inside_motion_subtree || is_motion_container_node;
 
         // Calculate motion opacity for this node (combine both sources)
         let node_motion_opacity = motion_values
@@ -2830,8 +5421,48 @@ impl RenderContext {
             inherited_motion_scale_center
         };
 
-        // Skip if completely transparent
-        if effective_motion_opacity <= 0.001 {
+        // Skip if completely transparent — UNLESS this node has an
+        // active motion binding or motion FSM that could ramp the
+        // opacity back up. Mirrors the same bypass the walker has at
+        // `paint/motion.rs::render_layer_with_motion` so SDF primitives
+        // (emitted by the walker) and text / SVG / image (collected
+        // here) stay in lockstep across animation frames.
+        //
+        // Without this bypass, a transient motion's first paint after
+        // a rebuild — when `current` still equals `enter_from` and
+        // opacity is exactly 0.0 — would emit bg / border primitives
+        // into the cache but no text. Subsequent slow-path frames
+        // re-collect with opacity > 0.001 and would normally repopulate
+        // the cache, but the cache invalidation gate (`other_animations
+        // _active`) reads `has_active_motions()` which goes false on
+        // the very frame the FSM hits `Visible` — so the final cached
+        // text vectors come from whatever the last *animating* frame
+        // produced. If that final animating frame happened to early-out
+        // here, the cache ships without text and the only way back is
+        // a mouse move to force another full paint. Symptom: router
+        // page transitions show buttons with invisible labels.
+        let has_pending_motion = tree
+            .motion_bindings_map()
+            .get(&node)
+            .is_some_and(|b| b.is_any_animating())
+            || render_state.is_some_and(|rs| {
+                if let Some(render_node) = tree.get_render_node(node) {
+                    if let Some(ref stable_key) = render_node.props.motion_stable_id {
+                        return rs.is_stable_motion_active(stable_key);
+                    }
+                }
+                rs.is_motion_active(node)
+            });
+        // Propagate pending-motion state to descendants so a transient
+        // motion's children don't get filtered out at opacity=0. The
+        // immediate child has its own `has_pending_motion = false`
+        // (no motion bindings / FSM of its own), but its inherited
+        // opacity is 0 because the ancestor is mid-enter — without
+        // this propagation the child early-returns and its text /
+        // SVG / images never make it into the cache for the rest of
+        // the animation.
+        let subtree_pending_motion = ancestor_pending_motion || has_pending_motion;
+        if effective_motion_opacity <= 0.001 && !subtree_pending_motion {
             return;
         }
 
@@ -3092,51 +5723,56 @@ impl RenderContext {
                     let base_width = bounds.width * scale;
                     let base_height = bounds.height * scale;
 
-                    // Scale motion translate by DPI factor (motion values are in layout coordinates)
-                    let scaled_motion_tx = effective_motion_translate.0 * scale;
-                    let scaled_motion_ty = effective_motion_translate.1 * scale;
+                    // Motion (scale-around-center + translate) is composed into the glyph
+                    // affine instead of being baked into font_size/position. This keeps
+                    // glyph rasterization at base size — without this, every animation
+                    // frame stamps a fresh `(font_id, glyph_id, font_size)` cache key,
+                    // overflowing the glyph LRU and triggering atlas growth, which then
+                    // distorts text after repeated transitions.
+                    let has_motion_scale = (effective_motion_scale.0 - 1.0).abs() > 1e-6
+                        || (effective_motion_scale.1 - 1.0).abs() > 1e-6;
+                    let has_motion_translate = effective_motion_translate.0.abs() > 1e-6
+                        || effective_motion_translate.1.abs() > 1e-6;
+                    let motion_affine = if has_motion_scale || has_motion_translate {
+                        let (sx, sy) = effective_motion_scale;
+                        let (tx, ty) = effective_motion_translate;
+                        let (cx, cy) = effective_motion_scale_center.unwrap_or((0.0, 0.0));
+                        // Scale around (cx, cy) plus translate (tx, ty) — all in layout coords.
+                        Some([sx, 0.0, 0.0, sy, cx * (1.0 - sx) + tx, cy * (1.0 - sy) + ty])
+                    } else {
+                        None
+                    };
 
-                    // Apply motion scale and translation
-                    // When there's a motion scale center (from parent Motion container),
-                    // we must scale around THAT center, not the text element's own center.
-                    // This matches how shapes are rendered - the scale transform is pushed
-                    // at the Motion container level and affects all children relative to
-                    // the container's center.
-                    let (scaled_x, scaled_y, scaled_width, scaled_height) =
-                        if let Some((motion_center_x, motion_center_y)) =
-                            effective_motion_scale_center
-                        {
-                            // Scale position around the motion container's center (in DPI-scaled coordinates)
-                            let motion_center_x_scaled = motion_center_x * scale;
-                            let motion_center_y_scaled = motion_center_y * scale;
+                    // Compose motion_affine ∘ node_css_affine (motion is the outer transform).
+                    let text_affine = match (motion_affine, node_css_affine) {
+                        (Some(m), Some(c)) => {
+                            let [ma, mb, mc, md, mtx, mty] = m;
+                            let [ca, cb, cc, cd, ctx, cty] = c;
+                            Some([
+                                ma * ca + mc * cb,
+                                mb * ca + md * cb,
+                                ma * cc + mc * cd,
+                                mb * cc + md * cd,
+                                ma * ctx + mc * cty + mtx,
+                                mb * ctx + md * cty + mty,
+                            ])
+                        }
+                        (Some(m), None) => Some(m),
+                        (None, c) => c,
+                    };
 
-                            // Calculate position relative to motion center
-                            let rel_x = base_x - motion_center_x_scaled;
-                            let rel_y = base_y - motion_center_y_scaled;
-
-                            // Apply scale to relative position and size
-                            let scaled_rel_x = rel_x * effective_motion_scale.0;
-                            let scaled_rel_y = rel_y * effective_motion_scale.1;
-                            let scaled_w = base_width * effective_motion_scale.0;
-                            let scaled_h = base_height * effective_motion_scale.1;
-
-                            // Apply motion translation and convert back to absolute position
-                            let final_x = motion_center_x_scaled + scaled_rel_x + scaled_motion_tx;
-                            let final_y = motion_center_y_scaled + scaled_rel_y + scaled_motion_ty;
-
-                            (final_x, final_y, scaled_w, scaled_h)
-                        } else {
-                            // No motion scale center - just apply translation (no scale effect)
-                            let final_x = base_x + scaled_motion_tx;
-                            let final_y = base_y + scaled_motion_ty;
-                            (final_x, final_y, base_width, base_height)
-                        };
+                    // Glyph layout uses the BASE box — motion is applied via text_affine
+                    // at glyph emission, so position/size here intentionally exclude motion.
+                    let scaled_x = base_x;
+                    let scaled_y = base_y;
+                    let scaled_width = base_width;
+                    let scaled_height = base_height;
 
                     // Use CSS-overridden font size if available (from stylesheet/animation/transition)
                     let base_font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
-                    let scaled_font_size = base_font_size * effective_motion_scale.1 * scale;
-                    let scaled_measured_width =
-                        text_data.measured_width * effective_motion_scale.0 * scale;
+                    // Rasterize at base size only — motion scale is in text_affine.
+                    let scaled_font_size = base_font_size * scale;
+                    let scaled_measured_width = text_data.measured_width * scale;
 
                     // Intersect primary clip with scroll clip — text only supports
                     // a single clip rect so we must merge both boundaries.
@@ -3277,7 +5913,7 @@ impl RenderContext {
                             .letter_spacing
                             .unwrap_or(text_data.letter_spacing),
                         z_index: *z_layer,
-                        ascender: text_data.ascender * effective_motion_scale.1 * scale,
+                        ascender: text_data.ascender * scale,
                         strikethrough: render_node.props.text_decoration.map_or(
                             text_data.strikethrough,
                             |td| {
@@ -3295,10 +5931,11 @@ impl RenderContext {
                         ),
                         decoration_color: render_node.props.text_decoration_color,
                         decoration_thickness: render_node.props.text_decoration_thickness,
-                        css_affine: node_css_affine,
+                        css_affine: text_affine,
                         text_shadow: render_node.props.text_shadow,
                         transform_3d_layer: inside_3d_layer.clone(),
                         is_foreground: children_inside_foreground,
+                        in_motion_subtree: inside_motion_subtree,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -3380,6 +6017,8 @@ impl RenderContext {
                         css_affine: node_css_affine,
                         tag_overrides: render_node.props.svg_tag_styles.clone(),
                         transform_3d_layer: inside_3d_layer.clone(),
+                        in_motion_subtree: inside_motion_subtree,
+                        z_layer: *z_layer,
                     });
                 }
                 ElementType::Image(image_data) => {
@@ -3427,8 +6066,10 @@ impl RenderContext {
                         .border_color
                         .unwrap_or(blinc_core::Color::TRANSPARENT);
 
-                    // Shadow: use image's own (parent shadow renders via SDF)
-                    let shadow = render_node.props.shadow;
+                    // Shadow: use image's own (parent shadow renders via SDF).
+                    // ImageElement holds a single shadow — pick the topmost
+                    // layer of any compound stack.
+                    let shadow = render_node.props.shadow.first().copied();
 
                     // Filter: prefer own, fall back to parent
                     let own_filter = &render_node.props.filter;
@@ -3567,7 +6208,7 @@ impl RenderContext {
                             border_width: 0.0,
                             border_color: blinc_core::Color::TRANSPARENT,
                             css_affine: node_css_affine,
-                            shadow: render_node.props.shadow,
+                            shadow: render_node.props.shadow.first().copied(),
                             filter_a: render_node
                                 .props
                                 .filter
@@ -3796,6 +6437,7 @@ impl RenderContext {
                             text_shadow: render_node.props.text_shadow,
                             transform_3d_layer: inside_3d_layer.clone(),
                             is_foreground: children_inside_foreground,
+                            in_motion_subtree: inside_motion_subtree,
                         });
 
                         x_offset += segment_width;
@@ -3901,6 +6543,8 @@ impl RenderContext {
                 Some(node), // pass current node as parent for children
                 child_scroll_clip,
                 child_3d_layer.clone(),
+                subtree_pending_motion,
+                child_inside_motion_subtree,
             );
         }
 
@@ -3937,6 +6581,11 @@ impl RenderContext {
     /// Get the texture format used by the renderer
     pub fn texture_format(&self) -> wgpu::TextureFormat {
         self.renderer.texture_format()
+    }
+
+    /// The adapter the renderer was initialized against.
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        self.renderer.adapter()
     }
 
     /// Create a new wgpu surface for an additional window (multi-window support)
@@ -3995,18 +6644,1663 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
+        self.render_tree_with_motion_opt(tree, render_state, width, height, target, None, false)
+    }
+
+    /// Render with motion. `try_fast_paint = true` lets the renderer
+    /// skip the paint walker when the cached `PrimitiveBatch` from a
+    /// previous full paint is valid and `apply_binding_deltas` can
+    /// patch it in place (i.e. only translate / opacity changed
+    /// this frame, no scale / rotation moved). On a successful
+    /// fast path: skip `tree.render_with_motion(&mut ctx, ...)`,
+    /// take the patched cached batch instead of `ctx.take_batch()`,
+    /// continue with the existing GPU pipeline.
+    ///
+    /// On any "fast path not applicable" signal (no cache,
+    /// `composite_bindings` requires scale/rotation that the helper
+    /// can't handle yet, fast path explicitly disabled) the function
+    /// falls back to the full walker path and repopulates the
+    /// cache.
+    /// Layer-compositor render path. When the renderer can use it,
+    /// this is dramatically cheaper per frame than
+    /// [`Self::render_tree_with_motion_opt`]:
+    ///
+    /// - The walker output is rendered once into an offscreen
+    ///   "static layer" texture, with canvas drawing skipped (so
+    ///   the canvas regions stay transparent in the cache).
+    /// - Every subsequent frame, the cache is blitted onto the
+    ///   surface (one `copy_texture_to_texture`) and the fresh
+    ///   canvas primitives are dispatched on top with
+    ///   `LoadOp::Load`.
+    ///
+    /// Falls back to the existing `render_tree_with_motion_opt`
+    /// path when `target_texture` is `None` (no surface texture
+    /// reference available — e.g. offscreen render-to-view callers)
+    /// or any compositor invariant is violated.
+    #[allow(clippy::too_many_arguments)]
+    fn try_render_with_compositor(
+        &mut self,
+        tree: &RenderTree,
+        render_state: &blinc_layout::RenderState,
+        width: u32,
+        height: u32,
+        target_view: &wgpu::TextureView,
+        target_texture: &wgpu::Texture,
+        try_fast_paint: bool,
+    ) -> Result<()> {
+        self.renderer.ensure_static_layer(width, height);
+
+        // Image fade-in detection at frame boundary — independent
+        // of whether the fast or slow path runs this frame. The
+        // image dispatch only runs on the slow path; once the
+        // cache is warm we'd never re-set this flag mid-fade, so
+        // we read the deadline map directly here.
+        //
+        // Deadline = `loaded_at + fade_duration_ms` captured at
+        // image-load time. Once `now >= deadline`, the fade has
+        // visually settled and we drop the entry so the redraw
+        // gate stops firing. Previously a blanket 2 s upper bound
+        // pinned the chain for ~1.5 s of nothing-changing frames
+        // (the actual fade was 250-500 ms).
+        let now = web_time::Instant::now();
+        self.image_fade_deadlines
+            .retain(|_, deadline| now < *deadline);
+        self.has_pending_image_fade = !self.image_fade_deadlines.is_empty();
+
+        if self.has_pending_image_fade {
+            // Force the slow path so the image dispatch actually
+            // runs with the latest fade_factor — fast path would
+            // just blit the previous frame's static cache and the
+            // image stays frozen at mid-fade.
+            self.renderer.invalidate_static_layer();
+        }
+
+        // ----- Compositor v2 Phase 1 verification trace -----
+        // Compute the per-node animation status from the new model
+        // (motion bindings + canvas presence + CSS-anim store, with
+        // hysteresis) and log it. Behaviour-neutral — the actual
+        // composite path below still uses the legacy
+        // `bindings_animating` boolean. Phase 2 wires the status
+        // map into the walker; Phase 3 replaces the legacy path.
+        //
+        // Enable with `RUST_LOG=blinc_app::v2_status=trace` to see
+        // the classification each frame:
+        //   v2_status frame anim_count=1 static_count=0 \
+        //     entries=[(LayoutNodeId(108v1), Animating(Motion))]
+        let v2_statuses = tree.compute_animation_status();
+        if tracing::enabled!(target: "blinc_app::v2_status", tracing::Level::TRACE) {
+            let anim_count = v2_statuses
+                .iter()
+                .filter(|(_, s)| matches!(s, blinc_layout::renderer::AnimationStatus::Animating(_)))
+                .count();
+            let static_count = v2_statuses.len() - anim_count;
+            tracing::trace!(
+                target: "blinc_app::v2_status",
+                anim_count,
+                static_count,
+                entries = ?v2_statuses,
+                "v2 animation status",
+            );
+        }
+        tree.commit_animation_status(&v2_statuses);
+
+        // If any motion binding is mid-flight the static-layer cache
+        // is stale this frame — its primitives encode the binding's
+        // position at the last full paint, not the spring's current
+        // value. Invalidate the cache so the compositor takes the
+        // full-paint branch and rebuilds it.
+        //
+        // Canvases don't trigger this because their content is
+        // overlaid each frame; only non-canvas binding-bound subtrees
+        // (the cn_demo `progress_animated` indicator's translate_x
+        // is the canonical case) need to invalidate. The simplest
+        // correct rule is "any binding animating → invalidate";
+        // smarter mappings (motion-bound subtrees move to the
+        // overlay batch) can land later without changing call sites.
+        // Detect bindings whose current value would visibly diverge
+        // from what the static-layer cache was painted with.
+        //
+        // Important: a binding being animating does NOT mean we
+        // should re-walk the whole tree. The cached batch
+        // (`cached_bg_batch`) can be patched in place via
+        // `apply_binding_deltas` (translates/scales/rotations) and
+        // re-dispatched to the static-layer texture — no walker, no
+        // re-emission of surrounding elements. Surrounding elements
+        // have nothing to do with the active binding; only the
+        // binding-bound primitives' values change.
+        //
+        // What we DO need to invalidate when bindings move: the
+        // cached static-layer TEXTURE pixels, because they were
+        // rasterized from the pre-patch batch. The next render must
+        // dispatch the patched batch into the texture before blitting
+        // to the surface. We rely on the inner
+        // `render_tree_with_motion_opt(try_fast_paint=true)` to take
+        // the apply_binding_deltas-then-dispatch path; the full
+        // walker only runs when the cache is actually structurally
+        // invalid.
+        //
+        // `is_any_animating()` is too sensitive for this purpose:
+        // under-damped springs (e.g. `SpringConfig::gentle()`)
+        // asymptotically oscillate around the target at sub-pixel
+        // amplitude for many seconds before
+        // `(value - target).abs() < 0.01` clears the gate. Those
+        // sub-pixel wobbles round to the same pixel after
+        // rasterization, so the cache stays visually correct — but
+        // the "is animating" reading was forcing a full repaint per
+        // frame anyway, pinning CPU at vsync forever.
+        //
+        // Treat a binding as "visibly animating" only if its current
+        // value differs from its target by more than half a logical
+        // pixel. Same posture for rotations (degrees) — half a
+        // degree at typical spinner sizes (16-32 px) is less than a
+        // pixel of arc-length travel. Timeline-driven bindings (used
+        // by spinners — but those are canvases, not motion-bound,
+        // so this branch wouldn't hit) always count as animating
+        // because they have no notion of "target settled".
+        const VISIBLE_PIXEL_EPS: f32 = 0.5;
+        const VISIBLE_DEG_EPS: f32 = 0.5;
+        let value_far_from_target =
+            |v: &Option<blinc_animation::SharedAnimatedValue>, eps: f32| -> bool {
+                v.as_ref()
+                    .and_then(|s| s.lock().ok())
+                    .map(|g| (g.get() - g.target()).abs() > eps)
+                    .unwrap_or(false)
+            };
+        // Detect direct-write motion (`set_immediate`): the binding
+        // is at its target (so `is_any_animating` returns false and
+        // value_far_from_target won't fire) but its CURRENT value
+        // has drifted from the cache's `last_translate` /
+        // `last_opacity` snapshot. Compare against composite_bindings
+        // — the walker's record of what got baked into the cached
+        // primitive batch — for the bindings where mismatch
+        // visibly matters: translate and opacity. Scale / rotation
+        // also drift, but their resting value is already detected
+        // by `value_far_from_target` (any `set_immediate` to a
+        // value that differs from the binding's target would also
+        // re-target it, tripping the mid-flight gate). Keeping the
+        // drift check tight (just translate + opacity) avoids
+        // false positives that would pin CPU forever.
+        let direct_write_drift = {
+            let bindings_table = tree.motion_bindings_map();
+            tree.composite_bindings().iter().any(|(node, meta)| {
+                let Some(b) = bindings_table.get(node) else {
+                    return false;
+                };
+                let cx = b
+                    .translate_x
+                    .as_ref()
+                    .and_then(|v| v.lock().ok())
+                    .map(|g| g.get())
+                    .unwrap_or(0.0);
+                let cy = b
+                    .translate_y
+                    .as_ref()
+                    .and_then(|v| v.lock().ok())
+                    .map(|g| g.get())
+                    .unwrap_or(0.0);
+                if (cx - meta.last_translate.0).abs() > VISIBLE_PIXEL_EPS
+                    || (cy - meta.last_translate.1).abs() > VISIBLE_PIXEL_EPS
+                {
+                    return true;
+                }
+                false
+            })
+        };
+        let bindings_animating = direct_write_drift
+            || tree.motion_bindings_map().values().any(|b| {
+                value_far_from_target(&b.translate_x, VISIBLE_PIXEL_EPS)
+                    || value_far_from_target(&b.translate_y, VISIBLE_PIXEL_EPS)
+                    || value_far_from_target(&b.scale, 0.01)
+                    || value_far_from_target(&b.scale_x, 0.01)
+                    || value_far_from_target(&b.scale_y, 0.01)
+                    || value_far_from_target(&b.rotation, VISIBLE_DEG_EPS)
+                    || value_far_from_target(&b.opacity, 0.01)
+                    || b.rotation_timeline
+                        .as_ref()
+                        .and_then(|t| t.timeline.lock().ok())
+                        .is_some_and(|g| g.is_playing())
+            });
+        // Cache-invalidation gate — Site B in the animation-driver
+        // map. The single source of truth is
+        // `RenderTree::has_any_active_animation`, which ORs in
+        // every system that mutates state per frame:
+        //
+        // - MotionBindings (springs, set_immediate-driven drag,
+        //   rotation timelines)
+        // - motion() FSM enter / exit (PageTransition, fade_in,
+        //   etc.)
+        // - animate_bounds / animate_layout (accordion height,
+        //   FLIP-style position transitions)
+        // - FLIP transitions on string IDs
+        // - CSS keyframe animations
+        // - CSS property transitions (the image placeholder
+        //   fade-in, hover styles, etc.)
+        //
+        // Without this union, individual systems went unaccounted
+        // for and produced the "transition only plays when I
+        // scroll" symptom — the scheduler ticks the animation, the
+        // windowed redraw chain fires `request_redraw`, but the
+        // compositor fast path here saw cache-valid and returned
+        // the frozen surface. Any input event coincidentally
+        // invalidated the cache and the animation appeared to
+        // "catch up".
+        //
+        // `bindings_animating` here also catches `set_immediate`
+        // drift (binding's current value diverges from
+        // composite_bindings.last_translate) — the
+        // `has_any_active_animation` path covers spring-mid-flight
+        // and rotation_timeline but not set_immediate, so we keep
+        // the drift signal alongside.
+        // Non-motion-binding animation systems. We intentionally
+        // exclude `motion_bindings.is_any_animating()` here because
+        // `bindings_animating` above already covers motion bindings
+        // with the `VISIBLE_PIXEL_EPS` (0.5 px) threshold — the same
+        // threshold our composite path uses to decide whether to
+        // patch a binding's primitive range. `is_any_animating` on
+        // the spring uses a much tighter 0.01 px threshold, so a
+        // settled-but-not-officially-settled spring (between 0.01 px
+        // and 0.5 px) was triggering full cache invalidation every
+        // frame for sub-pixel oscillation that wasn't visible. The
+        // captured `cache_invalidation` trace showed this accounted
+        // for ~44 % of all invalidations during cn_demo — a
+        // 1:1-replaceable drop in slow-path frames.
+        let css_anim_active = {
+            let store = tree.css_anim_store();
+
+            match store.lock() {
+                Ok(g) => g.has_active_animations() || g.has_active_transitions(),
+                Err(_) => false,
+            }
+        };
+        // CSS animations / transitions no longer force a static-cache
+        // invalidation on their own — Phase 3a routed the CSS-animated
+        // subtrees out of the static batch and into `dynamic_batch`
+        // (via `push_motion_subtree`), and the compositor's fast path
+        // refreshes those regions by per-region re-walking
+        // (`tree.render_dynamic_region` for each entry in
+        // `dynamic_regions`). The static cache content is unchanged
+        // across CSS-active frames, so re-painting it is wasted work.
+        //
+        // Other animation systems still go through the slow path
+        // because they mutate properties on nodes the walker emits
+        // into the static batch (visual / layout animations resize
+        // and reposition elements; FLIP / motion FSM enter-exit can
+        // restructure things; spring values that drive both motion
+        // bindings and CSS keyframes on the same node need a
+        // re-walk).
+        let other_animations_active = render_state.has_active_motions()
+            || tree.has_active_visual_animations()
+            || tree.has_active_layout_animations()
+            || tree.has_active_flip_animations();
+        // The CSS-only frame predicate gates the per-region re-walk
+        // step below: only fire when CSS is the ONLY animation source
+        // touching primitives this frame, so we don't double-paint
+        // motion-bound subtrees that `apply_binding_deltas` is
+        // already updating in place.
+        let css_only_active = css_anim_active && !other_animations_active;
+        // Diagnostic: name the predicate that's invalidating the
+        // static cache. Pinpoints which animation source keeps the
+        // compositor slow path active in steady state. Off unless
+        // `RUST_LOG=blinc_app::cache_invalidation=trace` is set.
+        if tracing::enabled!(target: "blinc_app::cache_invalidation", tracing::Level::TRACE)
+            && (bindings_animating || other_animations_active)
+        {
+            let mb_anim = tree
+                .motion_bindings_map()
+                .values()
+                .any(|b| b.is_any_animating());
+            let fsm = render_state.has_active_motions();
+            let visual = tree.has_active_visual_animations();
+            let layout = tree.has_active_layout_animations();
+            let flip = tree.has_active_flip_animations();
+            let (css_anim, css_xition) = {
+                let store = tree.css_anim_store();
+                let g = store.lock();
+                match g {
+                    Ok(s) => (s.has_active_animations(), s.has_active_transitions()),
+                    Err(_) => (false, false),
+                }
+            };
+            tracing::trace!(
+                target: "blinc_app::cache_invalidation",
+                bindings = bindings_animating,
+                motion_binding_anim = mb_anim,
+                fsm,
+                visual,
+                layout,
+                flip,
+                css_anim,
+                css_xition,
+                "cache_invalidated"
+            );
+        }
+        // Compositor v2 damage-rect path: scaffolding in place but
+        // OFF by default. The scissored re-render correctly handles
+        // SDF primitives, but the static cache also contains TEXT
+        // GLYPHS (dispatched by `render_text` into the same texture)
+        // and SVG / image content. The damage-rect path clears the
+        // scissor region but only re-draws SDF primitives — wiping
+        // any text/SVG in the damage rect, which then re-appears
+        // when the next slow-path frame fires.
+        //
+        // For motion-bound animations next to text (cn_demo's
+        // progress bar, switch, slider), this presents as the
+        // animated element "vibrating" — text near the moving
+        // element flashes in and out as paths alternate.
+        //
+        // To finish Phase 3 cleanly we need to either:
+        //   (a) Re-dispatch text/SVG/image inside the damage rect
+        //       too (requires caching their per-frame collected
+        //       state on fast-path frames so it's available without
+        //       re-running the collect pipeline).
+        //   (b) Extract motion-bound primitives from the cache
+        //       entirely — the "compositor v2 proper" approach
+        //       where the cache holds static content only and
+        //       motion-bound elements get a separate per-frame
+        //       overlay.
+        //
+        // Opt-in via `BLINC_DAMAGE_RECT=1` to try the partial
+        // implementation. Useful for experimentation / when only
+        // pure-SDF subtrees are animating. Default off so visuals
+        // stay correct.
+        // Compositor v2 Phase 4: motion-binding-only animation frames
+        // never invalidate the static cache. Motion-bound subtree
+        // primitives live in `cached_dynamic_batch` (the walker
+        // routed them out of the static batch via
+        // `push_motion_subtree`), so the cache contains zero
+        // motion content. `apply_binding_deltas` patches the
+        // dynamic batch in place each frame; the per-frame overlay
+        // dispatch (after `composite_frame`) shows the new
+        // positions. The cache only needs invalidation when a
+        // NON-motion-binding animation is active (CSS, FLIP,
+        // layout, motion() FSM, visual) — those mutate static-
+        // batch primitives the delta patcher can't represent.
+        //
+        // Drops the cn_demo switch / progress / slider / accordion
+        // animations from per-frame slow path to one full paint
+        // (entry frame) + per-frame fast path. Cache reused for
+        // the entire spring duration.
+        let damage_rect_enabled = std::env::var("BLINC_DAMAGE_RECT").as_deref() == Ok("1");
+        let damage_rect_eligible =
+            damage_rect_enabled && bindings_animating && !other_animations_active;
+        if !damage_rect_eligible && other_animations_active {
+            self.renderer.invalidate_static_layer();
+            // Also invalidate the cached text / SVG / image vectors
+            // up-front. Without this clear, the downstream
+            // `cache_hit` check in render_tree_with_motion_opt
+            // runs AFTER apply_binding_deltas has just updated
+            // composite_bindings.last_translate to the current
+            // value — so its `direct_write_drift` re-check returns
+            // false on the same frame that we already KNEW the
+            // cache was stale, and the stale text gets re-used.
+            // Symptom: only the first drag updates text correctly,
+            // subsequent drags shift primitives but leave the text
+            // labels at the previous translate.
+            self.cached_texts = None;
+            self.cached_svgs = None;
+            self.cached_images = None;
+            self.cached_flows = None;
+            self.cached_glyphs_by_layer = None;
+            self.cached_fg_glyphs = None;
+            self.cached_motion_subtree_text_prims = None;
+            self.cached_motion_subtree_svgs = None;
+            self.cached_css_transformed_text_prims = None;
+        }
+
+        // Phase 4d/f: CSS-only patch fast path. When CSS animations
+        // / transitions are the *only* animation signal (no motion
+        // bindings, no visual / layout / FLIP), patch the cached
+        // batch in place via `apply_css_deltas` and re-render the
+        // static cache from the patched batch. Skips the walker and
+        // `collect_elements_recursive` — the two biggest CPU costs
+        // on a CSS-only frame.
+        //
+        // Phase 4f relaxed the previous `BLINC_CSS_PATCH=1` opt-in:
+        // the path now engages by default. The per-record eligibility
+        // checks below (cached batch present + static layer valid +
+        // walker has populated records) keep the path correct for
+        // cold-start frames — first CSS frame after a structural
+        // change falls through to slow path, which repopulates the
+        // records; subsequent frames take the fast path.
+        //
+        // Bails (falls through to slow path) on:
+        //   - Motion bindings or other animations active (motion
+        //     damage path takes precedence; mixing the two would
+        //     race their respective last_* bookkeeping).
+        //   - Empty `css_anim_paint_records` (walker hasn't seen
+        //     the CSS-animated node yet — first frame of a newly-
+        //     started animation; slow path populates the records).
+        //   - `apply_css_deltas` reports an out-of-scope property
+        //     (clip-path geometry, blur, layout) or cache shape
+        //     mismatch.
+        //
+        // Cost vs slow path on a CSS-only frame:
+        //   - Skipped: paint walker (~0.5 ms), text shaping +
+        //     SVG/image collect (~0.5 ms), per-frame State updates.
+        //   - Paid: apply_css_deltas (~50 µs), batch clone for
+        //     re-render (~50 µs), full SDF dispatch (same as slow
+        //     path), text / SVG / image dispatch from cached
+        //     vectors (same as slow path).
+        //   - Net ≈ 1 ms saved per CSS-only frame, ~6 % at 60 fps.
+        let css_patch_eligible = css_only_active
+            && !bindings_animating
+            && self.cached_bg_batch.is_some()
+            && self.renderer.static_layer_valid()
+            && !tree.css_anim_paint_records().is_empty();
+        if !css_patch_eligible
+            && tracing::enabled!(target: "blinc_app::frame_timing", tracing::Level::TRACE)
+        {
+            tracing::trace!(
+                target: "blinc_app::frame_timing",
+                css_anim_active,
+                css_only_active,
+                bindings_animating,
+                try_fast_paint,
+                has_cached_batch = self.cached_bg_batch.is_some(),
+                static_layer_valid = self.renderer.static_layer_valid(),
+                css_records_present = !tree.css_anim_paint_records().is_empty(),
+                "css_patch_gate_failed",
+            );
+        }
+        if css_patch_eligible {
+            let scale_factor = tree.scale_factor();
+            let css_path_start = web_time::Instant::now();
+            // CssDeltaResult drives the next step:
+            //   - Patched: in-scope patches landed, run the damaged
+            //     repaint as before.
+            //   - PatchedWithReemits: in-scope patches landed AND
+            //     out-of-scope records (layout / clip-geom / blur)
+            //     need walker re-emission into `cached_bg_batch`
+            //     before the cache repaint. Try
+            //     `try_reemit_and_splice_css_subtrees`; on success
+            //     we have a fully-up-to-date cache and proceed like
+            //     Patched. On failure (complex subtree batch state
+            //     we can't splice yet) fall through to the slow path.
+            //   - Bail: fall through to the slow path entirely.
+            let delta_result = self.apply_css_deltas(tree, scale_factor);
+            let took_fast_path = match delta_result {
+                CssDeltaResult::Patched => true,
+                CssDeltaResult::PatchedWithReemits { ref reemit_nodes } => self
+                    .try_reemit_and_splice_css_subtrees(
+                        tree,
+                        render_state,
+                        reemit_nodes,
+                        width,
+                        height,
+                    ),
+                CssDeltaResult::Bail => false,
+            };
+            if took_fast_path {
+                let batch_clone = self
+                    .cached_bg_batch
+                    .as_ref()
+                    .expect("css_patch_eligible implies cached_bg_batch is Some")
+                    .clone();
+
+                // Phase 4d Opt 2: try the scissored cache repaint
+                // first. `render_static_layer_damaged` re-renders
+                // only the union of `last_css_damage_rects`,
+                // preserving the rest of the cache via LoadOp::Load.
+                // Falls back to false today on any batch with
+                // `layer_commands` / paths / 3D viewports / particles
+                // — Task 3 extends it to handle layer_commands so
+                // CSS animations whose walker emitted opacity / blur
+                // / 3D layers stay on the damaged path. Batches
+                // without layer commands engage already.
+                let damaged = self.last_css_damage_rects.clone();
+                let damaged_ok = !damaged.is_empty()
+                    && self
+                        .renderer
+                        .render_static_layer_damaged(&damaged, &batch_clone);
+
+                if !damaged_ok {
+                    // Full-cache re-render fallback (Phase 4d Opt 1
+                    // behaviour). Used when the damaged path bailed
+                    // — e.g., batch has layer_commands the
+                    // damage-rect code can't replay yet, or no
+                    // records moved this frame so there's nothing
+                    // to scissor.
+                    self.renderer.render_static_layer(
+                        &batch_clone,
+                        [0.0, 0.0, 0.0, self.clear_alpha as f64],
+                    );
+                }
+
+                // Re-dispatch text / SVG / image. When the damaged
+                // path engaged, only the cache region inside the
+                // damage union was cleared + repainted; we filter
+                // cached vectors to those intersecting the damage
+                // and dispatch through `pending_scissor` so the
+                // writes stay inside the cleared region. When the
+                // full-cache fallback ran, dispatch every cached
+                // vector unfiltered — the whole cache needs
+                // re-stamping.
+                //
+                // Cached vectors are from the last slow-path frame.
+                // For pure visual / 3D-transform / colour CSS
+                // animations they stay valid (positions don't
+                // shift). Layout animations would invalidate them,
+                // but layout properties trigger an
+                // `apply_css_deltas` bail above so we never reach
+                // here with stale positions.
+                let static_view_opt = self.renderer.static_layer_view().cloned();
+                if let Some(static_view) = static_view_opt {
+                    if damaged_ok {
+                        let union = damage_union(&damaged);
+                        if let Some(scissor) = damage_scissor_from_union(union, &self.renderer) {
+                            self.renderer.set_pending_scissor(scissor);
+                            if let Some(glyphs_by_layer) = self.cached_glyphs_by_layer.clone() {
+                                for (_z, glyphs) in glyphs_by_layer.iter() {
+                                    let filtered: Vec<_> = glyphs
+                                        .iter()
+                                        .filter(|g| aabb_intersects_any(g.bounds, &damaged))
+                                        .copied()
+                                        .collect();
+                                    if !filtered.is_empty() {
+                                        self.render_text(&static_view, &filtered);
+                                    }
+                                }
+                            }
+                            if let Some(fg_glyphs) = self.cached_fg_glyphs.clone() {
+                                let filtered: Vec<_> = fg_glyphs
+                                    .iter()
+                                    .filter(|g| aabb_intersects_any(g.bounds, &damaged))
+                                    .copied()
+                                    .collect();
+                                if !filtered.is_empty() {
+                                    self.render_text(&static_view, &filtered);
+                                }
+                            }
+                            if let Some(svgs) = self.cached_svgs.clone() {
+                                let filtered: Vec<_> = svgs
+                                    .into_iter()
+                                    .filter(|s| {
+                                        aabb_intersects_any([s.x, s.y, s.width, s.height], &damaged)
+                                    })
+                                    .collect();
+                                if !filtered.is_empty() {
+                                    self.render_rasterized_svgs(
+                                        &static_view,
+                                        &filtered,
+                                        scale_factor,
+                                    );
+                                }
+                            }
+                            if let Some(images) = self.cached_images.clone() {
+                                let filtered_refs: Vec<&ImageElement> = images
+                                    .iter()
+                                    .filter(|i| {
+                                        aabb_intersects_any([i.x, i.y, i.width, i.height], &damaged)
+                                    })
+                                    .collect();
+                                if !filtered_refs.is_empty() {
+                                    self.render_images_ref(&static_view, &filtered_refs);
+                                }
+                            }
+                            self.renderer.clear_pending_scissor();
+                        }
+                    } else {
+                        // Full re-dispatch (no scissor) — cache was
+                        // fully cleared by `render_static_layer`.
+                        if let Some(glyphs_by_layer) = self.cached_glyphs_by_layer.clone() {
+                            for (_z, glyphs) in glyphs_by_layer.iter() {
+                                if !glyphs.is_empty() {
+                                    self.render_text(&static_view, glyphs);
+                                }
+                            }
+                        }
+                        if let Some(fg_glyphs) = self.cached_fg_glyphs.clone() {
+                            if !fg_glyphs.is_empty() {
+                                self.render_text(&static_view, &fg_glyphs);
+                            }
+                        }
+                        if let Some(svgs) = self.cached_svgs.clone() {
+                            if !svgs.is_empty() {
+                                self.render_rasterized_svgs(&static_view, &svgs, scale_factor);
+                            }
+                        }
+                        if let Some(images) = self.cached_images.clone() {
+                            if !images.is_empty() {
+                                let refs: Vec<&ImageElement> = images.iter().collect();
+                                self.render_images_ref(&static_view, &refs);
+                            }
+                        }
+                    }
+                }
+                // Composite cache + canvas overlay + dynamic batch
+                // to the surface. Same final-blit shape the motion
+                // damage path uses.
+                let mut overlay = self.collect_canvas_overlay(tree, width, height);
+                if !tree.dynamic_regions().is_empty() {
+                    let walked =
+                        self.collect_dynamic_region_primitives(tree, render_state, width, height);
+                    self.cached_dynamic_batch = Some(walked);
+                }
+                let (dyn_prims, dyn_aux) = match self.cached_dynamic_batch.as_ref() {
+                    Some(b) => (b.primitives.as_slice(), b.aux_data.as_slice()),
+                    None => (&[][..], &[][..]),
+                };
+                if !dyn_prims.is_empty() {
+                    overlay.primitives.extend_from_slice(dyn_prims);
+                }
+                // Rebind needs `&mut self` so we have to release the
+                // immutable borrow `dyn_aux` is holding on
+                // `cached_dynamic_batch`. Clone the aux slice into a
+                // local Vec — at most a few hundred entries on a
+                // motion-heavy frame, well under 1 µs to copy.
+                let dyn_aux_owned: Vec<[f32; 4]> = dyn_aux.to_vec();
+                self.rebind_glyph_atlas_for_overlay();
+                self.renderer.composite_frame(
+                    target_view,
+                    target_texture,
+                    &overlay.primitives,
+                    &dyn_aux_owned,
+                );
+                // Motion-subtree text + SVG overlay — rendered on the
+                // surface after the motion-bound bg primitives so they
+                // land on top of the overlay paint instead of being
+                // covered. PRIM_TEXT primitives carry `local_affine`
+                // so the motion container's scale / translate / rotate
+                // applies to each glyph. SVGs go through the same
+                // rasterized-image dispatch the static-cache path uses.
+                if let Some(motion_text_prims) = self.cached_motion_subtree_text_prims.clone() {
+                    if !motion_text_prims.is_empty() {
+                        self.rebind_glyph_atlas_for_overlay();
+                        self.renderer
+                            .render_primitives_overlay(target_view, &motion_text_prims);
+                    }
+                }
+                if let Some(motion_svgs) = self.cached_motion_subtree_svgs.clone() {
+                    if !motion_svgs.is_empty() {
+                        let dpi = tree.scale_factor();
+                        self.render_rasterized_svgs(target_view, &motion_svgs, dpi);
+                    }
+                }
+                // Composited CSS layers — blit each promoted subtree's
+                // texture with the current animation transform.
+                self.composite_css_layers_overlay(tree, target_view);
+                // P4.3 sibling: motion-subtree textures.
+                self.composite_motion_layers_overlay(tree, target_view);
+                if !overlay.dynamic_images.is_empty() {
+                    self.renderer
+                        .render_dynamic_images(target_view, &overlay.dynamic_images);
+                }
+                if !overlay.meshes.is_empty() {
+                    dispatch_pending_meshes(
+                        &mut self.renderer,
+                        target_view,
+                        width,
+                        height,
+                        &overlay.meshes,
+                    );
+                }
+                if !overlay.gpu_passes.is_empty() {
+                    dispatch_pending_gpu_passes(
+                        &mut self.renderer,
+                        target_view,
+                        width,
+                        height,
+                        tree.scale_factor(),
+                        &overlay.gpu_passes,
+                    );
+                }
+                // Authoritative `visible_anim_active` update —
+                // walker didn't run this frame, so reset the flag
+                // from current animation state. Mirrors the motion
+                // damage path's end-of-frame restate.
+                let has_visible_canvas = !tree.canvas_paint_records().is_empty();
+                let any_visible_anim = {
+                    let painted_set = tree.painted_node_ids().clone();
+                    let painted_stable = tree.painted_stable_ids();
+                    tree.has_any_active_animation_visible(
+                        render_state,
+                        &painted_set,
+                        &painted_stable,
+                    )
+                };
+                tree.set_visible_anim_active(any_visible_anim || has_visible_canvas);
+                tracing::trace!(
+                    target: "blinc_app::frame_timing",
+                    path = "css_patch",
+                    damaged = damaged_ok,
+                    damage_rect_count = damaged.len(),
+                    gpu_us = css_path_start.elapsed().as_micros() as u64,
+                    "fast_path",
+                );
+                return Ok(());
+            }
+            // apply_css_deltas returned false — out-of-scope
+            // property, cache shape mismatch, or divide-by-zero.
+            // Fall through to slow path.
+        }
+
+        // Fast path: cache valid AND caller is fine with reusing it.
+        // Skip the entire walker / dispatch chain — just composite.
+        let use_fast =
+            try_fast_paint && self.renderer.static_layer_valid() && self.cached_bg_batch.is_some();
+
+        if use_fast {
+            let fast_path_start = web_time::Instant::now();
+            // Compositor v2 damage-rect step: when motion bindings
+            // are animating, patch the cached batch in-place and
+            // repaint the affected regions of the static cache.
+            // `apply_binding_deltas` populates
+            // `self.last_binding_damage_rects` with one union-AABB per
+            // moved binding. We then call `render_static_layer_damaged`
+            // to clear-and-redraw those rects inside the cache (with
+            // scissor; `LoadOp::Load` preserves the surrounding
+            // pixels). Falls back to invalidation + slow path on any
+            // condition the damage-rect path can't handle.
+            // Compositor v2 Phase 4: when any motion binding moved
+            // this frame, patch its primitives in `cached_dynamic_batch`
+            // (where the walker routed them via `push_motion_subtree`)
+            // so the per-frame overlay dispatch below paints them at
+            // the current spring values. The static cache stays
+            // untouched. Used by all the cn motion widgets — switch
+            // thumb, progress indicator, slider thumb, sortable drag
+            // preview, etc.
+            // Single `apply_binding_deltas` per frame. Previously the
+            // damage-rect path called it again after the unconditional
+            // motion-binding update — the second call saw zero deltas
+            // (because the first had already advanced `last_translate`
+            // / `last_rotation_rad` / etc.) so `last_binding_damage_rects`
+            // came back empty and the scissored repaint step never
+            // ran. One call collects damage rects AND patches the
+            // cached dynamic batch in the same pass; the rect set is
+            // then consumed by the damage-rect branch below.
+            let mut damage_rect_failed = false;
+            let patched = if bindings_animating && self.cached_dynamic_batch.is_some() {
+                let scale_factor = tree.scale_factor();
+                self.apply_binding_deltas(tree, scale_factor)
+            } else {
+                true
+            };
+            // Bail handling MUST run regardless of
+            // `damage_rect_eligible`. `apply_binding_deltas` returns
+            // false on the last-opacity-is-zero guard (opacity
+            // binding going `0 → 1` can't be ratio-scaled) and on
+            // degenerate scale (last_scale ~ 0). In either case the
+            // cache is stale this frame; `composite_frame` would
+            // blit the previous frame's pixels and the animation
+            // visibly freezes until something else (mouse move,
+            // scroll) forced a slow-path paint. Symptom: switch
+            // toggle's color fade (`motion().opacity(color_anim)`
+            // 0 → 1) starts the spring but the colored track stays
+            // at off-state alpha until you wiggle the mouse.
+            //
+            // Pre-fix this branch was gated on `damage_rect_eligible`
+            // which itself required `BLINC_DAMAGE_RECT=1`, so the
+            // bail handling never fired in the default build. Move
+            // it out of that gate — invalidate + `damage_rect_failed`
+            // marker so the slow path below picks up and re-walks
+            // with current binding values.
+            if !patched {
+                self.renderer.invalidate_static_layer();
+                self.cached_texts = None;
+                self.cached_svgs = None;
+                self.cached_images = None;
+                self.cached_flows = None;
+                self.cached_glyphs_by_layer = None;
+                self.cached_fg_glyphs = None;
+                self.cached_motion_subtree_text_prims = None;
+                self.cached_motion_subtree_svgs = None;
+                self.cached_css_transformed_text_prims = None;
+                damage_rect_failed = true;
+            }
+            if damage_rect_eligible
+                && self.cached_bg_batch.is_some()
+                && patched
+                && !self.last_binding_damage_rects.is_empty()
+            {
+                {
+                    let damaged = self.last_binding_damage_rects.clone();
+                    let batch_ref = self
+                        .cached_bg_batch
+                        .as_ref()
+                        .expect("use_fast implies cached_bg_batch is Some");
+                    let ok = self
+                        .renderer
+                        .render_static_layer_damaged(&damaged, batch_ref);
+                    if !ok {
+                        // Batch had content the damage-rect path
+                        // can't handle (layer effects, paths, 3D
+                        // viewports). Bail to full invalidation and
+                        // fall through — next frame will re-walk.
+                        self.renderer.invalidate_static_layer();
+                        self.cached_texts = None;
+                        self.cached_svgs = None;
+                        self.cached_images = None;
+                        self.cached_flows = None;
+                        self.cached_glyphs_by_layer = None;
+                        self.cached_fg_glyphs = None;
+                        self.cached_motion_subtree_text_prims = None;
+                        self.cached_motion_subtree_svgs = None;
+                        self.cached_css_transformed_text_prims = None;
+                    } else {
+                        // Re-dispatch any glyph / SVG / image that
+                        // intersects the damage rect, with
+                        // `pending_scissor` set so the writes are
+                        // confined to the just-cleared region.
+                        // `render_static_layer_damaged` only re-paints
+                        // SDF primitives; without this re-dispatch the
+                        // scissored clear wipes everything else that
+                        // was previously painted in the same pixels
+                        // — text, SVG icons, raster images — and
+                        // they wouldn't reappear until the next full
+                        // slow-path paint. Phase 4 of the compositor
+                        // plan, finally making `BLINC_DAMAGE_RECT=1`
+                        // safe.
+                        //
+                        // Each render method (`render_text`,
+                        // `render_rasterized_svgs`, `render_images_ref`)
+                        // honours `pending_scissor` internally — it
+                        // gets applied to the underlying render pass
+                        // via `wgpu::RenderPass::set_scissor_rect`.
+                        let static_view_opt = self.renderer.static_layer_view().cloned();
+                        if let Some(static_view) = static_view_opt {
+                            let union = damage_union(&damaged);
+                            if let Some(scissor) = damage_scissor_from_union(union, &self.renderer)
+                            {
+                                let scale_factor = tree.scale_factor();
+                                self.renderer.set_pending_scissor(scissor);
+                                if let Some(glyphs_by_layer) = self.cached_glyphs_by_layer.clone() {
+                                    for (_z, glyphs) in glyphs_by_layer.iter() {
+                                        let filtered: Vec<_> = glyphs
+                                            .iter()
+                                            .filter(|g| aabb_intersects_any(g.bounds, &damaged))
+                                            .copied()
+                                            .collect();
+                                        if !filtered.is_empty() {
+                                            self.render_text(&static_view, &filtered);
+                                        }
+                                    }
+                                }
+                                if let Some(fg_glyphs) = self.cached_fg_glyphs.clone() {
+                                    let filtered: Vec<_> = fg_glyphs
+                                        .iter()
+                                        .filter(|g| aabb_intersects_any(g.bounds, &damaged))
+                                        .copied()
+                                        .collect();
+                                    if !filtered.is_empty() {
+                                        self.render_text(&static_view, &filtered);
+                                    }
+                                }
+                                // SVG re-dispatch. `SvgElement` x/y/w/h
+                                // are stored in physical pixels (the
+                                // collect path multiplies by
+                                // `scale_factor`), so they share the
+                                // damage rects' coordinate space.
+                                if let Some(svgs) = self.cached_svgs.clone() {
+                                    let filtered: Vec<_> = svgs
+                                        .into_iter()
+                                        .filter(|s| {
+                                            aabb_intersects_any(
+                                                [s.x, s.y, s.width, s.height],
+                                                &damaged,
+                                            )
+                                        })
+                                        .collect();
+                                    if !filtered.is_empty() {
+                                        self.render_rasterized_svgs(
+                                            &static_view,
+                                            &filtered,
+                                            scale_factor,
+                                        );
+                                    }
+                                }
+                                // Image re-dispatch — same coordinate
+                                // convention. Filter cached images by
+                                // damage intersection then dispatch
+                                // through the standard image path,
+                                // which routes through `render_images`
+                                // whose render pass honours
+                                // `pending_scissor`.
+                                if let Some(images) = self.cached_images.clone() {
+                                    let filtered_refs: Vec<&ImageElement> = images
+                                        .iter()
+                                        .filter(|i| {
+                                            aabb_intersects_any(
+                                                [i.x, i.y, i.width, i.height],
+                                                &damaged,
+                                            )
+                                        })
+                                        .collect();
+                                    if !filtered_refs.is_empty() {
+                                        self.render_images_ref(&static_view, &filtered_refs);
+                                    }
+                                }
+                                self.renderer.clear_pending_scissor();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Damage-rect path bailed (apply_binding_deltas couldn't
+            // patch — e.g. opacity-from-zero divide-by-zero guard).
+            // Cache was invalidated above; falling through to the
+            // slow path below will re-walk and emit fresh primitives
+            // at the current binding values, so the animation
+            // progresses on this same frame instead of freezing
+            // until a mouse move forces a paint.
+            if damage_rect_failed {
+                // Note: do NOT `return Ok(())` — proceed past the
+                // `if use_fast` block to the slow path.
+            } else {
+                // Full canvas overlay — drains SDF primitives + raw-
+                // RGBA images (video frames) + 3D meshes from every
+                // canvas closure. composite_frame blits the static
+                // cache + dispatches the SDF prims; we then layer the
+                // dynamic images and meshes onto the same target.
+                let mut overlay = self.collect_canvas_overlay(tree, width, height);
+                // Compositor v2: motion-bound subtree primitives go
+                // into a separate `cached_dynamic_batch` (walker
+                // pushed motion subtree depth around them so they
+                // bypassed the static cache). Append them to the
+                // canvas overlay so composite_frame's single encoder
+                // can dispatch both cache blit + canvas SDF +
+                // motion-bound prims in one queue.submit — separate
+                // submits per frame doubled GPU driver overhead in
+                // the mouse-wiggle steady state.
+                //
+                // The dynamic batch carries its own `aux_data`
+                // (polygon-clip vertices for the spinner arc, 3D
+                // group descriptors, etc.). The GPU's storage buffer
+                // is shared with the static-cache pass, so we forward
+                // the dynamic batch's `aux_data` into `composite_frame`
+                // — without that, primitives whose `clip_radius.w`
+                // indexes the dynamic batch's vertex array would read
+                // stale data uploaded for the static pass and miss
+                // the polygon discard, producing the cn_demo "all
+                // grey rings, no rotating arc" symptom. Borrow the
+                // aux_data slice in place — no per-frame allocation.
+                //
+                // CSS-only animation frames: per-region re-walk
+                // refreshes every `DynamicRegion`'s primitives at the
+                // current animation state. We write the walked batch
+                // back into `cached_dynamic_batch` so the next frame
+                // — even if it leaves the CSS-only path (because the
+                // animation just settled, or a motion binding started
+                // alongside it) — picks up the settled-value
+                // primitives instead of falling back to the pre-CSS
+                // slow-path snapshot. Motion-only frames keep using
+                // the cached batch as patched by
+                // `apply_binding_deltas` above.
+                if css_only_active && !tree.dynamic_regions().is_empty() {
+                    let walked =
+                        self.collect_dynamic_region_primitives(tree, render_state, width, height);
+                    self.cached_dynamic_batch = Some(walked);
+                }
+                let (dyn_prims, dyn_aux) = match self.cached_dynamic_batch.as_ref() {
+                    Some(b) => (b.primitives.as_slice(), b.aux_data.as_slice()),
+                    None => (&[][..], &[][..]),
+                };
+                if !dyn_prims.is_empty() {
+                    overlay.primitives.extend_from_slice(dyn_prims);
+                }
+                // See sibling site above — same borrow workaround.
+                let dyn_aux_owned: Vec<[f32; 4]> = dyn_aux.to_vec();
+                self.rebind_glyph_atlas_for_overlay();
+                self.renderer.composite_frame(
+                    target_view,
+                    target_texture,
+                    &overlay.primitives,
+                    &dyn_aux_owned,
+                );
+                // Motion-subtree text + SVG overlay — rendered on the
+                // surface after the motion-bound bg primitives so they
+                // land on top of the overlay paint instead of being
+                // covered. PRIM_TEXT primitives carry `local_affine`
+                // so the motion container's scale / translate / rotate
+                // applies to each glyph. SVGs go through the same
+                // rasterized-image dispatch the static-cache path uses.
+                if let Some(motion_text_prims) = self.cached_motion_subtree_text_prims.clone() {
+                    if !motion_text_prims.is_empty() {
+                        self.rebind_glyph_atlas_for_overlay();
+                        self.renderer
+                            .render_primitives_overlay(target_view, &motion_text_prims);
+                    }
+                }
+                if let Some(motion_svgs) = self.cached_motion_subtree_svgs.clone() {
+                    if !motion_svgs.is_empty() {
+                        let dpi = tree.scale_factor();
+                        self.render_rasterized_svgs(target_view, &motion_svgs, dpi);
+                    }
+                }
+                // Composited CSS layers — blit each promoted subtree's
+                // texture with the current animation transform.
+                self.composite_css_layers_overlay(tree, target_view);
+                // P4.3 sibling: motion-subtree textures.
+                self.composite_motion_layers_overlay(tree, target_view);
+                if !overlay.dynamic_images.is_empty() {
+                    self.renderer
+                        .render_dynamic_images(target_view, &overlay.dynamic_images);
+                }
+                if !overlay.meshes.is_empty() {
+                    dispatch_pending_meshes(
+                        &mut self.renderer,
+                        target_view,
+                        width,
+                        height,
+                        &overlay.meshes,
+                    );
+                }
+                if !overlay.gpu_passes.is_empty() {
+                    dispatch_pending_gpu_passes(
+                        &mut self.renderer,
+                        target_view,
+                        width,
+                        height,
+                        tree.scale_factor(),
+                        &overlay.gpu_passes,
+                    );
+                }
+
+                // The walker normally writes `visible_anim_active` from
+                // its per-frame observations (canvas paints, active
+                // motion bindings, active motion FSM). On the compositor
+                // fast path the walker doesn't run, so the flag would
+                // stay latched at whatever the last full paint left it
+                // at — typically `true` after any binding animation,
+                // which then pins Phase 5's redraw chain at vsync
+                // forever even when the bar's spring has long since
+                // settled. (Symptom: "after the animation plays, CPU
+                // never drops.") Restate the flag authoritatively from
+                // the two signals we can observe here:
+                //
+                //   - Any canvas is on screen → its draw closure may
+                //     produce new output every frame, keep the chain
+                //     alive.
+                //   - Any motion binding is mid-flight → its spring is
+                //     advancing, keep the chain alive.
+                //
+                // Motion-FSM-driven elements (enter/exit) live in a
+                // separate signal (`render_state.has_active_motions()`)
+                // that the windowed runner ORs in alongside this flag,
+                // so we don't need to mirror them here.
+                // Site C in the animation-driver map. Mirror the
+                // unified predicate the cache-invalidation gate uses,
+                // visibility-filtered so a CSS keyframe on a node
+                // scrolled out of view doesn't pin the chain forever.
+                // The fast path doesn't have a fresh painted set
+                // (walker didn't run this frame); use the last walker
+                // pass's set, which the windowed runner's redraw gate
+                // also relies on.
+                let has_visible_canvas = !tree.canvas_paint_records().is_empty();
+                let any_visible_anim = {
+                    let painted_set = tree.painted_node_ids().clone();
+                    let painted_stable = tree.painted_stable_ids();
+                    tree.has_any_active_animation_visible(
+                        render_state,
+                        &painted_set,
+                        &painted_stable,
+                    )
+                };
+                tree.set_visible_anim_active(any_visible_anim || has_visible_canvas);
+
+                let path_label = if bindings_animating {
+                    "binding_damage"
+                } else {
+                    "cache_blit"
+                };
+                tracing::trace!(
+                    target: "blinc_app::frame_timing",
+                    path = path_label,
+                    damage_rect_count = self.last_binding_damage_rects.len(),
+                    gpu_us = fast_path_start.elapsed().as_micros() as u64,
+                    "fast_path",
+                );
+                return Ok(());
+            } // close else { ... } for !damage_rect_failed
+        }
+
+        // Full paint into the static layer. The existing
+        // `render_tree_with_motion_opt` is reused with the
+        // static-layer view as its target. `skip_canvas_drawing` is
+        // set so the walker doesn't emit canvas primitives — those
+        // are re-emitted into the overlay batch below.
+        let static_view = self.renderer.static_layer_view().cloned();
+        let static_view = match static_view {
+            Some(v) => v,
+            None => {
+                // Static layer not allocated (zero-size viewport?) —
+                // fall through to the non-compositor path so the
+                // frame still presents.
+                return self.render_tree_with_motion_opt(
+                    tree,
+                    render_state,
+                    width,
+                    height,
+                    target_view,
+                    None,
+                    try_fast_paint,
+                );
+            }
+        };
+
+        tree.set_skip_canvas_drawing(true);
+        // Tell the inner `render_tree_with_motion_opt` call NOT to
+        // dispatch `cached_dynamic_batch` onto its `target` (the
+        // static layer view) — composite_frame below handles that
+        // dispatch onto the surface. Without this gate, the motion-
+        // bound primitives end up in BOTH the static cache (at the
+        // slow-paint rotation) and the per-frame overlay (at the
+        // current rotation), which is the cn::spinner double-arc
+        // symptom.
+        self.in_compositor_inner_call = true;
+        // Pass `try_fast_paint=true` so the inner call can take its
+        // `apply_binding_deltas`-then-dispatch path when the cache
+        // is structurally valid but pixel-stale (the
+        // bindings-animating case). That skips the walker for the
+        // surrounding tree — only the patched binding values
+        // re-flow through dispatch, no traversal of unrelated
+        // nodes. Falls back to the full walker only when the cache
+        // is genuinely invalid (rebuild, layout change).
+        //
+        // `apply_binding_deltas` can ONLY patch motion_binding
+        // primitive ranges (translate / scale / rotation /
+        // opacity). It has no representation for any other
+        // animation system — motion() FSM, animate_bounds,
+        // animate_layout, FLIP, CSS keyframes, CSS transitions.
+        // When ANY of those systems is live, the inner fast path
+        // must fall through to the walker so primitives + text
+        // emit at the current animation state in lockstep.
+        //
+        // `bindings_animating` (which includes the
+        // set_immediate-drift case AND always-playing rotation
+        // timelines — the cn::spinner case) doesn't require the
+        // walker because apply_binding_deltas handles all four
+        // patchable channels. Splitting it out here is what keeps
+        // a rotating spinner at ~1 % CPU instead of forcing a
+        // full-tree re-walk every frame.
+        let needs_walker = render_state.has_active_motions()
+            || tree.has_active_visual_animations()
+            || tree.has_active_layout_animations()
+            || tree.has_active_flip_animations()
+            // Scroll-physics-driven offset changes (programmatic
+            // `scroll_to_animated`, edge bounce spring, post-flick
+            // momentum) advance the scroll offset off any input.
+            // The cached batch was emitted at the pre-tick offset, so
+            // skipping the walker reuses stale scroll content. The
+            // symptom is that smooth `scroll_to` looks like an instant
+            // jump that only "catches up" when the next mouse move
+            // forces a full re-walk through some other path. Wheel /
+            // touch drag scrolls don't need this — their input event
+            // already invalidates the static layer via `had_scroll`.
+            || tree.has_animating_scroll_physics()
+            || {
+                let store = tree.css_anim_store();
+                let guard = store.lock();
+                match guard {
+                    Ok(g) => g.has_active_animations() || g.has_active_transitions(),
+                    Err(_) => false,
+                }
+            };
+        let inner_try_fast = self.cached_bg_batch.is_some() && !needs_walker;
+        let result = self.render_tree_with_motion_opt(
+            tree,
+            render_state,
+            width,
+            height,
+            &static_view,
+            None, // suppress compositor mode inside the inner call
+            inner_try_fast,
+        );
+        self.in_compositor_inner_call = false;
+        tree.set_skip_canvas_drawing(false);
+        result?;
+
+        self.renderer.mark_static_layer_valid();
+
+        // ----- Compositor v2 Phase 2 verification trace -----
+        // Compare the new `dynamic_regions` map populated by the
+        // walker against the legacy `canvas_paint_records` +
+        // `composite_bindings` records the existing composite path
+        // still consumes. The expected invariant: every canvas in
+        // `canvas_paint_records` produces a `DynamicKind::Canvas`
+        // entry; every motion-bound node whose status was
+        // `Animating(Motion)` produces a `DynamicKind::MotionSubtree`
+        // entry. Run with `RUST_LOG=blinc_app::v2_regions=trace`.
+        if tracing::enabled!(target: "blinc_app::v2_regions", tracing::Level::TRACE) {
+            let regions = tree.dynamic_regions();
+            let canvas_count = regions
+                .values()
+                .filter(|r| matches!(r.kind, blinc_layout::renderer::DynamicKind::Canvas { .. }))
+                .count();
+            let motion_count = regions
+                .values()
+                .filter(|r| matches!(r.kind, blinc_layout::renderer::DynamicKind::MotionSubtree))
+                .count();
+            let css_count = regions
+                .values()
+                .filter(|r| {
+                    matches!(
+                        r.kind,
+                        blinc_layout::renderer::DynamicKind::CssAnimated { .. }
+                    )
+                })
+                .count();
+            let legacy_canvas = tree.canvas_paint_records().len();
+            let legacy_motion = tree.composite_bindings().len();
+            tracing::trace!(
+                target: "blinc_app::v2_regions",
+                regions = regions.len(),
+                canvas = canvas_count,
+                motion = motion_count,
+                css = css_count,
+                legacy_canvas,
+                legacy_motion,
+                "v2 dynamic regions",
+            );
+        }
+
+        // Composite static cache + full canvas overlay onto the
+        // surface. The overlay drain captures SDF primitives, raw
+        // dynamic images (video frames), and 3D meshes — each
+        // dispatched in z-order via its own pipeline so video and
+        // mesh content actually reaches the surface in compositor
+        // mode (it was dropped on the floor by the
+        // primitives-only path).
+        let mut overlay = self.collect_canvas_overlay(tree, width, height);
+        // Compositor v2: append motion-bound subtree primitives to the
+        // canvas overlay so cache blit + canvas SDF + motion-bound
+        // dispatch all share a single command encoder / submit. See
+        // the matching block in the use_fast branch above. The
+        // dynamic batch's `aux_data` (polygon-clip vertices, etc.)
+        // is forwarded into composite_frame for the same reason
+        // documented there.
+        let overlay_aux: Vec<[f32; 4]> = self
+            .cached_dynamic_batch
+            .as_ref()
+            .map(|b| b.aux_data.clone())
+            .unwrap_or_default();
+        if let Some(ref dyn_batch) = self.cached_dynamic_batch {
+            if !dyn_batch.primitives.is_empty() {
+                overlay.primitives.extend_from_slice(&dyn_batch.primitives);
+            }
+        }
+        self.rebind_glyph_atlas_for_overlay();
+        self.renderer.composite_frame(
+            target_view,
+            target_texture,
+            &overlay.primitives,
+            &overlay_aux,
+        );
+        // Motion-subtree text overlay — same rationale as the fast
+        // paths: motion-bound bg primitives paint on top of the static
+        // cache via `composite_frame`'s overlay, so the text inside
+        // those subtrees has to render afterwards to land on top of
+        // the bg paint. PRIM_TEXT primitives carry the motion affine
+        // so the glyphs scale / translate with the bg.
+        if let Some(motion_text_prims) = self.cached_motion_subtree_text_prims.clone() {
+            if !motion_text_prims.is_empty() {
+                self.rebind_glyph_atlas_for_overlay();
+                self.renderer
+                    .render_primitives_overlay(target_view, &motion_text_prims);
+            }
+        }
+        if let Some(motion_svgs) = self.cached_motion_subtree_svgs.clone() {
+            if !motion_svgs.is_empty() {
+                let dpi = tree.scale_factor();
+                self.render_rasterized_svgs(target_view, &motion_svgs, dpi);
+            }
+        }
+        // Composited CSS layers (slow path's composite site) — same
+        // overlay step the fast paths do, so the texture for a
+        // freshly-promoted region gets visible content on the very
+        // first frame after promotion.
+        self.composite_css_layers_overlay(tree, target_view);
+        // P4.3 sibling: motion-subtree textures.
+        self.composite_motion_layers_overlay(tree, target_view);
+        if !overlay.dynamic_images.is_empty() {
+            self.renderer
+                .render_dynamic_images(target_view, &overlay.dynamic_images);
+        }
+        if !overlay.meshes.is_empty() {
+            dispatch_pending_meshes(
+                &mut self.renderer,
+                target_view,
+                width,
+                height,
+                &overlay.meshes,
+            );
+        }
+        if !overlay.gpu_passes.is_empty() {
+            dispatch_pending_gpu_passes(
+                &mut self.renderer,
+                target_view,
+                width,
+                height,
+                tree.scale_factor(),
+                &overlay.gpu_passes,
+            );
+        }
+
+        // Site C bookkeeping (slow-path counterpart). The walker
+        // ran (or got bypassed by apply_binding_deltas) — either
+        // way, we know the painted set this frame matches what
+        // the inner render emitted. Mirror the fast-path
+        // visibility-gated set_visible_anim_active so the windowed
+        // runner's redraw chain gets a consistent signal whether
+        // we landed on the fast or slow path.
+        let has_visible_canvas = !tree.canvas_paint_records().is_empty();
+        let any_visible_anim = {
+            let painted_set = tree.painted_node_ids().clone();
+            let painted_stable = tree.painted_stable_ids();
+            tree.has_any_active_animation_visible(render_state, &painted_set, &painted_stable)
+        };
+        tree.set_visible_anim_active(any_visible_anim || has_visible_canvas);
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_tree_with_motion_opt(
+        &mut self,
+        tree: &RenderTree,
+        render_state: &blinc_layout::RenderState,
+        width: u32,
+        height: u32,
+        target: &wgpu::TextureView,
+        target_texture: Option<&wgpu::Texture>,
+        try_fast_paint: bool,
+    ) -> Result<()> {
+        // Layer-compositor mode: a surface texture is available
+        // (`target_texture` is `Some`). Route through the cached
+        // static-layer path, which paints the non-canvas tree once
+        // and overlays only canvas primitives per frame.
+        //
+        // The inner `render_tree_with_motion_opt` call still drives
+        // the walker for the full-paint case — it just renders into
+        // the static layer view instead of the surface, with
+        // `target_texture = None` so this dispatch branch doesn't
+        // recurse.
+        if let Some(texture) = target_texture {
+            return self.try_render_with_compositor(
+                tree,
+                render_state,
+                width,
+                height,
+                target,
+                texture,
+                try_fast_paint,
+            );
+        }
+        // Sub-Phase 4 timing — disabled by default; gated by
+        // `RUST_LOG=blinc_app::frame_timing=trace` (same target the
+        // outer per-phase instrumentation uses). Lets us see whether
+        // the 18 ms Phase 4 cost is the paint walker, the
+        // text/SVG/image collector, or the GPU pipeline — three very
+        // different optimization targets.
+        let p4_start = web_time::Instant::now();
+
         // Get scale factor for HiDPI rendering
         let scale_factor = tree.scale_factor();
+
+        // Compute & commit animation-status / composite-promotion
+        // before the walker runs. The compositor path does this
+        // inside `try_render_with_compositor`; the non-compositor
+        // path (wasm / Android / iOS) was skipping it entirely, so
+        // `composite_promotion` stayed empty and the walker never
+        // routed any composite-promotable CSS subtree into the
+        // per-node scratch batch. Net effect on those targets:
+        // `styling_demo`'s `anim-pulse` / `anim-glow` (and any
+        // other composite-promotable CSS animation) emitted
+        // primitives straight into the bg batch with their *resting*
+        // values, then never animated — the composite_css_layers
+        // overlay had nothing to blit.
+        let v2_statuses = tree.compute_animation_status();
+        tree.commit_animation_status(&v2_statuses);
+
+        // Try the compositor fast path. Two steps in sequence:
+        //
+        //   1. `redraw_canvases` — re-invokes every recorded
+        //      canvas's `render_fn` and splices the fresh primitives
+        //      into the cached batch. Bails (returns false) when a
+        //      canvas's primitive count has changed since the last
+        //      full paint or no cached batch exists.
+        //
+        //   2. `apply_binding_deltas` — patches motion-binding
+        //      transform / opacity changes onto the (possibly
+        //      canvas-refreshed) cached batch.
+        //
+        // Either step bailing falls all the way through to the full
+        // walker path and repopulates the cache.
+        let used_fast_paint = try_fast_paint
+            && self.redraw_canvases(tree, width, height)
+            && self.apply_binding_deltas(tree, scale_factor);
 
         // Create a single paint context for all layers with text rendering support
         let mut ctx =
             GpuPaintContext::with_text_context(width as f32, height as f32, &mut self.text_ctx);
 
-        // Render with motion animations applied (all layers to same context)
-        tree.render_with_motion(&mut ctx, render_state);
+        // Skip the walker on the fast path — the cached batch already
+        // contains the post-walker primitives, and `apply_binding_deltas`
+        // just shifted them to match this frame's spring values. On the
+        // full path, run the walker normally and use whatever it
+        // emitted into `ctx`.
+        if !used_fast_paint {
+            tree.render_with_motion(&mut ctx, render_state);
+        }
+        let t_paint_walker = p4_start.elapsed();
 
-        // Take the batch (mutable so CSS-transformed text primitives can be added)
-        let mut batch = ctx.take_batch();
+        // Drain the per-node composite-layer scratch batches the
+        // walker peeled out of the bg batch (one per promoted CSS-
+        // animated subtree). Rasterize each into its own
+        // `LayerTexture` and stash on `css_composited_textures`
+        // keyed by slotmap key, so the per-frame composite (Phase 4)
+        // can blit each texture with the active animation
+        // transform applied — no walker re-entry on animation
+        // ticks. Fast path: no walker ran, no scratch batches; the
+        // map keeps the previous-paint textures alive.
+        if !used_fast_paint {
+            let scratch_batches = ctx.take_composite_layer_batches();
+            if !scratch_batches.is_empty() {
+                // Look up screen_aabb + natural_size from the
+                // matching `DynamicRegion`. We index by slotmap key
+                // (`LayoutNodeId::data().as_ffi()`) since
+                // `composite_layer_batches` keyed on that and
+                // blinc_layout doesn't share a slotmap with
+                // blinc_app.
+                use slotmap::Key as _;
+                let regions = tree.dynamic_regions();
+                for (region_node, region) in regions.iter() {
+                    let key = region_node.data().as_ffi();
+                    let Some(scratch_batch) = scratch_batches.get(&key) else {
+                        continue;
+                    };
+                    let natural_size = match region.kind {
+                        blinc_layout::renderer::DynamicKind::CssAnimated {
+                            natural_size, ..
+                        } => natural_size,
+                        _ => continue,
+                    };
+                    if natural_size.0 == 0 || natural_size.1 == 0 {
+                        continue;
+                    }
+                    // Dirty check: if the scratch batch we just walked
+                    // hashes the same as the one that produced the
+                    // currently-cached texture, the subtree's intrinsic
+                    // content didn't change this frame and we can keep
+                    // the existing texture. The promoted animation's
+                    // transform / opacity is applied at composite time
+                    // (`composite_css_layers_overlay`), so steady-state
+                    // pulse / glow frames hit this path and skip the
+                    // GPU rasterize entirely.
+                    //
+                    // Re-raster fires automatically whenever the walker
+                    // emits different primitives — state-style flip
+                    // (hover / active), layout recompute, theme swap,
+                    // promotion-property change all flow through the
+                    // walker and produce a different scratch. No
+                    // separate dirty flag plumbing needed.
+                    let scratch_hash = Self::hash_composite_scratch(scratch_batch);
+                    if self.css_composited_textures.contains_key(&key)
+                        && self.css_composited_scratch_hash.get(&key).copied() == Some(scratch_hash)
+                    {
+                        continue;
+                    }
+                    let layer_pos = (region.screen_aabb[0], region.screen_aabb[1]);
+                    let layer_size = (natural_size.0 as f32, natural_size.1 as f32);
+                    let (layer_texture, content_size) = self
+                        .renderer
+                        .render_subtree_to_layer_texture(scratch_batch, layer_pos, layer_size);
+                    // Release any previous texture for this node
+                    // back to the pool before installing the new
+                    // one (saves the cache one acquire on the next
+                    // promotion of the same node).
+                    if let Some((old, _)) = self.css_composited_textures.remove(&key) {
+                        self.renderer.layer_texture_cache_mut().release(old);
+                    }
+                    self.css_composited_textures
+                        .insert(key, (layer_texture, content_size));
+                    self.css_composited_scratch_hash.insert(key, scratch_hash);
+                }
+            }
+            // Demotion cleanup: any cached composited texture whose
+            // node is no longer in `dynamic_regions` as a CssAnimated
+            // region got demoted this paint (animation settled, went
+            // out-of-scope, or the node disappeared). Release its
+            // texture back to the pool so the bucket eviction can
+            // reclaim it. Without this step the map grows unbounded
+            // across re-promotions.
+            use slotmap::Key as _;
+            let live_keys: std::collections::HashSet<u64> = {
+                let regions = tree.dynamic_regions();
+                regions
+                    .iter()
+                    .filter_map(|(node, region)| {
+                        if matches!(
+                            region.kind,
+                            blinc_layout::renderer::DynamicKind::CssAnimated { .. }
+                        ) {
+                            Some(node.data().as_ffi())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            let stale_keys: Vec<u64> = self
+                .css_composited_textures
+                .keys()
+                .copied()
+                .filter(|k| !live_keys.contains(k))
+                .collect();
+            for key in stale_keys {
+                if let Some((old, _)) = self.css_composited_textures.remove(&key) {
+                    self.renderer.layer_texture_cache_mut().release(old);
+                }
+                self.css_composited_scratch_hash.remove(&key);
+            }
+
+            // P4.3 — motion-subtree texture bake. Same draining +
+            // dirty-skip + release-on-demote pattern as the CssAnimated
+            // block above, but routed by `DynamicKind::MotionSubtreeTexture`
+            // and stashed on `motion_subtree_textures`. The walker
+            // gated its motion-binding transform pushes on
+            // `pushed_for_motion_subtree` (`bake_skip`), so the scratch
+            // batch captures the subtree at base state — the per-frame
+            // motion overlay applies the current `MotionBindings`
+            // (translate / scale / rotation / opacity) at blit time.
+            //
+            // After a successful raster we flip the bake record to
+            // `Baked` so subsequent paints know the texture is ready
+            // (consumed by P4.4 invalidation triggers).
+            if !scratch_batches.is_empty() {
+                let regions = tree.dynamic_regions();
+                for (region_node, region) in regions.iter() {
+                    let key = region_node.data().as_ffi();
+                    let Some(scratch_batch) = scratch_batches.get(&key) else {
+                        continue;
+                    };
+                    let natural_size = match region.kind {
+                        blinc_layout::renderer::DynamicKind::MotionSubtreeTexture {
+                            natural_size,
+                            ..
+                        } => natural_size,
+                        _ => continue,
+                    };
+                    if natural_size.0 == 0 || natural_size.1 == 0 {
+                        continue;
+                    }
+                    let scratch_hash = Self::hash_composite_scratch(scratch_batch);
+                    if self.motion_subtree_textures.contains_key(&key)
+                        && self.motion_subtree_scratch_hash.get(&key).copied() == Some(scratch_hash)
+                    {
+                        continue;
+                    }
+                    let layer_pos = (region.screen_aabb[0], region.screen_aabb[1]);
+                    let layer_size = (natural_size.0 as f32, natural_size.1 as f32);
+                    let (layer_texture, content_size) = self
+                        .renderer
+                        .render_subtree_to_layer_texture(scratch_batch, layer_pos, layer_size);
+                    if let Some((old, _)) = self.motion_subtree_textures.remove(&key) {
+                        self.renderer.layer_texture_cache_mut().release(old);
+                    }
+                    self.motion_subtree_textures
+                        .insert(key, (layer_texture, content_size));
+                    self.motion_subtree_scratch_hash.insert(key, scratch_hash);
+                    tree.mark_motion_subtree_baked(*region_node);
+                }
+            }
+            // Demotion cleanup for the motion-subtree path. Demote
+            // lapsed bake records (returns the node ids that fell out
+            // of `subtree_texture_candidates`) and release any pooled
+            // textures for nodes that are no longer in
+            // `dynamic_regions` as a `MotionSubtreeTexture`.
+            let _demoted = tree.demote_lapsed_motion_bake_records();
+            let live_motion_keys: std::collections::HashSet<u64> = {
+                let regions = tree.dynamic_regions();
+                regions
+                    .iter()
+                    .filter_map(|(node, region)| {
+                        if matches!(
+                            region.kind,
+                            blinc_layout::renderer::DynamicKind::MotionSubtreeTexture { .. }
+                        ) {
+                            Some(node.data().as_ffi())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            let stale_motion_keys: Vec<u64> = self
+                .motion_subtree_textures
+                .keys()
+                .copied()
+                .filter(|k| !live_motion_keys.contains(k))
+                .collect();
+            for key in stale_motion_keys {
+                if let Some((old, _)) = self.motion_subtree_textures.remove(&key) {
+                    self.renderer.layer_texture_cache_mut().release(old);
+                }
+                self.motion_subtree_scratch_hash.remove(&key);
+            }
+        }
+
+        // Take the batch (mutable so CSS-transformed text primitives can be added).
+        // Fast path: clone the patched cache; full path: take from ctx.
+        let mut batch = if used_fast_paint {
+            self.cached_bg_batch
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| ctx.take_batch())
+        } else {
+            ctx.take_batch()
+        };
+
+        // Compositor v2: drain the motion-bound subtree primitives.
+        // On the fast path nothing was emitted (walker skipped), so
+        // `take_dynamic_batch` returns an empty batch and we keep
+        // the previous full paint's cached one — which
+        // `apply_binding_deltas` has been patching in place each
+        // motion-binding frame. On the full path we replace it with
+        // the freshly-emitted batch.
+        if !used_fast_paint {
+            self.cached_dynamic_batch = Some(ctx.take_dynamic_batch());
+        }
 
         // Take any 3D mesh draws captured via `ctx.draw_mesh_data(...)`
         // inside canvas callbacks. These are dispatched after all 2D
@@ -4016,16 +8310,143 @@ impl RenderContext {
         // `ctx` can drop right after `take_batch`/`take_pending_meshes`
         // and the rest of the frame runs without holding onto it.
         let pending_meshes = ctx.take_pending_meshes();
+        // Custom GPU passes scheduled via `ctx.run_gpu_pass(...)` inside
+        // canvas callbacks. Same lifecycle as `pending_meshes` —
+        // dispatched alongside meshes on the legacy (non-overlay) path
+        // a few hundred lines down.
+        let pending_gpu_passes = ctx.take_pending_gpu_passes();
 
-        // Collect text, SVG, image, and flow elements WITH motion state
-        let (all_texts, all_svgs, all_images, flow_elements) =
-            self.collect_render_elements_with_state(tree, Some(render_state));
+        // Collect text, SVG, image, and flow elements WITH motion state.
+        //
+        // Fast path: reuse the cached vecs from the last full paint
+        // (saves the 0.8–1.0 ms collect pass on cn_demo). Flow
+        // elements aren't cached today — they're cheap to re-collect
+        // and re-collecting them gives time-driven flow shaders
+        // current `time` / `pointer` uniforms anyway. Cache hit only
+        // when all three element vecs were captured on the previous
+        // full paint (set together, invalidated together).
+        //
+        // Note: texts/SVGs inside a motion-bound subtree carry their
+        // x/y positions baked in at collect time. If a binding's
+        // translate changes between full paints, the cached positions
+        // are stale by that delta. For cn_demo's animated_progress
+        // (which has no text inside the bound subtree) this isn't
+        // user-visible. Properly delta-patching text positions
+        // requires per-element binding ownership tracking — left as
+        // a follow-up; today the fast path bails any frame that
+        // would visibly mis-render via the existing
+        // `apply_binding_deltas` checks (which also guard against
+        // scale/rotation).
+        let collect_start = web_time::Instant::now();
+        // Mid-flight motion (either a `MotionBindings` spring or a
+        // `motion()` wrapper's enter / exit FSM) shifts the
+        // text/SVG/image positions of every element underneath it.
+        // The cached text/SVG/image vectors carry positions baked
+        // in at last-collect time, so reusing them on the fast
+        // path freezes the text at frame-1 positions while
+        // `apply_binding_deltas` keeps shifting the underlying SDF
+        // primitives — visual effect: text falls off motion-bound
+        // cards as they slide / fade in.
+        //
+        // Cheap fix: invalidate the text/SVG/image cache whenever
+        // any motion source is live. Same cost posture as the
+        // walker re-collect on a full paint, but cheap relative to
+        // a walker re-run.
+        //
+        // Also catch direct mutations via `set_immediate` — those
+        // remove the underlying spring so `is_any_animating()`
+        // returns false, but the binding's current value has
+        // diverged from the cached primitive snapshot. Comparing
+        // current vs `composite_bindings`' `last_translate` /
+        // `last_scale` / `last_rotation` / `last_opacity` catches
+        // pull-to-refresh-style drag flows that wouldn't otherwise
+        // trip `is_any_animating`.
+        // Only consider motion sources that can move text / SVG / image
+        // positions. Pure timeline-driven rotation (the cn::spinner
+        // case) is excluded — its subtree is a single motion-bound
+        // SDF primitive with no text/SVG/image children, and surrounding
+        // tree elements aren't affected by an in-flight rotation
+        // timeline. Keeping the spinner in this predicate pinned 60 %
+        // of cn_demo's frame budget on re-collecting text positions
+        // for hundreds of unrelated elements 60×/s; the rotation only
+        // touches a single primitive in `cached_dynamic_batch` which
+        // `apply_binding_deltas` patches in place.
+        let any_motion_active = render_state.has_active_motions()
+            || tree.has_active_visual_animations()
+            || tree.has_active_layout_animations()
+            || tree
+                .motion_bindings_map()
+                .values()
+                .any(|b| b.is_any_position_animating())
+            || {
+                let bindings_table = tree.motion_bindings_map();
+                tree.composite_bindings().iter().any(|(node, meta)| {
+                    let Some(b) = bindings_table.get(node) else {
+                        return false;
+                    };
+                    let cx = b
+                        .translate_x
+                        .as_ref()
+                        .and_then(|v| v.lock().ok())
+                        .map(|g| g.get())
+                        .unwrap_or(0.0);
+                    let cy = b
+                        .translate_y
+                        .as_ref()
+                        .and_then(|v| v.lock().ok())
+                        .map(|g| g.get())
+                        .unwrap_or(0.0);
+                    if (cx - meta.last_translate.0).abs() > 0.5
+                        || (cy - meta.last_translate.1).abs() > 0.5
+                    {
+                        return true;
+                    }
+                    if let Some(ref v) = b.opacity {
+                        if let Ok(g) = v.lock() {
+                            if (g.get() - meta.last_opacity).abs() > 0.01 {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                })
+            };
+        let cache_hit = used_fast_paint
+            && !any_motion_active
+            && self.cached_texts.is_some()
+            && self.cached_svgs.is_some()
+            && self.cached_images.is_some()
+            && self.cached_flows.is_some();
+        let (all_texts, all_svgs, all_images, flow_elements) = if cache_hit {
+            (
+                self.cached_texts.as_ref().unwrap().clone(),
+                self.cached_svgs.as_ref().unwrap().clone(),
+                self.cached_images.as_ref().unwrap().clone(),
+                self.cached_flows.as_ref().unwrap().clone(),
+            )
+        } else {
+            self.collect_render_elements_with_state(tree, Some(render_state))
+        };
+        let t_collect_elements = collect_start.elapsed();
+        // Cache the collected elements alongside the batch on full-path
+        // frames so the next fast-path frame can skip collect.
+        if !used_fast_paint {
+            self.cached_texts = Some(all_texts.clone());
+            self.cached_svgs = Some(all_svgs.clone());
+            self.cached_images = Some(all_images.clone());
+            self.cached_flows = Some(flow_elements.clone());
+        }
 
         // Partition elements into normal (no 3D ancestor) and 3D-layer groups.
         // Elements inside a 3D-transformed parent need to be rendered to an offscreen
         // texture and blitted with the same perspective transform.
+        // Motion-subtree text is split out from `texts` so it can be
+        // rendered on the surface *after* the overlay pass, on top of
+        // the motion-bound bg primitives (which paint over the static
+        // cache the regular `texts` path renders into).
         let mut texts = Vec::new();
         let mut fg_texts = Vec::new();
+        let mut motion_subtree_texts: Vec<TextElement> = Vec::new();
         let mut layer_3d_texts: std::collections::HashMap<
             LayoutNodeId,
             (Transform3DLayerInfo, Vec<TextElement>),
@@ -4039,21 +8460,34 @@ impl RenderContext {
                     .push(text);
             } else if text.is_foreground {
                 fg_texts.push(text);
+            } else if text.in_motion_subtree {
+                motion_subtree_texts.push(text);
             } else {
                 texts.push(text);
             }
         }
 
         let mut svgs = Vec::new();
+        let mut motion_subtree_svgs: Vec<SvgElement> = Vec::new();
         let mut layer_3d_svgs: std::collections::HashMap<LayoutNodeId, Vec<SvgElement>> =
             std::collections::HashMap::new();
         for svg in all_svgs {
             if let Some(ref info) = svg.transform_3d_layer {
                 layer_3d_svgs.entry(info.node_id).or_default().push(svg);
+            } else if svg.in_motion_subtree {
+                motion_subtree_svgs.push(svg);
             } else {
                 svgs.push(svg);
             }
         }
+        // Stable-sort by z_layer so icons inside `stack_layer()` subtrees
+        // (overlays, toast tray, foreground content) dispatch after lower-z
+        // siblings. `render_rasterized_svgs` issues a single batched draw
+        // call per slice, so painting order = vec order. Tree order is the
+        // tiebreaker — `sort_by_key` is stable so siblings on the same
+        // z_layer keep their walker-emitted order.
+        svgs.sort_by_key(|s| s.z_layer);
+        motion_subtree_svgs.sort_by_key(|s| s.z_layer);
 
         let mut images = Vec::new();
         let mut layer_3d_images: std::collections::HashMap<LayoutNodeId, Vec<ImageElement>> =
@@ -4378,6 +8812,146 @@ impl RenderContext {
             }
         }
 
+        // Prepare motion-subtree text *primitives*. Shape the glyphs
+        // first, then convert each to a `GpuPrimitive` (PRIM_TEXT type)
+        // with the motion / css affine baked into `local_affine` — same
+        // path the in-cache `css_transformed_text_prims` loop uses, but
+        // diverted into a separate batch we dispatch after
+        // `composite_frame`'s overlay. Going through the SDF pipeline
+        // (instead of the simpler glyph pipeline) means the motion
+        // container's scale / translate / rotate is applied per-glyph,
+        // so the text follows the bg as the animation progresses.
+        let mut motion_subtree_text_prims: Vec<GpuPrimitive> = Vec::new();
+        for text in &motion_subtree_texts {
+            if let Some([clip_x, clip_y, clip_w, clip_h]) = text.clip_bounds {
+                let text_right = text.x + text.width;
+                let text_bottom = text.y + text.height;
+                let clip_right = clip_x + clip_w;
+                let clip_bottom = clip_y + clip_h;
+                if text.x >= clip_right
+                    || text_right <= clip_x
+                    || text.y >= clip_bottom
+                    || text_bottom <= clip_y
+                {
+                    continue;
+                }
+            }
+
+            let alignment = match text.align {
+                TextAlign::Left => TextAlignment::Left,
+                TextAlign::Center => TextAlignment::Center,
+                TextAlign::Right => TextAlignment::Right,
+            };
+
+            let color = if text.motion_opacity < 1.0 {
+                [
+                    text.color[0],
+                    text.color[1],
+                    text.color[2],
+                    text.color[3] * text.motion_opacity,
+                ]
+            } else {
+                text.color
+            };
+
+            let effective_width = if let Some(clip) = text.clip_bounds {
+                clip[2].min(text.width)
+            } else {
+                text.width
+            };
+            let needs_wrap = text.wrap && effective_width < text.measured_width - 2.0;
+            let wrap_width = Some(text.width);
+            let font_name = text.font_family.name.as_deref();
+            let generic = to_gpu_generic_font(text.font_family.generic);
+            let font_weight = text.weight.weight();
+
+            let (anchor, y_pos, use_layout_height) = match text.v_align {
+                TextVerticalAlign::Center => {
+                    (TextAnchor::Center, text.y + text.height / 2.0, false)
+                }
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
+                TextVerticalAlign::Baseline => {
+                    let baseline_y = text.y + text.ascender;
+                    (TextAnchor::Baseline, baseline_y, false)
+                }
+            };
+            let layout_height = if use_layout_height {
+                Some(text.height)
+            } else {
+                None
+            };
+
+            if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_style(
+                &text.content,
+                text.x,
+                y_pos,
+                text.font_size,
+                color,
+                anchor,
+                alignment,
+                wrap_width,
+                needs_wrap,
+                font_name,
+                generic,
+                font_weight,
+                text.italic,
+                layout_height,
+                text.letter_spacing,
+            ) {
+                if let Some(clip) = text.clip_bounds {
+                    for glyph in &mut glyphs {
+                        glyph.clip_bounds = clip;
+                    }
+                }
+                // Convert glyphs to PRIM_TEXT primitives with the
+                // motion / css affine baked in. Identity affine when
+                // the text has none — the SDF pipeline still works
+                // and the glyphs render at base position, matching
+                // the behaviour of `render_text` for unaffined text.
+                let (a, b, c, d, tx_aff, ty_aff) = match text.css_affine {
+                    Some([a, b, c, d, tx, ty]) => (a, b, c, d, tx, ty),
+                    None => (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                };
+                let tx_scaled = tx_aff * scale_factor;
+                let ty_scaled = ty_aff * scale_factor;
+                for glyph in &glyphs {
+                    let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                    let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                    let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                    let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                    let mut prim = GpuPrimitive::from_glyph(glyph);
+                    prim.bounds = [
+                        new_gc_x - glyph.bounds[2] / 2.0,
+                        new_gc_y - glyph.bounds[3] / 2.0,
+                        glyph.bounds[2],
+                        glyph.bounds[3],
+                    ];
+                    prim.local_affine = [a, b, c, d];
+                    prim.set_z_layer(text.z_index);
+                    motion_subtree_text_prims.push(prim);
+                }
+            }
+        }
+
+        // Cache the prepared glyph + CSS-transformed-prim vecs for
+        // the compositor v2 damage-rect path. When motion bindings
+        // patch the cached batch on a subsequent frame, the damage-
+        // rect re-render needs to scissor-redraw any text glyphs
+        // that fall inside the cleared region — without these
+        // caches we'd have to re-run the entire text-shaping
+        // pipeline on the fast path.
+        //
+        // Cloned because the dispatch loop below consumes the
+        // originals; on cn_demo's typical text density (~30-100
+        // glyphs total) the clone is well under 100 µs and pays
+        // off the first time a damage-rect frame would otherwise
+        // wipe text.
+        self.cached_glyphs_by_layer = Some(glyphs_by_layer.clone());
+        self.cached_fg_glyphs = Some(fg_glyphs.clone());
+        self.cached_motion_subtree_text_prims = Some(motion_subtree_text_prims.clone());
+        self.cached_motion_subtree_svgs = Some(motion_subtree_svgs.clone());
+        self.cached_css_transformed_text_prims = Some(css_transformed_text_prims.clone());
+
         // Generate decoration primitives for foreground text once so the
         // three render paths below can each render them after their
         // `render_text(target, &fg_glyphs)` call. Without this, any
@@ -4414,6 +8988,26 @@ impl RenderContext {
             }
             self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
+
+        // Snapshot the post-walker, post-CSS-text batch for the
+        // compositor fast path (Phase 4 follow-up frame). At this
+        // point `batch.primitives` matches what the walker emitted
+        // and what the bindings in `RenderTree::composite_bindings`
+        // reference by index. Subsequent rendering only reads from
+        // `batch` (the `render_with_clear` calls take `&`), so a
+        // clone here is safe and the original keeps flowing through
+        // the rest of the function.
+        //
+        // Cost: one `Vec::clone()` of `GpuPrimitive` (each ~288 B).
+        // For cn_demo with ~400 primitives that's ~110 KB / frame
+        // memcpy — ~30 µs on M-series silicon — in exchange for
+        // skipping the full paint walker on follow-up frames.
+        tracing::trace!(
+            target: "blinc_app::frame_timing",
+            primitives = batch.primitives.len(),
+            "cached_bg_batch_set",
+        );
+        self.cached_bg_batch = Some(batch.clone());
 
         let has_glass = batch.glass_count() > 0;
         let has_layer_effects_in_batch = batch.has_layer_effects();
@@ -4864,6 +9458,89 @@ impl RenderContext {
         // Poll the device to free completed command buffers
         self.renderer.poll();
 
+        // Motion-bound bg primitives (the dynamic batch) — slider
+        // thumbs, progress fills, spinner arcs, anything inside a
+        // `motion()` container. The walker routes these into a
+        // separate `cached_dynamic_batch` so the compositor's
+        // motion-binding fast path can patch transform / opacity
+        // in place without re-walking.
+        //
+        // Gate this dispatch on `!in_compositor_inner_call`: when
+        // we're called by `try_render_with_compositor` as its inner
+        // static-layer paint step, `composite_frame` will dispatch
+        // `cached_dynamic_batch` onto the surface separately —
+        // dispatching it here too lands the motion primitives in
+        // the static cache at the slow-paint rotation, then
+        // `composite_frame` paints them again at the current
+        // rotation, producing visibly duplicated motion content
+        // (cn::spinner double-arc). The non-compositor path
+        // (wasm / iOS / fuchsia) still needs this dispatch since it
+        // never reaches `composite_frame`.
+        //
+        // `render_overlay` re-uploads the dynamic batch's aux_data
+        // (polygon clip vertices, etc.) before dispatch.
+        if !self.in_compositor_inner_call {
+            if let Some(ref dynamic_batch) = self.cached_dynamic_batch {
+                if !dynamic_batch.primitives.is_empty() {
+                    self.renderer.render_overlay(target, dynamic_batch);
+                    // The dynamic batch upload clobbered the static
+                    // aux_data the next text/SVG dispatch might rely
+                    // on (polygon clip-paths on regular elements).
+                    // Re-upload the main batch's aux_data so anything
+                    // downstream sees consistent state. (The compositor
+                    // path doesn't need this because composite_frame
+                    // handles aux_data sequencing internally.)
+                    self.renderer.update_aux_data_for_batch(&batch);
+                }
+            }
+        }
+
+        // Motion-subtree text + SVG overlay — text/SVG inside a
+        // motion container (or with an inherited CSS affine) were
+        // filtered out of the main `texts` / `svgs` lists earlier
+        // and cached on `cached_motion_subtree_*`. The compositor
+        // dispatches them after `composite_frame`; we mirror that
+        // dispatch here for the non-compositor path so wasm /
+        // Android / iOS show motion-container text + SVG. Without
+        // this, motion_demo's inner labels, cn::tabs content,
+        // context-menu dropdowns, and any motion-animated SVG icon
+        // render invisible.
+        if let Some(motion_text_prims) = self.cached_motion_subtree_text_prims.clone() {
+            if !motion_text_prims.is_empty() {
+                self.rebind_glyph_atlas_for_overlay();
+                self.renderer
+                    .render_primitives_overlay(target, &motion_text_prims);
+            }
+        }
+        if let Some(motion_svgs) = self.cached_motion_subtree_svgs.clone() {
+            if !motion_svgs.is_empty() {
+                self.render_rasterized_svgs(target, &motion_svgs, scale_factor);
+            }
+        }
+
+        // Composited CSS layers — blit each promoted subtree's
+        // texture with the current animation transform. Same as
+        // the compositor flow's post-`composite_frame` call.
+        // Skips silently when nothing is promoted. Needed for
+        // styling_demo's `anim-pulse` / `anim-glow` (and any other
+        // composite-promotable CSS animation) on wasm / mobile.
+        //
+        // Gate on `!in_compositor_inner_call` for the same reason
+        // the dynamic-batch dispatch below is gated: when we're the
+        // inner static-layer paint of `try_render_with_compositor`,
+        // the caller runs its OWN overlay call after `composite_frame`
+        // — running it here too composites the overlay into the
+        // static cache (where it stays baked across subsequent
+        // frames), then the outer call composites it AGAIN onto the
+        // surface, producing a visible double-paint. The non-
+        // compositor path (wasm / iOS / fuchsia) still needs both
+        // calls since it never reaches `composite_frame`.
+        if !self.in_compositor_inner_call {
+            self.composite_css_layers_overlay(tree, target);
+            // P4.3 sibling: motion-subtree textures.
+            self.composite_motion_layers_overlay(tree, target);
+        }
+
         // Dispatch 3D mesh draws captured during `tree.render_with_motion`.
         // Each `PendingMesh` carries a snapshot of the camera and lights
         // active when `canvas(|ctx, bounds| ctx.draw_mesh_data(...))` fired,
@@ -4879,6 +9556,16 @@ impl RenderContext {
         // follow-up once the first end-to-end demo proves the path.
         if !pending_meshes.is_empty() {
             dispatch_pending_meshes(&mut self.renderer, target, width, height, &pending_meshes);
+        }
+        if !pending_gpu_passes.is_empty() {
+            dispatch_pending_gpu_passes(
+                &mut self.renderer,
+                target,
+                width,
+                height,
+                scale_factor,
+                &pending_gpu_passes,
+            );
         }
 
         // Render overlays from RenderState
@@ -4902,6 +9589,18 @@ impl RenderContext {
 
         // Periodic cache stats (every ~5s at 60fps)
         self.log_cache_stats();
+
+        let t_total_p4 = p4_start.elapsed();
+        let t_gpu = t_total_p4
+            .saturating_sub(t_paint_walker)
+            .saturating_sub(t_collect_elements);
+        tracing::trace!(
+            target: "blinc_app::frame_timing",
+            paint_walker_us = t_paint_walker.as_micros() as u64,
+            collect_elements_us = t_collect_elements.as_micros() as u64,
+            gpu_us = t_gpu.as_micros() as u64,
+            "p4_breakdown"
+        );
 
         Ok(())
     }
@@ -5062,6 +9761,7 @@ impl RenderContext {
             blinc_core::BlendMode::Normal,
             None,
             Some(info.transform_3d),
+            0.0,
         );
 
         self.renderer.release_layer_texture(layer_tex);
@@ -5868,6 +10568,21 @@ fn dispatch_pending_meshes(
         let lights = collect_directional_lights(&pending.lights);
         let model = mat4_to_array(&pending.transform);
 
+        // Same clamp + zero-area skip as
+        // `dispatch_pending_gpu_passes`. The mesh tonemap pass also
+        // does `set_scissor_rect(...)` with this rect and the same
+        // `vw.max(1.0) as u32` defensive pattern that turns a
+        // clamped zero into a one-pixel overflow.
+        let clamped_viewport = match pending.viewport {
+            Some(r) => {
+                let c = clamp_viewport(r, width, height);
+                if c[2] < 1.0 || c[3] < 1.0 {
+                    continue;
+                }
+                Some(c)
+            }
+            None => None,
+        };
         renderer.render_mesh_data_batched(
             target,
             &pending.mesh,
@@ -5876,11 +10591,99 @@ fn dispatch_pending_meshes(
             camera_pos,
             &lights,
             shadow_matrix,
-            pending.viewport,
+            clamped_viewport,
             batch_index,
             batch_count,
         );
     }
+}
+
+/// Dispatch every [`PendingGpuPass`] captured by `GpuPaintContext` to
+/// its underlying [`blinc_gpu::CustomRenderPass`].
+///
+/// Lazy-initializes each pass on the first frame it dispatches (the
+/// `GpuPass` wrapper carries the `initialized` flag internally). The
+/// `RenderPassContext` we build here mirrors the one
+/// [`CustomPassManager::execute_stage`] uses for renderer-registered
+/// passes, with two differences: `view_proj` / `inv_view_proj` /
+/// `camera_pos` are left `None` (no 3D camera implied for canvas-scoped
+/// custom passes — users who want 3D should still register at the
+/// `Scene3D` stage), and `viewport` is whatever the canvas closure
+/// derived from its bounds (or `None` = full target).
+fn dispatch_pending_gpu_passes(
+    renderer: &mut GpuRenderer,
+    target: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+    passes: &[blinc_gpu::paint::PendingGpuPass],
+) {
+    if passes.is_empty() {
+        return;
+    }
+    let device = renderer.device_arc();
+    let queue = renderer.queue_arc();
+    let format = renderer.surface_format();
+    for pending in passes {
+        // Clamp here so user pass code can pass the rect straight
+        // to `set_scissor_rect` / `set_viewport` without writing
+        // its own bounds-check. Window resize is the canonical
+        // crash case: the paint walker computed the canvas
+        // viewport against the previous frame's target size; if
+        // the surface shrunk between paint and dispatch the
+        // viewport overflows. wgpu validates scissor strictly and
+        // panics on overflow.
+        //
+        // A clamped-to-zero rect (canvas dragged offscreen, or
+        // sitting exactly on the bottom/right edge after a resize)
+        // is skipped entirely. Passing the zero-area rect through
+        // would invite the same footgun the upstream user code
+        // defends against — `vh.max(1.0) as u32` re-inflates h=0
+        // back to 1, which then overflows by one row at the bottom
+        // edge. There's nothing to draw at zero area; just drop
+        // the dispatch.
+        let clamped_viewport = match pending.viewport {
+            Some(r) => {
+                let c = clamp_viewport(r, width, height);
+                if c[2] < 1.0 || c[3] < 1.0 {
+                    continue;
+                }
+                Some(c)
+            }
+            None => None,
+        };
+        let ctx = blinc_gpu::custom_pass::RenderPassContext {
+            device: &device,
+            queue: &queue,
+            target,
+            viewport_width: width,
+            viewport_height: height,
+            texture_format: format,
+            scale_factor: scale_factor as f64,
+            view_proj: None,
+            inv_view_proj: None,
+            camera_pos: None,
+            viewport: clamped_viewport,
+        };
+        pending
+            .pass
+            .initialize_and_render(&device, &queue, format, &ctx);
+    }
+}
+
+/// Clamp a viewport rect to a render-target extent. `[x, y, w, h]` in
+/// physical pixels — both origin and size adjusted so `x + w ≤ tw`
+/// and `y + h ≤ th`. Returns a zero-size rect (still inside the
+/// target) when the input is fully outside.
+fn clamp_viewport(rect: [f32; 4], target_w: u32, target_h: u32) -> [f32; 4] {
+    let [x, y, w, h] = rect;
+    let tw = target_w as f32;
+    let th = target_h as f32;
+    let x = x.max(0.0).min(tw);
+    let y = y.max(0.0).min(th);
+    let w = w.max(0.0).min((tw - x).max(0.0));
+    let h = h.max(0.0).min((th - y).max(0.0));
+    [x, y, w, h]
 }
 
 /// Build a view × projection matrix for a directional light illuminating

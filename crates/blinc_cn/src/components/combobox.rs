@@ -40,18 +40,18 @@
 use std::cell::OnceCell;
 use std::sync::Arc;
 
-use blinc_core::context_state::BlincContextState;
 use blinc_core::State;
+use blinc_core::context_state::BlincContextState;
 use blinc_layout::click_outside;
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful_with_key, ButtonState};
+use blinc_layout::stateful::{ButtonState, stateful_with_key};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_layout::widgets::text_input::SharedTextInputData;
-use blinc_theme::{ColorToken, SpacingToken, ThemeState};
+use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 
-use super::label::{label, LabelSize};
+use super::label::{LabelSize, label};
 use blinc_layout::InstanceKey;
 
 /// Combobox size variants
@@ -68,41 +68,29 @@ pub enum ComboboxSize {
 
 impl ComboboxSize {
     /// Get the height for this size
-    fn height(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn height(&self) -> f32 {
         match self {
-            ComboboxSize::Small => tokens.control.height_sm,
-            ComboboxSize::Medium => tokens.control.height_md,
-            ComboboxSize::Large => tokens.control.height_lg,
+            ComboboxSize::Small => 32.0,
+            ComboboxSize::Medium => 40.0,
+            ComboboxSize::Large => 48.0,
         }
     }
 
     /// Get the font size for this size
-    fn font_size(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn font_size(&self) -> f32 {
         match self {
-            ComboboxSize::Small => tokens.typography.body_sm,
-            ComboboxSize::Medium => tokens.typography.body_md,
-            ComboboxSize::Large => tokens.typography.body_lg,
+            ComboboxSize::Small => 13.0,
+            ComboboxSize::Medium => 14.0,
+            ComboboxSize::Large => 16.0,
         }
     }
 
     /// Get the padding for this size
-    fn padding_x(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn padding(&self) -> f32 {
         match self {
-            ComboboxSize::Small => tokens.control.padding_x_sm,
-            ComboboxSize::Medium => tokens.control.padding_x_md,
-            ComboboxSize::Large => tokens.control.padding_x_lg,
-        }
-    }
-
-    fn padding_y(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
-        match self {
-            ComboboxSize::Small => tokens.control.padding_y_sm,
-            ComboboxSize::Medium => tokens.control.padding_y_md,
-            ComboboxSize::Large => tokens.control.padding_y_lg,
+            ComboboxSize::Small => 8.0,
+            ComboboxSize::Medium => 12.0,
+            ComboboxSize::Large => 16.0,
         }
     }
 }
@@ -187,11 +175,10 @@ impl Combobox {
     /// Create from a full configuration
     fn from_config(instance_key: &str, config: ComboboxConfig) -> Self {
         let theme = ThemeState::get();
-        let height = config.size.height(theme);
-        let font_size = config.size.font_size(theme);
-        let padding_x = config.size.padding_x(theme);
-        let padding_y = config.size.padding_y(theme);
-        let radius = theme.components().control.radius_md;
+        let height = config.size.height();
+        let font_size = config.size.font_size();
+        let padding = config.size.padding();
+        let radius = theme.radius(RadiusToken::Sm);
 
         // Colors
         let bg = theme.color(ColorToken::Surface);
@@ -323,8 +310,6 @@ impl Combobox {
 
                 let display_content = div().flex_1().overflow_clip().child(
                     text(&display_text)
-                        .class("cn-combobox-value")
-                        .class("cn-truncate")
                         .size(font_size)
                         .no_cursor()
                         .color(text_clr),
@@ -349,8 +334,7 @@ impl Combobox {
                     .w_full()
                     .items_center()
                     .h(height)
-                    .padding_x_px(padding_x)
-                    .padding_y_px(padding_y)
+                    .p_px(padding)
                     .bg(bg)
                     .border(1.0, bdr)
                     .rounded(radius)
@@ -377,6 +361,15 @@ impl Combobox {
                                 data.cursor = 0;
                             }
                             search_query_trigger.set(String::new());
+                        } else {
+                            // Opening: autofocus the search input so the
+                            // user can start typing immediately. Without
+                            // this they'd have to click the search field
+                            // first — unexpected for a "type to search"
+                            // affordance.
+                            blinc_layout::widgets::text_input::focus_text_input(
+                                &search_data_trigger,
+                            );
                         }
                         open_state_trigger.set(!is_currently_open);
                     });
@@ -398,7 +391,7 @@ impl Combobox {
                         dropdown_width,
                         height,
                         font_size,
-                        padding_x,
+                        padding,
                         radius,
                         bg,
                         border,
@@ -703,6 +696,7 @@ fn build_dropdown_content(
         .bg(bg)
         .border(1.0, border)
         .rounded(radius)
+        .lock_corner_shape()
         .shadow_lg()
         .overflow_clip()
         // Absolutely positioned below the trigger, rendered in foreground pass
@@ -719,11 +713,15 @@ fn build_dropdown_content(
 
     let search_query_for_sync = search_query_state.clone();
 
+    // No `.w_full()` — inside the flex_row container `flex_grow()` distributes
+    // the remaining width after the container's padding. `w_full()` would
+    // make the input claim 100% of the container's outer (padded) width.
     let search_input = blinc_layout::widgets::text_input::text_input(search_data)
-        .w_full()
+        .id(&format!("{}_search_input", key))
         .h(trigger_height)
+        .w(width - (width * padding / width)) // Subtract padding from width to account for container padding (since input is direct child of container)
         .text_size(font_size)
-        .rounded(theme.radii().radius_sm)
+        .rounded(theme.radii().radius_md)
         .placeholder(search_placeholder)
         .idle_border_color(theme.color(ColorToken::Border))
         .hover_border_color(theme.color(ColorToken::BorderFocus))
@@ -738,182 +736,176 @@ fn build_dropdown_content(
             search_query_for_sync.set(new_value.to_string());
         });
 
+    // Container is flex_row so the input is a true flex item — without an
+    // explicit direction, `w_full()` on the input sizes to the container's
+    // full width *including* its padding (border-box), so the right edge
+    // got cropped at the dropdown's right border. Flex layout distributes
+    // remaining space after padding instead.
     let search_container = div()
-        .w(width)
+        .w_full()
         .flex_shrink_0()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .px(padding / 8.0)
+        .py(padding / 8.0)
         .border_bottom(1.0, border)
         .child(search_input);
 
     dropdown_div = dropdown_div.child(search_container);
 
-    // Stateful container for the options list that reacts to search changes
-    let options_for_filter = options.to_vec();
-    let current_selected_owned = current_selected.to_string();
-    let value_state_for_opts = value_state.clone();
-    let open_state_for_opts = open_state.clone();
-    let on_change_for_opts = on_change.clone();
-    let search_data_for_opts = search_data.clone();
-    let search_query_for_opts = search_query_state.clone();
-    let key_for_opts = key.to_string();
-
-    let options_container_key = format!("{}_options_container", key);
+    // Build the options list inline. The outer combobox Stateful already lists
+    // search_query_state.signal_id() in its deps, so search-driven rebuilds flow
+    // through that — wrapping the option list in its own Stateful<NoState> just
+    // added a redundant subtree-rebuild layer that left class registrations
+    // out-of-sync with apply_complex_selector_styles' hover matching pass, so
+    // `.cn-combobox-item:hover` never lit up.
     let options_content_key = format!("{}_options_content", key);
+    let search_text = search_query_state.get();
 
-    let options_stateful = stateful_with_key::<NoState>(&options_container_key)
-        .deps([search_query_state.signal_id()])
-        .on_state(move |_ctx| {
-            let search_text = search_query_for_opts.get();
+    let filtered_options: Vec<_> = options
+        .iter()
+        .filter(|opt| opt.matches(&search_text))
+        .collect();
 
-            let filtered_options: Vec<_> = options_for_filter
-                .iter()
-                .filter(|opt| opt.matches(&search_text))
-                .collect();
+    let mut options_content = div()
+        .id(&options_content_key)
+        .flex_col()
+        .max_h(200.0)
+        .overflow_y_scroll()
+        .w_full();
 
-            let mut options_content = div()
-                .id(&options_content_key)
-                .flex_col()
-                .max_h(200.0)
-                .overflow_y_scroll()
-                .w_full();
+    if filtered_options.is_empty() {
+        let no_results = div().w_full().p_px(padding).child(
+            text("No results found")
+                .size(font_size)
+                .color(text_tertiary),
+        );
+        options_content = options_content.child(no_results);
 
-            if filtered_options.is_empty() {
-                let no_results = div().w_full().p_px(padding).child(
-                    text("No results found")
-                        .size(font_size)
-                        .color(text_tertiary),
-                );
-                options_content = options_content.child(no_results);
+        if allow_custom && !search_text.is_empty() {
+            let custom_value = search_text.clone();
+            let value_state_for_custom = value_state.clone();
+            let open_state_for_custom = open_state.clone();
+            let on_change_for_custom = on_change.clone();
+            let search_data_for_custom = search_data.clone();
+            let search_query_for_custom = search_query_state.clone();
 
-                if allow_custom && !search_text.is_empty() {
-                    let custom_value = search_text.clone();
-                    let value_state_for_custom = value_state_for_opts.clone();
-                    let open_state_for_custom = open_state_for_opts.clone();
-                    let on_change_for_custom = on_change_for_opts.clone();
-                    let search_data_for_custom = search_data_for_opts.clone();
-                    let search_query_for_custom = search_query_for_opts.clone();
+            let custom_item_id = format!("{}_custom", key);
+            let custom_item = div()
+                .id(&custom_item_id)
+                .class("cn-combobox-item")
+                .w_full()
+                .h_fit()
+                .cursor(CursorStyle::Pointer)
+                .flex_row()
+                .items_center()
+                .child(
+                    div().child(
+                        text(format!("Use \"{}\"", custom_value))
+                            .size(font_size)
+                            .no_cursor()
+                            .color(text_color),
+                    ),
+                )
+                .on_click(move |_ctx| {
+                    let custom_val = search_data_for_custom
+                        .lock()
+                        .ok()
+                        .map(|d| d.value.clone())
+                        .unwrap_or_default();
+                    value_state_for_custom.set(custom_val.clone());
+                    open_state_for_custom.set(false);
 
-                    // Plain div with element ID for proper event registration during subtree rebuilds.
-                    let custom_item_id = format!("{}_custom", key_for_opts);
-                    let custom_item = div()
-                        .id(&custom_item_id)
-                        .class("cn-combobox-item")
-                        .w_full()
-                        .h_fit()
-                        .cursor(CursorStyle::Pointer)
-                        .flex_row()
-                        .items_center()
-                        .bg(bg)
-                        .child(
-                            div().child(
-                                text(format!("Use \"{}\"", custom_value))
-                                    .class("cn-combobox-item__label")
-                                    .class("cn-truncate")
-                                    .size(font_size)
-                                    .no_cursor()
-                                    .color(text_color),
-                            ),
-                        )
-                        .on_click(move |_ctx| {
-                            // Set the custom value and close
-                            let custom_val = search_data_for_custom
-                                .lock()
-                                .ok()
-                                .map(|d| d.value.clone())
-                                .unwrap_or_default();
-                            value_state_for_custom.set(custom_val.clone());
-                            open_state_for_custom.set(false);
+                    if let Ok(mut data) = search_data_for_custom.lock() {
+                        data.value.clear();
+                        data.cursor = 0;
+                    }
+                    search_query_for_custom.set(String::new());
 
-                            // Clear search
-                            if let Ok(mut data) = search_data_for_custom.lock() {
-                                data.value.clear();
-                                data.cursor = 0;
-                            }
-                            search_query_for_custom.set(String::new());
+                    if let Some(ref cb) = on_change_for_custom {
+                        cb(&custom_val);
+                    }
+                });
 
-                            if let Some(ref cb) = on_change_for_custom {
-                                cb(&custom_val);
-                            }
-                        });
+            options_content = options_content.child(custom_item);
+        }
+    } else {
+        for (idx, opt) in filtered_options.iter().enumerate() {
+            let opt_value = opt.value.clone();
+            let opt_label = opt.label.clone();
+            let opt_content = opt.content.clone();
+            let is_selected = opt_value == current_selected;
+            let is_opt_disabled = opt.disabled;
 
-                    options_content = options_content.child(custom_item);
-                }
+            let value_state_for_opt = value_state.clone();
+            let open_state_for_opt = open_state.clone();
+            let on_change_for_opt = on_change.clone();
+            let opt_value_for_click = opt_value.clone();
+            let search_data_for_opt = search_data.clone();
+            let search_query_for_opt = search_query_state.clone();
+
+            let option_text_color = if is_opt_disabled {
+                text_tertiary
             } else {
-                for (idx, opt) in filtered_options.iter().enumerate() {
-                    let opt_value = opt.value.clone();
-                    let opt_label = opt.label.clone();
-                    let opt_content = opt.content.clone();
-                    let is_selected = opt_value == current_selected_owned;
-                    let is_opt_disabled = opt.disabled;
+                text_color
+            };
 
-                    let value_state_for_opt = value_state_for_opts.clone();
-                    let open_state_for_opt = open_state_for_opts.clone();
-                    let on_change_for_opt = on_change_for_opts.clone();
-                    let opt_value_for_click = opt_value.clone();
-                    let search_data_for_opt = search_data_for_opts.clone();
-                    let search_query_for_opt = search_query_for_opts.clone();
-
-                    let option_text_color = if is_opt_disabled {
-                        text_tertiary
-                    } else {
-                        text_color
-                    };
-
-                    let base_bg = if is_selected { surface_elevated } else { bg };
-
-                    // Plain div with element ID for proper event registration during subtree rebuilds.
-                    let item_id = format!("{}_opt_{}", key_for_opts, idx);
-                    let option_item = div()
-                        .id(&item_id)
-                        .class("cn-combobox-item")
-                        .w_full()
-                        .h_fit()
-                        .cursor(if is_opt_disabled {
-                            CursorStyle::NotAllowed
-                        } else {
-                            CursorStyle::Pointer
-                        })
-                        .flex_row()
-                        .items_center()
-                        .bg(base_bg)
-                        .child(if let Some(ref content_fn) = opt_content {
-                            content_fn()
-                        } else {
-                            div().child(
-                                text(&opt_label)
-                                    .class("cn-combobox-item__label")
-                                    .class("cn-truncate")
-                                    .size(font_size)
-                                    .no_cursor()
-                                    .color(option_text_color),
-                            )
-                        })
-                        .on_click(move |_ctx| {
-                            if !is_opt_disabled {
-                                // Set the new value and close
-                                value_state_for_opt.set(opt_value_for_click.clone());
-                                open_state_for_opt.set(false);
-
-                                // Clear search
-                                if let Ok(mut data) = search_data_for_opt.lock() {
-                                    data.value.clear();
-                                    data.cursor = 0;
-                                }
-                                search_query_for_opt.set(String::new());
-
-                                if let Some(ref cb) = on_change_for_opt {
-                                    cb(&opt_value_for_click);
-                                }
-                            }
-                        });
-
-                    options_content = options_content.child(option_item);
-                }
+            // Background is owned by CSS (.cn-combobox-item /
+            // .cn-combobox-item:hover / .cn-combobox-item--selected) — an
+            // explicit `.bg(base_bg)` here overrides the :hover selector.
+            let item_id = format!("{}_opt_{}", key, idx);
+            let mut option_item = div()
+                .id(&item_id)
+                .class("cn-combobox-item")
+                .w_full()
+                .h_fit()
+                .cursor(if is_opt_disabled {
+                    CursorStyle::NotAllowed
+                } else {
+                    CursorStyle::Pointer
+                })
+                .flex_row()
+                .items_center();
+            if is_selected {
+                option_item = option_item.class("cn-combobox-item--selected");
             }
+            let option_item = option_item
+                .child(if let Some(ref content_fn) = opt_content {
+                    content_fn()
+                } else {
+                    div().child(
+                        text(&opt_label)
+                            .size(font_size)
+                            .no_cursor()
+                            .color(option_text_color),
+                    )
+                })
+                .on_click(move |_ctx| {
+                    if !is_opt_disabled {
+                        value_state_for_opt.set(opt_value_for_click.clone());
+                        open_state_for_opt.set(false);
 
-            options_content
-        });
+                        if let Ok(mut data) = search_data_for_opt.lock() {
+                            data.value.clear();
+                            data.cursor = 0;
+                        }
+                        search_query_for_opt.set(String::new());
 
-    dropdown_div = dropdown_div.child(options_stateful);
+                        if let Some(ref cb) = on_change_for_opt {
+                            cb(&opt_value_for_click);
+                        }
+                    }
+                });
+
+            options_content = options_content.child(option_item);
+        }
+    }
+
+    let _ = surface_elevated;
+    let _ = bg;
+
+    dropdown_div = dropdown_div.child(options_content);
 
     dropdown_div
 }
@@ -924,35 +916,16 @@ mod tests {
 
     #[test]
     fn test_combobox_sizes() {
-        if ThemeState::try_get().is_none() {
-            ThemeState::init_default();
-        }
-        let theme = ThemeState::get();
-        let tokens = theme.components();
-        assert_eq!(ComboboxSize::Small.height(theme), tokens.control.height_sm);
-        assert_eq!(ComboboxSize::Medium.height(theme), tokens.control.height_md);
-        assert_eq!(ComboboxSize::Large.height(theme), tokens.control.height_lg);
+        assert_eq!(ComboboxSize::Small.height(), 32.0);
+        assert_eq!(ComboboxSize::Medium.height(), 40.0);
+        assert_eq!(ComboboxSize::Large.height(), 48.0);
     }
 
     #[test]
     fn test_combobox_font_sizes() {
-        if ThemeState::try_get().is_none() {
-            ThemeState::init_default();
-        }
-        let theme = ThemeState::get();
-        let tokens = theme.components();
-        assert_eq!(
-            ComboboxSize::Small.font_size(theme),
-            tokens.typography.body_sm
-        );
-        assert_eq!(
-            ComboboxSize::Medium.font_size(theme),
-            tokens.typography.body_md
-        );
-        assert_eq!(
-            ComboboxSize::Large.font_size(theme),
-            tokens.typography.body_lg
-        );
+        assert_eq!(ComboboxSize::Small.font_size(), 13.0);
+        assert_eq!(ComboboxSize::Medium.font_size(), 14.0);
+        assert_eq!(ComboboxSize::Large.font_size(), 16.0);
     }
 
     #[test]

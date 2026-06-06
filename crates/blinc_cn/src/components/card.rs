@@ -41,11 +41,7 @@ impl Card {
     /// Create a new empty card
     pub fn new() -> Self {
         // All visual props from CSS: .cn-card { background, border, border-radius, padding, gap }
-        let inner = div()
-            .class("cn-card")
-            .shadow_sm()
-            .flex_col()
-            .items_stretch();
+        let inner = div().class("cn-card").shadow_sm().flex_col().items_start();
 
         Self { inner }
     }
@@ -216,7 +212,7 @@ impl CardHeader {
         let inner = div()
             .class("cn-card-header")
             .flex_col()
-            .items_stretch()
+            .items_start()
             .w_full()
             .gap_px(gap);
 
@@ -224,11 +220,11 @@ impl CardHeader {
     }
 
     /// Add a title
-    pub fn title(mut self, title: impl ToString) -> Self {
+    pub fn title(mut self, title: impl Into<String>) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(title)
-                .size(18.0)
+                .size(theme.typography().text_lg)
                 .semibold()
                 .color(theme.color(ColorToken::TextPrimary)),
         );
@@ -236,11 +232,11 @@ impl CardHeader {
     }
 
     /// Add a description
-    pub fn description(mut self, desc: impl ToString) -> Self {
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(desc)
-                .size(14.0)
+                .size(theme.typography().text_sm)
                 .color(theme.color(ColorToken::TextSecondary)),
         );
         self
@@ -498,80 +494,14 @@ mod tests {
     }
 
     #[test]
-    fn test_card_defaults_to_stretch_children() {
-        init_theme();
-        let card = card();
-        let style = card.layout_style().unwrap();
-
-        assert_eq!(style.align_items, Some(taffy::AlignItems::Stretch));
-    }
-
-    #[test]
     fn test_card_header() {
         init_theme();
         let _ = card_header().title("Title").description("Description");
     }
 
     #[test]
-    fn test_card_header_defaults_to_stretch_children() {
-        init_theme();
-        let header = card_header();
-        let style = header.layout_style().unwrap();
-
-        assert_eq!(style.align_items, Some(taffy::AlignItems::Stretch));
-    }
-
-    #[test]
     fn test_card_footer() {
         init_theme();
         let _ = card_footer();
-    }
-
-    #[test]
-    fn test_card_wraps_direct_text_child_to_card_width() {
-        init_theme();
-
-        let long_text =
-            "카드 안에서 긴 본문 텍스트는 카드 폭 안에서 자연스럽게 여러 줄로 줄바꿈되어야 합니다.";
-        let ui = card().w(120.0).child(text(long_text));
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(120.0, 400.0);
-
-        let root = tree.root().unwrap();
-        let children = tree.layout_tree.children(root);
-        let text_bounds = tree
-            .layout_tree
-            .get_bounds(children[0], (0.0, 0.0))
-            .unwrap();
-
-        assert!(text_bounds.width <= 120.0);
-        assert!(text_bounds.height > 20.0);
-    }
-
-    #[test]
-    fn test_card_header_description_wraps_to_header_width() {
-        init_theme();
-
-        let long_text =
-            "설명 텍스트도 헤더 내부 폭을 상속받아 단일 줄이 아니라 여러 줄로 측정되어야 합니다.";
-        let ui = card()
-            .w(120.0)
-            .child(card_header().title("제목").description(long_text));
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(120.0, 400.0);
-
-        let root = tree.root().unwrap();
-        let root_children = tree.layout_tree.children(root);
-        let header = root_children[0];
-        let header_children = tree.layout_tree.children(header);
-        let description_bounds = tree
-            .layout_tree
-            .get_bounds(header_children[1], (0.0, 0.0))
-            .unwrap();
-
-        assert!(description_bounds.width <= 120.0);
-        assert!(description_bounds.height > 20.0);
     }
 }

@@ -83,7 +83,7 @@ impl RenderTree {
         if let Some(key) = self
             .visual_animation_key_to_node
             .iter()
-            .find(|(_, &n)| n == node_id)
+            .find(|&(_, &n)| n == node_id)
             .map(|(k, _)| k.clone())
         {
             if let Some(anim) = self.visual_animations.get(&key) {
@@ -337,7 +337,7 @@ impl RenderTree {
         let stable_key = self
             .visual_animation_key_to_node
             .iter()
-            .find(|(_, &n)| n == node_id)
+            .find(|&(_, &n)| n == node_id)
             .map(|(k, _)| k.clone());
         let animation = stable_key
             .as_ref()
@@ -450,9 +450,109 @@ impl RenderTree {
         // Find the key for this node (reverse lookup)
         self.visual_animation_key_to_node
             .iter()
-            .find(|(_, &n)| n == node_id)
+            .find(|&(_, &n)| n == node_id)
             .and_then(|(key, _)| self.visual_animations.get(key))
             .map(|a| a.is_animating())
             .unwrap_or(false)
+    }
+
+    /// Single source of truth for "is any animation system live this
+    /// frame?".
+    ///
+    /// Returns `true` if any of the following has a mid-flight tick:
+    ///
+    /// - `MotionBindings` springs / always-playing rotation
+    ///   timelines (`is_any_animating`)
+    /// - `motion()` enter / exit FSM
+    ///   (`render_state.has_active_motions()`)
+    /// - Visual animations (`animate_bounds`)
+    /// - Layout animations (`animate_layout`)
+    /// - CSS keyframe animations
+    /// - CSS property transitions
+    /// - FLIP transitions
+    ///
+    /// Used by the compositor cache-invalidation gate and the
+    /// `visible_anim_active` fast-path bookkeeping in `blinc_app`,
+    /// plus the windowed-runner redraw chain. Every animation
+    /// driver registers here so the three sites stay in lockstep —
+    /// adding a new driver only requires extending this method,
+    /// not chasing OR-chains in three different files.
+    ///
+    /// Visibility filtering is the caller's job; this returns the
+    /// global "anything alive" answer. See
+    /// [`Self::has_any_active_animation_visible`] for the
+    /// painted-set-gated variant the windowed redraw chain uses.
+    pub fn has_any_active_animation(
+        &self,
+        render_state: &crate::render_state::RenderState,
+    ) -> bool {
+        // MotionBindings (springs + always-playing rotation_timelines).
+        if self.motion_bindings.values().any(|b| b.is_any_animating()) {
+            return true;
+        }
+        // motion() FSM enter / exit.
+        if render_state.has_active_motions() {
+            return true;
+        }
+        // animate_bounds / animate_layout.
+        if self.has_active_visual_animations() || self.has_active_layout_animations() {
+            return true;
+        }
+        // FLIP transitions (animate_layout's modern counterpart).
+        if self.has_active_flip_animations() {
+            return true;
+        }
+        // CSS keyframe animations + CSS property transitions.
+        if let Ok(store) = self.css_anim_store.lock() {
+            if store.has_active_animations() || store.has_active_transitions() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Visibility-gated counterpart of
+    /// [`Self::has_any_active_animation`] — only counts animations
+    /// whose owning node is in `painted` (the set the walker
+    /// emitted this frame). Used by the windowed redraw chain so an
+    /// off-screen keyframe doesn't keep request_redraw firing at
+    /// vsync forever.
+    ///
+    /// `MotionBindings` are not visibility-filtered here — they're
+    /// keyed by `LayoutNodeId` directly, and the walker's
+    /// `painted_node_ids` already excludes off-screen ones, so
+    /// `is_any_animating` only returns true for visible bindings in
+    /// practice. Same posture as the pre-existing windowed gate.
+    pub fn has_any_active_animation_visible(
+        &self,
+        render_state: &crate::render_state::RenderState,
+        painted: &HashSet<LayoutNodeId>,
+        painted_stable: &HashSet<crate::tree::StableNodeId>,
+    ) -> bool {
+        if self
+            .motion_bindings
+            .iter()
+            .any(|(n, b)| painted.contains(n) && b.is_any_animating())
+        {
+            return true;
+        }
+        if render_state.has_active_motions() {
+            return true;
+        }
+        if self.has_active_visible_visual_animations(painted) {
+            return true;
+        }
+        if self.has_active_layout_animations() {
+            return true;
+        }
+        if self.has_active_visible_flip_animations(painted) {
+            return true;
+        }
+        if let Ok(store) = self.css_anim_store.lock() {
+            if store.has_visible_active(painted_stable) {
+                return true;
+            }
+        }
+        false
     }
 }

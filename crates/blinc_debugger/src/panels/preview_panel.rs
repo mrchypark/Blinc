@@ -1,12 +1,12 @@
-/// Preview Panel - Snapshot preview and overlays
-use std::cell::OnceCell;
-use std::sync::Arc;
+//! Preview Panel - Live/recorded UI preview
 
-use blinc_cn::components::select::{select, SelectSize};
+use std::cell::OnceCell;
+
+use blinc_cn::components::select::{SelectSize, select};
 use blinc_cn::components::separator::separator;
-use blinc_cn::components::switch::{switch, SwitchSize};
-use blinc_core::context_state::BlincContextState;
+use blinc_cn::components::switch::{SwitchSize, switch};
 use blinc_core::Color;
+use blinc_core::context_state::BlincContextState;
 use blinc_layout::div::{Div, ElementBuilder, FontWeight};
 use blinc_layout::element::RenderProps;
 use blinc_layout::event_handler::EventHandlers;
@@ -32,20 +32,12 @@ impl Default for PreviewConfig {
     }
 }
 
-type BoolCallback = Arc<dyn Fn(bool) + Send + Sync>;
-type ZoomCallback = Arc<dyn Fn(f32) + Send + Sync>;
-
 struct PreviewPanelConfig {
     has_snapshot: bool,
     show_bounds: bool,
     show_cursor: bool,
     zoom: f32,
     cursor_position: Option<(f32, f32)>,
-    window_size: (u32, u32),
-    element_count: usize,
-    on_show_bounds_change: Option<BoolCallback>,
-    on_show_cursor_change: Option<BoolCallback>,
-    on_zoom_change: Option<ZoomCallback>,
 }
 
 struct BuiltPreviewPanel {
@@ -72,25 +64,11 @@ impl BuiltPreviewPanel {
         let theme = ThemeState::get();
         let ctx = BlincContextState::get();
 
+        // Get states from context
         let bounds_state = ctx.use_state_keyed("preview_bounds", || config.show_bounds);
-        if bounds_state.get() != config.show_bounds {
-            bounds_state.set(config.show_bounds);
-        }
-
         let cursor_state = ctx.use_state_keyed("preview_cursor", || config.show_cursor);
-        if cursor_state.get() != config.show_cursor {
-            cursor_state.set(config.show_cursor);
-        }
-
         let zoom_str = format!("{}", (config.zoom * 100.0) as i32);
         let zoom_state = ctx.use_state_keyed("preview_zoom", || zoom_str.clone());
-        if zoom_state.get() != zoom_str {
-            zoom_state.set(zoom_str.clone());
-        }
-
-        let on_show_bounds_change = config.on_show_bounds_change.clone();
-        let on_show_cursor_change = config.on_show_cursor_change.clone();
-        let on_zoom_change = config.on_zoom_change.clone();
 
         div()
             .h(44.0)
@@ -101,13 +79,10 @@ impl BuiltPreviewPanel {
             .items_center()
             .justify_between()
             .child(
-                text(format!(
-                    "Preview · {}x{} · {} elements",
-                    config.window_size.0, config.window_size.1, config.element_count
-                ))
-                .size(13.0)
-                .color(theme.color(ColorToken::TextPrimary))
-                .weight(FontWeight::SemiBold),
+                text("Preview")
+                    .size(13.0)
+                    .color(theme.color(ColorToken::TextPrimary))
+                    .weight(FontWeight::SemiBold),
             )
             .child(
                 div()
@@ -117,22 +92,12 @@ impl BuiltPreviewPanel {
                     .child(
                         switch(&bounds_state)
                             .size(SwitchSize::Small)
-                            .label("Bounds")
-                            .on_change(move |value| {
-                                if let Some(cb) = &on_show_bounds_change {
-                                    cb(value);
-                                }
-                            }),
+                            .label("Bounds"),
                     )
                     .child(
                         switch(&cursor_state)
                             .size(SwitchSize::Small)
-                            .label("Cursor")
-                            .on_change(move |value| {
-                                if let Some(cb) = &on_show_cursor_change {
-                                    cb(value);
-                                }
-                            }),
+                            .label("Cursor"),
                     )
                     .child(
                         select(&zoom_state)
@@ -142,14 +107,7 @@ impl BuiltPreviewPanel {
                             .option("75", "75%")
                             .option("100", "100%")
                             .option("150", "150%")
-                            .option("200", "200%")
-                            .on_change(move |value| {
-                                if let (Some(cb), Ok(percent)) =
-                                    (&on_zoom_change, value.parse::<f32>())
-                                {
-                                    cb((percent / 100.0).clamp(0.25, 3.0));
-                                }
-                            }),
+                            .option("200", "200%"),
                     ),
             )
     }
@@ -172,36 +130,20 @@ impl BuiltPreviewPanel {
 
     fn render_preview(config: &PreviewPanelConfig) -> Div {
         let theme = ThemeState::get();
-        let width = config.window_size.0.max(1) as f32 * config.zoom;
-        let height = config.window_size.1.max(1) as f32 * config.zoom;
-
         let mut preview = div()
-            .w(width)
-            .h(height)
+            .w(800.0 * config.zoom)
+            .h(600.0 * config.zoom)
             .bg(theme.color(ColorToken::Surface))
             .rounded(8.0)
             .border(1.0, theme.color(ColorToken::Border))
+            .items_center()
+            .justify_center()
             .relative()
             .child(
-                div().absolute().left(12.0).top(10.0).child(
-                    text("Snapshot")
-                        .size(14.0)
-                        .color(theme.color(ColorToken::TextTertiary)),
-                ),
+                text("UI Preview")
+                    .size(16.0)
+                    .color(theme.color(ColorToken::TextTertiary)),
             );
-
-        if config.show_bounds {
-            preview = preview.child(
-                div()
-                    .absolute()
-                    .left(8.0)
-                    .top(36.0)
-                    .right(8.0)
-                    .bottom(8.0)
-                    .border(1.0, theme.color(ColorToken::Info).with_alpha(0.5))
-                    .rounded(6.0),
-            );
-        }
 
         if config.show_cursor {
             if let Some((x, y)) = config.cursor_position {
@@ -255,9 +197,6 @@ impl PreviewPanel {
         snapshot: Option<&TreeSnapshot>,
         config: &PreviewConfig,
         cursor_position: Option<(f32, f32)>,
-        on_show_bounds_change: Option<BoolCallback>,
-        on_show_cursor_change: Option<BoolCallback>,
-        on_zoom_change: Option<ZoomCallback>,
     ) -> Self {
         Self {
             config: PreviewPanelConfig {
@@ -266,11 +205,6 @@ impl PreviewPanel {
                 show_cursor: config.show_cursor,
                 zoom: config.zoom,
                 cursor_position,
-                window_size: snapshot.map(|s| s.window_size).unwrap_or((800, 600)),
-                element_count: snapshot.map(|s| s.elements.len()).unwrap_or(0),
-                on_show_bounds_change,
-                on_show_cursor_change,
-                on_zoom_change,
             },
             built: OnceCell::new(),
         }
@@ -279,6 +213,10 @@ impl PreviewPanel {
     fn get_or_build(&self) -> &BuiltPreviewPanel {
         self.built
             .get_or_init(|| BuiltPreviewPanel::from_config(&self.config))
+    }
+
+    pub fn build(self) -> Div {
+        BuiltPreviewPanel::from_config(&self.config).inner
     }
 }
 

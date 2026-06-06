@@ -33,9 +33,11 @@
 //!     .disabled(true)
 //! ```
 
-use super::label::{label, LabelSize};
+use super::label::{LabelSize, label};
 use blinc_layout::prelude::*;
-use blinc_layout::widgets::text_area::{text_area, SharedTextAreaState};
+use blinc_layout::widgets::text_area::{
+    SharedTextAreaState, TextArea as LayoutTextArea, text_area,
+};
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState, TypographyTokens};
 
 /// Textarea size variants (affects default dimensions)
@@ -59,12 +61,11 @@ impl TextareaSize {
         }
     }
 
-    fn font_size(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn font_size(&self, typography: &TypographyTokens) -> f32 {
         match self {
-            TextareaSize::Small => tokens.typography.body_sm,
-            TextareaSize::Medium => tokens.typography.body_md,
-            TextareaSize::Large => tokens.typography.body_lg,
+            TextareaSize::Small => typography.text_xs,   // 12px
+            TextareaSize::Medium => typography.text_sm,  // 14px
+            TextareaSize::Large => typography.text_base, // 16px
         }
     }
 }
@@ -125,14 +126,15 @@ impl Textarea {
     /// Build from config
     fn from_config(config: TextareaConfig) -> Self {
         let theme = ThemeState::get();
+        let typography = theme.typography();
 
         // Build the layout TextArea
         let radius = config
             .corner_radius
-            .unwrap_or_else(|| theme.components().control.radius_md);
+            .unwrap_or_else(|| theme.radius(RadiusToken::Md));
 
         let mut ta = text_area(&config.state)
-            .font_size(config.size.font_size(theme))
+            .font_size(config.size.font_size(&typography))
             .rounded(radius)
             .disabled(config.disabled)
             .wrap(config.wrap);
@@ -178,50 +180,61 @@ impl Textarea {
         let ta = ta.class("cn-textarea");
 
         // If no label, description, or error, wrap in a minimal container
-        let inner = if config.label.is_none()
-            && config.description.is_none()
-            && config.error.is_none()
-        {
-            div().child(ta)
-        } else {
-            // Build a container with label, textarea, and description/error
-            let spacing = theme.spacing_value(SpacingToken::Space2);
-            let mut container = div().flex_col().gap_px(spacing).h_fit();
-
-            // Apply width to container
-            if config.full_width {
-                container = container.w_full();
-            } else if let Some(w) = config.width {
-                container = container.w(w);
-            }
-
-            // Label
-            if let Some(ref label_text) = config.label {
-                let mut lbl = label(label_text).size(LabelSize::Medium);
-                if config.required {
-                    lbl = lbl.required();
+        let inner =
+            if config.label.is_none() && config.description.is_none() && config.error.is_none() {
+                // Apply width to the wrapper div too — without this,
+                // a user's `.w(N)` setter constrains the inner ta but
+                // the wrapper stretches to fill its flex parent. The
+                // layout_style forward on Textarea/TextareaBuilder
+                // surfaces the wrapper's style to the parent, so the
+                // wrapper must carry the width for it to take effect.
+                let mut wrapper = div().child(ta);
+                if let Some(w) = config.width {
+                    wrapper = wrapper.w(w);
+                } else if config.full_width {
+                    wrapper = wrapper.w_full();
                 }
-                if config.disabled {
-                    lbl = lbl.disabled(true);
+                wrapper
+            } else {
+                // Build a container with label, textarea, and description/error
+                let spacing = theme.spacing_value(SpacingToken::Space2);
+                let mut container = div().flex_col().gap_px(spacing).h_fit();
+
+                // Apply width to container
+                if config.full_width {
+                    container = container.w_full();
+                } else if let Some(w) = config.width {
+                    container = container.w(w);
                 }
-                container = container.child(lbl);
-            }
 
-            // Textarea (added directly — TextArea has the cn-textarea class)
-            container = container.child(ta);
+                // Label
+                if let Some(ref label_text) = config.label {
+                    let mut lbl = label(label_text).size(LabelSize::Medium);
+                    if config.required {
+                        lbl = lbl.required();
+                    }
+                    if config.disabled {
+                        lbl = lbl.disabled(true);
+                    }
+                    container = container.child(lbl);
+                }
 
-            // Error or description
-            let helper_size = theme.components().typography.helper;
-            if let Some(ref error_text) = config.error {
-                let error_color = theme.color(ColorToken::Error);
-                container = container.child(text(error_text).size(helper_size).color(error_color));
-            } else if let Some(ref desc_text) = config.description {
-                let desc_color = theme.color(ColorToken::TextTertiary);
-                container = container.child(text(desc_text).size(helper_size).color(desc_color));
-            }
+                // Textarea (added directly — TextArea has the cn-textarea class)
+                container = container.child(ta);
 
-            container
-        };
+                // Error or description
+                if let Some(ref error_text) = config.error {
+                    let error_color = theme.color(ColorToken::Error);
+                    container = container
+                        .child(text(error_text).size(typography.text_xs).color(error_color));
+                } else if let Some(ref desc_text) = config.description {
+                    let desc_color = theme.color(ColorToken::TextTertiary);
+                    container =
+                        container.child(text(desc_text).size(typography.text_xs).color(desc_color));
+                }
+
+                container
+            };
 
         Self { inner }
     }
@@ -262,6 +275,14 @@ impl ElementBuilder for Textarea {
 
     fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.inner.element_classes()
+    }
+
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        ElementBuilder::event_handlers(&self.inner)
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        ElementBuilder::element_id(&self.inner)
     }
 }
 
@@ -421,6 +442,14 @@ impl ElementBuilder for TextareaBuilder {
     fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.get_or_build().element_classes()
     }
+
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        ElementBuilder::event_handlers(self.get_or_build())
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        ElementBuilder::element_id(self.get_or_build())
+    }
 }
 
 /// Create a styled textarea component
@@ -454,8 +483,7 @@ mod tests {
 
     #[test]
     fn test_textarea_size_values() {
-        init_theme();
-        let theme = ThemeState::get();
+        let typography = TypographyTokens::default();
 
         // Default rows for each size
         assert_eq!(TextareaSize::Small.default_rows(), 3);
@@ -464,16 +492,16 @@ mod tests {
 
         // Font sizes
         assert_eq!(
-            TextareaSize::Small.font_size(theme),
-            theme.components().typography.body_sm
+            TextareaSize::Small.font_size(&typography),
+            typography.text_xs
         );
         assert_eq!(
-            TextareaSize::Medium.font_size(theme),
-            theme.components().typography.body_md
+            TextareaSize::Medium.font_size(&typography),
+            typography.text_sm
         );
         assert_eq!(
-            TextareaSize::Large.font_size(theme),
-            theme.components().typography.body_lg
+            TextareaSize::Large.font_size(&typography),
+            typography.text_base
         );
     }
 

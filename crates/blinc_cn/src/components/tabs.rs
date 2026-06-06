@@ -72,13 +72,13 @@ use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion_derived;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful_with_key, ButtonState, NoState};
+use blinc_layout::stateful::{ButtonState, NoState, stateful_with_key};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_theme::{ColorScheme, ColorToken, RadiusToken, ThemeState};
 
+use blinc_layout::InstanceKey;
 use blinc_layout::selector::query_motion;
 use blinc_layout::stateful::request_redraw;
-use blinc_layout::InstanceKey;
 
 // =============================================================================
 // Tab Transition Tracking (simple cross-fade)
@@ -146,32 +146,29 @@ pub enum TabsSize {
 
 impl TabsSize {
     /// Get the height for the tab list
-    fn height(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn height(&self) -> f32 {
         match self {
-            TabsSize::Small => tokens.control.height_sm,
-            TabsSize::Medium => tokens.control.height_md,
-            TabsSize::Large => tokens.control.height_lg,
+            TabsSize::Small => 32.0,
+            TabsSize::Medium => 40.0,
+            TabsSize::Large => 48.0,
         }
     }
 
     /// Get the font size
-    fn font_size(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn font_size(&self) -> f32 {
         match self {
-            TabsSize::Small => tokens.typography.action_sm,
-            TabsSize::Medium => tokens.typography.action_md,
-            TabsSize::Large => tokens.typography.action_lg,
+            TabsSize::Small => 13.0,
+            TabsSize::Medium => 14.0,
+            TabsSize::Large => 16.0,
         }
     }
 
     /// Get the horizontal padding
-    fn padding_x(&self, theme: &ThemeState) -> f32 {
-        let tokens = theme.components();
+    fn padding_x(&self) -> f32 {
         match self {
-            TabsSize::Small => tokens.control.padding_x_sm,
-            TabsSize::Medium => tokens.control.padding_x_md,
-            TabsSize::Large => tokens.control.padding_x_lg,
+            TabsSize::Small => 12.0,
+            TabsSize::Medium => 16.0,
+            TabsSize::Large => 20.0,
         }
     }
 
@@ -587,16 +584,8 @@ impl TabsBuilder {
             }
         }
 
-        let tab_list_bg = theme.color(ColorToken::SurfaceElevated);
-        let _radius = theme.radius(RadiusToken::Md);
         let content_margin = theme.spacing().space_1;
         let size = config.size;
-
-        let border = if matches!(theme.scheme(), ColorScheme::Dark) {
-            theme.color(ColorToken::Border)
-        } else {
-            Color::TRANSPARENT
-        };
 
         // ========================================
         // Container 1: Tab Button Area
@@ -618,15 +607,9 @@ impl TabsBuilder {
 
                 let mut buttons = div()
                     .class("cn-tabs-list")
-                    .h(size.height(theme))
                     .w_full()
-                    .bg(tab_list_bg)
-                    .rounded_md()
-                    .padding(Length::Px(theme.components().overlay.gap))
                     .flex_row()
-                    .items_center()
-                    .border(1.0, border)
-                    .gap_px(theme.components().compact.cluster_gap_sm);
+                    .items_center();
 
                 for tab in tabs_for_buttons.iter() {
                     let is_active = tab.menu_item.value() == active_value;
@@ -668,7 +651,7 @@ impl TabsBuilder {
 
         let tab_content_area = stateful_with_key::<NoState>(&content_area_key)
             .deps([config.state.signal_id()])
-            .on_state(move |_ctx| {
+            .on_state(move |ctx| {
                 let active_value = state_for_content.get();
 
                 // Update transition tracking (triggers exit animation if tab changed)
@@ -783,18 +766,12 @@ fn build_tab_trigger(
     tab_state: State<String>,
     on_change: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     motion_key: Option<String>,
-) -> impl ElementBuilder {
+) -> impl ElementBuilder + use<> {
     let theme = ThemeState::get();
     let text_primary = theme.color(ColorToken::TextPrimary);
     let text_secondary = theme.color(ColorToken::TextSecondary);
-    let surface = theme.color(ColorToken::SurfaceElevated);
-    let _radius = theme.radius(RadiusToken::Md);
-
     let value = menu_item.value.clone();
     let disabled = menu_item.disabled;
-
-    // Calculate inner height (tab list height minus padding)
-    let inner_height = size.height(theme) - theme.spacing().space_4;
 
     // Clone menu_item data for closure
     let icon_svg = menu_item.icon.clone();
@@ -819,14 +796,6 @@ fn build_tab_trigger(
             text_secondary
         };
 
-        let bg = if is_active && !disabled {
-            surface
-        } else if is_hovered && !disabled {
-            surface.with_alpha(0.5)
-        } else {
-            Color::TRANSPARENT
-        };
-
         // Build content
         let mut content = div().flex_row().items_center().gap(theme.spacing().space_2);
 
@@ -843,7 +812,7 @@ fn build_tab_trigger(
         if let Some(ref label) = label_text {
             content = content.child(
                 text(label)
-                    .size(size.font_size(theme))
+                    .size(size.font_size())
                     .color(text_color)
                     .weight(if is_active {
                         FontWeight::Medium
@@ -860,7 +829,7 @@ fn build_tab_trigger(
             content = content.child(
                 div()
                     .px(theme.spacing().space_1_5)
-                    .py(theme.components().compact.switch_inset)
+                    .py(1.0)
                     .bg(primary)
                     .rounded(theme.radius(RadiusToken::Full))
                     .child(
@@ -883,17 +852,9 @@ fn build_tab_trigger(
         let mut trigger_div = div()
             .class("cn-tabs-trigger")
             .class(trigger_size_class)
-            .h(inner_height)
-            .padding_x(Length::Px(size.padding_x(theme)))
-            .padding_y(Length::Px(
-                size.padding_x(theme) / if size != TabsSize::Small { 2.0 } else { 1.0 },
-            ))
             .flex_row()
             .items_center()
             .justify_center()
-            .when(size == TabsSize::Small, |d| d.rounded_sm())
-            .when(size != TabsSize::Small, |d| d.rounded_md())
-            .bg(bg)
             .cursor(if disabled {
                 CursorStyle::Default
             } else {
@@ -903,7 +864,7 @@ fn build_tab_trigger(
 
         // Add active class for active tab
         if is_active && !disabled {
-            trigger_div = trigger_div.class("cn-tabs-trigger--active").shadow_sm();
+            trigger_div = trigger_div.class("cn-tabs-trigger--active");
         }
 
         // Add disabled class
@@ -994,13 +955,8 @@ mod tests {
 
     #[test]
     fn test_tabs_size() {
-        if ThemeState::try_get().is_none() {
-            ThemeState::init_default();
-        }
-        let theme = ThemeState::get();
-        let tokens = theme.components();
-        assert_eq!(TabsSize::Small.height(theme), tokens.control.height_sm);
-        assert_eq!(TabsSize::Medium.height(theme), tokens.control.height_md);
-        assert_eq!(TabsSize::Large.height(theme), tokens.control.height_lg);
+        assert_eq!(TabsSize::Small.height(), 32.0);
+        assert_eq!(TabsSize::Medium.height(), 40.0);
+        assert_eq!(TabsSize::Large.height(), 48.0);
     }
 }

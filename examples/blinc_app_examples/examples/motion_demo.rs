@@ -14,13 +14,11 @@
 //!
 //! Run with: cargo run -p blinc_app_examples --example motion_demo
 
-#![allow(deprecated)]
-
 use blinc_animation::{AnimationPreset, SpringConfig};
 use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedContext;
 use blinc_core::Color;
-use blinc_layout::motion::{motion, StaggerConfig};
+use blinc_layout::motion::{StaggerConfig, motion};
 use blinc_layout::prelude::stateful_from_handle;
 use blinc_layout::widgets::scroll::Scroll;
 use std::sync::{Arc, Mutex};
@@ -34,7 +32,6 @@ const REFRESH_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" 
 /// The BlincComponent derive generates type-safe animation hooks.
 /// Fields marked with #[animation] generate SharedAnimatedValue accessors.
 #[derive(BlincComponent)]
-#[allow(dead_code)]
 struct PullToRefresh {
     /// Y offset for dragging content down
     #[animation]
@@ -73,7 +70,7 @@ fn main() -> Result<()> {
 
 /// See [`scroll::build_ui`](../scroll/fn.build_ui.html) for the
 /// cross-target example convention this signature follows.
-pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
+pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder + use<> {
     let theme = ThemeState::get();
     div()
         .w(ctx.width)
@@ -247,7 +244,7 @@ fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
     const ARMED_THRESHOLD: f32 = 50.0;
 
     // Get shared FSM state handle
-    let pull_state = ctx.use_state_for("pull_refresh", PullState::Idle);
+    let pull_state = ctx.use_fsm_keyed("pull_refresh", PullState::Idle);
     let pull_state_move = pull_state.clone();
 
     demo_card("Pull to Refresh", "stack + motion").child(
@@ -295,7 +292,7 @@ fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
                 let state = pull_state_move.lock().unwrap().state;
                 if state == PullState::Pulling || state == PullState::Armed {
                     let start_y = *drag_start_move.lock().unwrap();
-                    let delta_y = (ctx.mouse_y - start_y).clamp(0.0, MAX_PULL);
+                    let delta_y = (ctx.mouse_y - start_y).max(0.0).min(MAX_PULL);
 
                     // Content follows drag directly
                     content_offset_on_move
@@ -391,7 +388,7 @@ fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
 
 fn list_item(label: &str) -> Div {
     div()
-        .w(160.0)
+        .w_full()
         .h_fit()
         .p(4.0)
         .bg(Color::rgba(0.5, 0.8, 0.6, 1.0))

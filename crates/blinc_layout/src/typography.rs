@@ -52,7 +52,7 @@
 
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::text::{text, Text};
+use crate::text::{Text, text};
 
 // ============================================================================
 // Heading Sizes Configuration
@@ -86,7 +86,7 @@ enum HeadingWeight {
 /// ```ignore
 /// h1("Page Title").color(Color::WHITE)
 /// ```
-pub fn h1(content: impl ToString) -> Text {
+pub fn h1(content: impl Into<String>) -> Text {
     heading(1, content)
 }
 
@@ -97,7 +97,7 @@ pub fn h1(content: impl ToString) -> Text {
 /// ```ignore
 /// h2("Section Title").color(Color::WHITE)
 /// ```
-pub fn h2(content: impl ToString) -> Text {
+pub fn h2(content: impl Into<String>) -> Text {
     heading(2, content)
 }
 
@@ -108,7 +108,7 @@ pub fn h2(content: impl ToString) -> Text {
 /// ```ignore
 /// h3("Subsection").color(Color::WHITE)
 /// ```
-pub fn h3(content: impl ToString) -> Text {
+pub fn h3(content: impl Into<String>) -> Text {
     heading(3, content)
 }
 
@@ -119,7 +119,7 @@ pub fn h3(content: impl ToString) -> Text {
 /// ```ignore
 /// h4("Minor Section").color(Color::WHITE)
 /// ```
-pub fn h4(content: impl ToString) -> Text {
+pub fn h4(content: impl Into<String>) -> Text {
     heading(4, content)
 }
 
@@ -130,7 +130,7 @@ pub fn h4(content: impl ToString) -> Text {
 /// ```ignore
 /// h5("Small Heading").color(Color::WHITE)
 /// ```
-pub fn h5(content: impl ToString) -> Text {
+pub fn h5(content: impl Into<String>) -> Text {
     heading(5, content)
 }
 
@@ -141,7 +141,7 @@ pub fn h5(content: impl ToString) -> Text {
 /// ```ignore
 /// h6("Smallest Heading").color(Color::WHITE)
 /// ```
-pub fn h6(content: impl ToString) -> Text {
+pub fn h6(content: impl Into<String>) -> Text {
     heading(6, content)
 }
 
@@ -159,7 +159,7 @@ pub fn h6(content: impl ToString) -> Text {
 /// // Equivalent to h2()
 /// heading(2, "Section Title")
 /// ```
-pub fn heading(level: u8, content: impl ToString) -> Text {
+pub fn heading(level: u8, content: impl Into<String>) -> Text {
     let idx = (level.saturating_sub(1).min(5)) as usize;
     let (size, weight) = HEADING_CONFIG[idx];
 
@@ -192,7 +192,7 @@ pub fn heading(level: u8, content: impl ToString) -> Text {
 /// ```ignore
 /// div().child(b("Important")).child(text(" regular text"))
 /// ```
-pub fn b(content: impl ToString) -> Text {
+pub fn b(content: impl Into<String>) -> Text {
     text(content).bold().no_wrap().v_baseline()
 }
 
@@ -203,7 +203,7 @@ pub fn b(content: impl ToString) -> Text {
 /// ```ignore
 /// strong("Very important")
 /// ```
-pub fn strong(content: impl ToString) -> Text {
+pub fn strong(content: impl Into<String>) -> Text {
     b(content)
 }
 
@@ -217,8 +217,8 @@ pub fn strong(content: impl ToString) -> Text {
 /// ```ignore
 /// span("Some text").color(Color::BLUE)
 /// ```
-pub fn span(content: impl ToString) -> Text {
-    text(content).no_wrap().v_baseline()
+pub fn span(content: impl Into<String>) -> Text {
+    text(content).no_wrap().v_baseline().semantic_type("span")
 }
 
 /// Create small text (12px, inline)
@@ -228,7 +228,7 @@ pub fn span(content: impl ToString) -> Text {
 /// ```ignore
 /// small("Fine print").color(Color::GRAY)
 /// ```
-pub fn small(content: impl ToString) -> Text {
+pub fn small(content: impl Into<String>) -> Text {
     text(content).size(12.0).no_wrap().v_baseline()
 }
 
@@ -245,7 +245,7 @@ pub fn small(content: impl ToString) -> Text {
 ///     .child(label("Username"))
 ///     .child(text_input(&state))
 /// ```
-pub fn label(content: impl ToString) -> Text {
+pub fn label(content: impl Into<String>) -> Text {
     text(content).size(14.0).medium().no_wrap().v_baseline()
 }
 
@@ -258,7 +258,7 @@ pub fn label(content: impl ToString) -> Text {
 /// ```ignore
 /// muted("Less important information")
 /// ```
-pub fn muted(content: impl ToString) -> Text {
+pub fn muted(content: impl Into<String>) -> Text {
     let theme = ThemeState::get();
     text(content)
         .color(theme.color(ColorToken::TextSecondary))
@@ -275,8 +275,8 @@ pub fn muted(content: impl ToString) -> Text {
 /// ```ignore
 /// p("This is a paragraph of text that may span multiple lines...")
 /// ```
-pub fn p(content: impl ToString) -> Text {
-    text(content).size(16.0).line_height(1.5)
+pub fn p(content: impl Into<String>) -> Text {
+    text(content).size(16.0).line_height(1.5).semantic_type("p")
 }
 
 /// Create caption text (12px, muted, inline)
@@ -288,7 +288,7 @@ pub fn p(content: impl ToString) -> Text {
 /// ```ignore
 /// caption("Figure 1: Architecture diagram")
 /// ```
-pub fn caption(content: impl ToString) -> Text {
+pub fn caption(content: impl Into<String>) -> Text {
     let theme = ThemeState::get();
     text(content)
         .size(12.0)
@@ -312,7 +312,7 @@ pub fn caption(content: impl ToString) -> Text {
 ///     .child(inline_code("div()"))
 ///     .child(text(" function"))
 /// ```
-pub fn inline_code(content: impl ToString) -> Text {
+pub fn inline_code(content: impl Into<String>) -> Text {
     let theme = ThemeState::get();
     text(content)
         .monospace()
@@ -325,7 +325,7 @@ pub fn inline_code(content: impl ToString) -> Text {
 // Chained Text Helper
 // ============================================================================
 
-use crate::div::{div, Div};
+use crate::div::{Div, div};
 
 /// Create a container for chained inline text elements
 ///

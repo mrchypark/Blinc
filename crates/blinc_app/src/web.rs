@@ -34,7 +34,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState};
@@ -42,10 +42,10 @@ use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::div::Div;
 use blinc_layout::renderer::RenderTree;
 use blinc_layout::selector::ElementRegistry;
-use blinc_layout::widgets::overlay::overlay_manager;
 use blinc_layout::widgets::OverlayManagerExt;
-use wasm_bindgen::closure::Closure;
+use blinc_layout::widgets::overlay::overlay_manager;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::app::{BlincApp, BlincConfig};
 use crate::error::{BlincError, Result};
@@ -303,20 +303,7 @@ where
         ctx: &mut WindowedContext,
         registry: std::sync::Arc<blinc_layout::selector::ElementRegistry>,
     ) -> blinc_layout::renderer::RenderTree {
-        let user_ui = self(ctx);
-        // Compose user UI with overlay layer, mirroring
-        // windowed.rs:3713-3719. The overlay layer is an
-        // absolutely-positioned div that renders modals, toasts,
-        // dropdowns, and context menus on top of the user content.
-        // Without this wrapper, `overlay_manager.show()` pushes
-        // content into the manager but nothing ever renders it.
-        let overlay_layer = ctx.overlay_manager.build_overlay_layer();
-        let composed = Div::new()
-            .w(ctx.width)
-            .h(ctx.height)
-            .relative()
-            .child(user_ui)
-            .child(overlay_layer);
+        let composed = compose_with_overlays(self(ctx), ctx);
         blinc_layout::renderer::RenderTree::from_element_with_registry(&composed, registry)
     }
 
@@ -325,16 +312,45 @@ where
         ctx: &mut WindowedContext,
         tree: &mut blinc_layout::renderer::RenderTree,
     ) -> blinc_layout::UpdateResult {
-        let user_ui = self(ctx);
-        let overlay_layer = ctx.overlay_manager.build_overlay_layer();
-        let composed = Div::new()
-            .w(ctx.width)
-            .h(ctx.height)
-            .relative()
-            .child(user_ui)
-            .child(overlay_layer);
+        let composed = compose_with_overlays(self(ctx), ctx);
         tree.incremental_update(&composed)
     }
+}
+
+/// Compose the user UI with all overlay surfaces (legacy
+/// `overlay_manager`, new `overlay_stack`, `toast_tray`). Mirrors the
+/// per-frame composition done by `windowed.rs`. Without these
+/// children the corresponding manager `.show()` calls push content
+/// into a global manager but nothing ever lands in the tree.
+fn compose_with_overlays<E: blinc_layout::ElementBuilder + 'static>(
+    user_ui: E,
+    ctx: &mut WindowedContext,
+) -> Div {
+    use blinc_layout::overlay_state::{overlay_stack, toast_tray};
+
+    let overlay_layer = ctx.overlay_manager.build_overlay_layer();
+    let stack_layer = match overlay_stack().lock() {
+        Ok(mut s) => {
+            s.set_viewport_with_scale(ctx.width, ctx.height, ctx.scale_factor as f32);
+            s.build_overlay_layer()
+        }
+        Err(_) => Div::new(),
+    };
+    let viewport = (ctx.width, ctx.height);
+    let tray_layer = toast_tray()
+        .lock()
+        .ok()
+        .map(|t| t.build_tray_layer(viewport))
+        .unwrap_or_default();
+
+    Div::new()
+        .w(ctx.width)
+        .h(ctx.height)
+        .relative()
+        .child(user_ui)
+        .child(overlay_layer)
+        .child(stack_layer)
+        .child(tray_layer)
 }
 
 /// User-supplied UI builder, boxed as a trait object so the
@@ -480,7 +496,7 @@ impl WebApp {
     /// without an initialized `ThemeState`.
     fn init_theme() {
         use blinc_theme::{
-            detect_system_color_scheme, platform_theme_bundle, set_redraw_callback, ThemeState,
+            ThemeState, detect_system_color_scheme, platform_theme_bundle, set_redraw_callback,
         };
 
         if ThemeState::try_get().is_none() {
@@ -664,7 +680,8 @@ impl WebApp {
         }
 
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        // Shared process-global reactive graph — see windowed.rs.
+        let reactive: SharedReactiveGraph = blinc_core::reactive::global_graph();
         let hooks = Arc::new(Mutex::new(HookState::new()));
 
         // Initialize the global `BlincContextState` singleton with
@@ -690,8 +707,9 @@ impl WebApp {
                 Arc::clone(&reactive),
                 Arc::clone(&hooks),
                 Arc::clone(&ref_dirty_flag),
-                stateful_callback,
+                stateful_callback.clone(),
             );
+            blinc_core::reactive::set_stateful_deps_notifier(move |ids| stateful_callback(ids));
         }
 
         // Initialize the global ThemeState the same way the desktop /
@@ -1423,18 +1441,28 @@ impl WebApp {
                                 blinc_platform::MouseButton::Left,
                             );
                         }
-                        // Finger lifted — fire `on_gesture_end()` on
-                        // every scroll container in the tree. This is
-                        // the touch sibling of the wheel-idle
-                        // debounce in `run_one_frame`: we have a
-                        // reliable end-of-gesture signal here (touch
-                        // events have no momentum tail in the DOM),
-                        // so any scroll widget that ended its drag
-                        // in rubber-band territory snaps back
-                        // immediately rather than waiting for the
-                        // 180 ms wheel debounce to elapse.
+                        // Finger lifted — fire `on_scroll_end()` on the
+                        // most-recently-scrolled container. This covers
+                        // BOTH cases the touch path needs to handle:
+                        //
+                        // 1. Overscrolled at release → rubber-band snap
+                        //    back (what the older `on_gesture_end()`
+                        //    path did exclusively).
+                        // 2. Released with velocity → transition the
+                        //    scroll FSM to `Decelerating` so the
+                        //    momentum-decay tick loop runs out the
+                        //    flick. `apply_touch_scroll_delta()` has
+                        //    already been accumulating velocity from
+                        //    each `touchmove`; without this call the
+                        //    momentum was computed but never consumed
+                        //    — flicks stopped dead on finger-lift
+                        //    instead of free-scrolling.
+                        //
+                        // iOS (ios.rs:1097) and Android (android.rs:1024)
+                        // both already call `on_scroll_end` on touch-end
+                        // for the same reason. Web was the outlier.
                         if let Some(ref mut tree) = app.current_tree {
-                            tree.on_gesture_end();
+                            tree.on_scroll_end();
                         }
                         // Cancel any armed long-press timer the
                         // user just dismissed by lifting their
@@ -2312,12 +2340,21 @@ impl WebApp {
         let (pending_dx, pending_dy) = self.pending_wheel_delta;
         self.pending_wheel_delta = (0.0, 0.0);
         if pending_dx != 0.0 || pending_dy != 0.0 {
-            const DAMP_EXPONENT: f32 = 0.7;
+            // Pass small (trackpad-sized) deltas straight through so
+            // trackpad scrolling feels native, and only compress the
+            // tail above a threshold so discrete mouse-wheel ticks
+            // don't blast the viewport. Previous behaviour applied a
+            // 0.7 exponent to ALL deltas, which made trackpad scroll
+            // feel noticeably dampier than the desktop runner.
+            const PASSTHROUGH_THRESHOLD: f32 = 40.0;
+            const TAIL_EXPONENT: f32 = 0.85;
             let damp = |d: f32| -> f32 {
-                if d == 0.0 {
-                    0.0
+                let mag = d.abs();
+                if mag <= PASSTHROUGH_THRESHOLD {
+                    d
                 } else {
-                    d.signum() * d.abs().powf(DAMP_EXPONENT)
+                    let tail = (mag - PASSTHROUGH_THRESHOLD).powf(TAIL_EXPONENT);
+                    d.signum() * (PASSTHROUGH_THRESHOLD + tail)
                 }
             };
             Self::dispatch_scroll(self, damp(pending_dx), damp(pending_dy));
@@ -2356,6 +2393,24 @@ impl WebApp {
             self.ctx.scale_factor as f32,
         );
         self.ctx.overlay_manager.update(now);
+        // Tick the new OverlayStack + ToastTray alongside the legacy
+        // manager. Each is the authoritative manager for the widgets
+        // that have already been migrated to it. Mirrors
+        // `windowed.rs:4937-4949`.
+        {
+            use blinc_layout::overlay_state::{overlay_stack, toast_tray};
+            if let Ok(mut s) = overlay_stack().lock() {
+                s.set_viewport_with_scale(
+                    self.ctx.width,
+                    self.ctx.height,
+                    self.ctx.scale_factor as f32,
+                );
+                s.update(now);
+            }
+            if let Ok(mut t) = toast_tray().lock() {
+                t.update(now);
+            }
+        }
 
         if self.ctx.overlay_manager.is_dirty() {
             let registry = self.ctx.element_registry().clone();
@@ -2366,6 +2421,47 @@ impl WebApp {
                 blinc_layout::queue_subtree_rebuild(overlay_node_id, overlay_content);
             }
             self.ctx.overlay_manager.take_dirty();
+        }
+        // Mirror the dirty-check + subtree rebuild for the new
+        // OverlayStack + ToastTray (windowed.rs:4981-5026).
+        {
+            use blinc_layout::overlay_state::{
+                overlay_stack, rebuild_overlay_subtree_if_dirty, toast_tray,
+            };
+            use blinc_layout::widgets::overlay_stack::OVERLAY_STACK_LAYER_ID;
+            use blinc_layout::widgets::toast_tray::TOAST_TRAY_LAYER_ID;
+
+            let registry = self.ctx.element_registry().clone();
+
+            rebuild_overlay_subtree_if_dirty(
+                &registry,
+                OVERLAY_STACK_LAYER_ID,
+                overlay_stack()
+                    .lock()
+                    .map(|s| s.take_dirty())
+                    .unwrap_or(false),
+                || {
+                    overlay_stack()
+                        .lock()
+                        .ok()
+                        .map(|s| s.build_overlay_layer())
+                        .unwrap_or_default()
+                },
+            );
+
+            let viewport = (self.ctx.width, self.ctx.height);
+            rebuild_overlay_subtree_if_dirty(
+                &registry,
+                TOAST_TRAY_LAYER_ID,
+                toast_tray().lock().map(|t| t.take_dirty()).unwrap_or(false),
+                || {
+                    toast_tray()
+                        .lock()
+                        .ok()
+                        .map(|t| t.build_tray_layer(viewport))
+                        .unwrap_or_default()
+                },
+            );
         }
 
         // ─── Phase 1d: rebuild triggers ──────────────────────────
@@ -2394,16 +2490,31 @@ impl WebApp {
         // ─── Phase 2: drain stateful prop/subtree updates ────────
         let has_stateful_updates = blinc_layout::take_needs_redraw();
         let has_pending_rebuilds = blinc_layout::has_pending_subtree_rebuilds();
-        if has_stateful_updates || has_pending_rebuilds {
-            let prop_updates = blinc_layout::take_pending_prop_updates();
+        let has_prop_updates = blinc_layout::has_pending_partial_prop_updates();
+        if has_stateful_updates || has_pending_rebuilds || has_prop_updates {
+            // Drain the unified property channel
+            // ([[project-reactive-architecture-v2]]). Accumulate side
+            // effects so a layout-affecting update forces relayout even
+            // when no subtree rebuild was queued.
+            let prop_updates = blinc_layout::take_pending_partial_prop_updates();
+            let mut prop_effects = blinc_layout::SideEffects::default();
             if let Some(ref mut tree) = self.current_tree {
-                for (node_id, props) in &prop_updates {
-                    tree.update_render_props(*node_id, |p| *p = props.clone());
+                for upd in prop_updates {
+                    prop_effects = prop_effects.or(upd.effects);
+                    if let Some(write) = upd.render_write {
+                        tree.update_render_props(upd.node_id, |p| write(p));
+                    }
+                    if let Some(write) = upd.layout_write {
+                        if let Some(mut style) = tree.layout_tree.get_style(upd.node_id) {
+                            write(&mut style);
+                            tree.layout_tree.set_style(upd.node_id, style);
+                        }
+                    }
                 }
             }
-            let mut needs_relayout = false;
+            let mut needs_relayout = prop_effects.needs_layout;
             if let Some(ref mut tree) = self.current_tree {
-                needs_relayout = tree.process_pending_subtree_rebuilds();
+                needs_relayout |= tree.process_pending_subtree_rebuilds();
             }
             if needs_relayout {
                 if let Some(ref mut tree) = self.current_tree {
@@ -2435,6 +2546,20 @@ impl WebApp {
                 Some(b) => b,
                 None => return Ok(()),
             };
+
+            // Drain any CSS queued via `ThemeBundle::with_css` →
+            // `ThemeState::init`'s `queue_pending_stylesheet`, or
+            // `BlincContextState::queue_stylesheet` from DSL/plugin
+            // code that doesn't see `WindowedContext` directly. The
+            // queue is process-global; we run the drain on the
+            // rebuild path same as `windowed.rs:5228-5234` so
+            // `cn_bundle()` and friends light up identically on web.
+            {
+                let queued = blinc_core::BlincContextState::get().drain_stylesheets();
+                for css in queued {
+                    self.ctx.add_css(&css);
+                }
+            }
 
             blinc_layout::reset_call_counters();
             blinc_layout::clear_stateful_base_updaters();
@@ -2547,16 +2672,29 @@ impl WebApp {
         // `check_stateful_animations` above — they need to land
         // on the current tree before we render this frame.
         {
-            let prop_updates = blinc_layout::take_pending_prop_updates();
+            // Unified property channel drain — same shape as the
+            // pre-paint pass above. Accumulate side effects so a
+            // layout-affecting animation-driven update forces relayout.
+            let prop_updates = blinc_layout::take_pending_partial_prop_updates();
+            let mut animation_prop_effects = blinc_layout::SideEffects::default();
             if let Some(ref mut tree) = self.current_tree {
-                for (node_id, props) in &prop_updates {
-                    tree.update_render_props(*node_id, |p| *p = props.clone());
+                for upd in prop_updates {
+                    animation_prop_effects = animation_prop_effects.or(upd.effects);
+                    if let Some(write) = upd.render_write {
+                        tree.update_render_props(upd.node_id, |p| write(p));
+                    }
+                    if let Some(write) = upd.layout_write {
+                        if let Some(mut style) = tree.layout_tree.get_style(upd.node_id) {
+                            write(&mut style);
+                            tree.layout_tree.set_style(upd.node_id, style);
+                        }
+                    }
                 }
             }
-            if blinc_layout::has_pending_subtree_rebuilds() {
-                let mut needs_relayout = false;
+            if blinc_layout::has_pending_subtree_rebuilds() || animation_prop_effects.needs_layout {
+                let mut needs_relayout = animation_prop_effects.needs_layout;
                 if let Some(ref mut tree) = self.current_tree {
-                    needs_relayout = tree.process_pending_subtree_rebuilds();
+                    needs_relayout |= tree.process_pending_subtree_rebuilds();
                 }
                 if needs_relayout {
                     if let Some(ref mut tree) = self.current_tree {
@@ -2593,7 +2731,7 @@ impl WebApp {
             || !self
                 .current_tree
                 .as_ref()
-                .map_or(true, |t| t.css_transitions_empty())
+                .is_none_or(|t| t.css_transitions_empty())
         {
             if let Some(ref mut tree) = self.current_tree {
                 tree.apply_all_css_animation_props();
@@ -2609,7 +2747,7 @@ impl WebApp {
         // Pointer query (calc(env(pointer-x)) etc.)
         if !self.ctx.pointer_query.is_empty() {
             let (mx, my) = self.ctx.event_router.mouse_position();
-            let is_pressed = self.ctx.event_router.pressed_target().is_some();
+            let is_pressed = self.ctx.event_router.has_pressed_target();
             let dt_sec = dt_ms / 1000.0;
             let time_sec = now as f64 / 1000.0;
             let registry = Arc::clone(self.ctx.element_registry());

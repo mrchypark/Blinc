@@ -13,55 +13,14 @@
 //!   └── wasm/
 //! - assets/          - Static assets
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
 use crate::config::BlincProject;
 
-const ANDROID_NATIVE_BRIDGE_TEMPLATE: &str =
-    include_str!("../../../extensions/blinc_platform_android/templates/BlincNativeBridge.kt");
-const IOS_NATIVE_BRIDGE_TEMPLATE: &str =
-    include_str!("../../../extensions/blinc_platform_ios/templates/BlincNativeBridge.swift");
-
-fn find_blinc_workspace_from(start: &Path) -> Option<String> {
-    start.ancestors().find_map(|ancestor| {
-        let workspace_manifest = ancestor.join("Cargo.toml");
-        let app_manifest = ancestor.join("crates/blinc_app/Cargo.toml");
-        if workspace_manifest.is_file() && app_manifest.is_file() {
-            Some(ancestor.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    })
-}
-
-fn toml_basic_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
-}
-
-fn dependency_path_literal(root: &Path, relative: &str) -> String {
-    toml_basic_string(&root.join(relative).to_string_lossy())
-}
-
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
-    validate_org_name(org)?;
-    let release_artifact_name = name.replace(['-', ' '], "_").to_lowercase();
-
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("assets"))?;
@@ -89,7 +48,7 @@ pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Res
     fs::write(path.join("src/main.blinc"), main_content)?;
 
     // Create platform entry points
-    create_platform_files(path, name, org)?;
+    create_platform_files(path, name)?;
 
     // Create plugins README
     fs::write(
@@ -203,39 +162,6 @@ Edit `.blincproj` to configure:
 - Project metadata (name, version, description)
 - Platform-specific settings (package IDs, SDK versions)
 - Dependencies (plugins, external packages)
-
-## Updater
-
-Add updater settings under `[updates]` in `.blincproj` when you are ready to publish signed releases:
-
-```toml
-[updates]
-enabled = true
-channel = "stable"
-manifest_url = "https://example.com/releases/release-manifest.json"
-public_key = "base64-ed25519-public-key"
-```
-
-- macOS desktop self-update is the current reference path in the shared updater architecture.
-- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
-- Android private/development distribution is supported through APK installer handoff.
-- iOS uses App Store/TestFlight distribution and is excluded from the in-app updater flow.
-
-Generate signed release metadata with the user-callable `blinc release manifest` entry point:
-
-```bash
-blinc release manifest . \
-  --platform macos \
-  --arch universal \
-  --artifact-path dist/{release_artifact_name}.zip \
-  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
-  --public-key-output dist/public-key.txt \
-  --url https://example.com/releases/{release_artifact_name}.zip \
-  --output dist/release-manifest.json \
-  --published-at 2026-03-07T00:00:00Z
-```
-
-Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#,
         ),
     )?;
@@ -244,23 +170,23 @@ Reuse the same --published-at value when appending more artifacts to the same re
 }
 
 /// Create platform-specific files
-fn create_platform_files(path: &Path, name: &str, org: &str) -> Result<()> {
+fn create_platform_files(path: &Path, name: &str) -> Result<()> {
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Android
-    create_android_files(path, name, &package_name, org)?;
+    create_android_files(path, name, &package_name)?;
 
     // iOS
-    create_ios_files(path, name, &package_name, org)?;
+    create_ios_files(path, name, &package_name)?;
 
     // macOS
-    create_macos_files(path, name, &package_name, org)?;
+    create_macos_files(path, name, &package_name)?;
 
     // Windows
     create_windows_files(path, name)?;
 
     // Linux
-    create_linux_files(path, name, &package_name, org)?;
+    create_linux_files(path, name)?;
 
     // WASM/Web
     create_wasm_files(path, name)?;
@@ -268,9 +194,8 @@ fn create_platform_files(path: &Path, name: &str, org: &str) -> Result<()> {
     Ok(())
 }
 
-fn create_android_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
+fn create_android_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
     let android_path = path.join("platforms/android");
-    let package_id = format!("{org}.{package_name}");
 
     // Create basic Android structure
     fs::create_dir_all(android_path.join("app/src/main/java"))?;
@@ -307,11 +232,11 @@ plugins {
 }}
 
 android {{
-    namespace = "{package_id}"
+    namespace = "com.example.{package_name}"
     compileSdk = 35
 
     defaultConfig {{
-        applicationId = "{package_id}"
+        applicationId = "com.example.{package_name}"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -376,7 +301,7 @@ dependencies {{
     )?;
 
     // MainActivity.kt placeholder
-    let package_path = format!("{}/{}", org.replace('.', "/"), package_name);
+    let package_path = format!("com/example/{}", package_name);
     fs::create_dir_all(android_path.join(format!("app/src/main/java/{}", package_path)))?;
     fs::write(
         android_path.join(format!(
@@ -384,7 +309,7 @@ dependencies {{
             package_path
         )),
         format!(
-            r#"package {package_id}
+            r#"package com.example.{package_name}
 
 import android.app.Activity
 import android.os.Bundle
@@ -478,9 +403,8 @@ Edit `app/build.gradle.kts` to modify:
     Ok(())
 }
 
-fn create_ios_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
+fn create_ios_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
     let ios_path = path.join("platforms/ios");
-    let bundle_id = format!("{org}.{package_name}");
 
     // Create Xcode project structure
     let xcodeproj = ios_path.join(format!("{}.xcodeproj", name));
@@ -500,7 +424,7 @@ fn create_ios_files(path: &Path, name: &str, package_name: &str, org: &str) -> R
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>{bundle_id}</string>
+    <string>com.example.{package_name}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -629,9 +553,8 @@ Edit `{name}/Info.plist` to modify:
     Ok(())
 }
 
-fn create_macos_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
+fn create_macos_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
     let macos_path = path.join("platforms/macos");
-    let bundle_id = format!("{org}.{package_name}");
 
     // Info.plist for macOS app bundle
     fs::write(
@@ -646,7 +569,7 @@ fn create_macos_files(path: &Path, name: &str, package_name: &str, org: &str) ->
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>{bundle_id}</string>
+    <string>com.example.{package_name}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -856,15 +779,13 @@ blinc build --target windows --release
     Ok(())
 }
 
-fn create_linux_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
+fn create_linux_files(path: &Path, name: &str) -> Result<()> {
     let linux_path = path.join("platforms/linux");
     let binary_name = name.to_lowercase().replace([' ', '-'], "_");
-    let appstream_id = format!("{org}.{package_name}");
-    let desktop_file_id = format!("{appstream_id}.desktop");
 
     // Desktop entry file
     fs::write(
-        linux_path.join(&desktop_file_id),
+        linux_path.join(format!("{}.desktop", binary_name)),
         format!(
             r#"[Desktop Entry]
 Type=Application
@@ -885,7 +806,7 @@ StartupWMClass={name}
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-    <id>{appstream_id}</id>
+    <id>com.example.{binary_name}</id>
     <name>{name}</name>
     <summary>A Blinc application</summary>
     <metadata_license>CC0-1.0</metadata_license>
@@ -895,7 +816,7 @@ StartupWMClass={name}
             {name} is a cross-platform application built with Blinc.
         </p>
     </description>
-    <launchable type="desktop-id">{desktop_file_id}</launchable>
+    <launchable type="desktop-id">{binary_name}.desktop</launchable>
     <provides>
         <binary>{binary_name}</binary>
     </provides>
@@ -927,12 +848,12 @@ The desktop entry file can be installed to:
 
 ```bash
 # User installation
-cp {desktop_file_id} ~/.local/share/applications/
+cp {binary_name}.desktop ~/.local/share/applications/
 ```
 
 ## Configuration
 
-- `{desktop_file_id}` - Desktop entry for app launchers
+- `{binary_name}.desktop` - Desktop entry for app launchers
 - `{binary_name}.metainfo.xml` - AppStream metadata for software centers
 "#
         ),
@@ -1147,7 +1068,7 @@ pub fn create_plugin_project(path: &Path, name: &str) -> Result<()> {
             r#"[package]
 name = "{}"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
@@ -1171,19 +1092,19 @@ default = []
 //! This plugin can be loaded dynamically or compiled statically.
 
 /// Plugin initialization - called when the plugin is loaded
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn plugin_init() {{
     // Initialize your plugin here
 }}
 
 /// Plugin cleanup - called when the plugin is unloaded
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn plugin_cleanup() {{
     // Clean up resources here
 }}
 
 /// Example exported function
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hello() -> *const std::ffi::c_char {{
     static HELLO: &[u8] = b"Hello from {}!\0";
     HELLO.as_ptr() as *const std::ffi::c_char
@@ -1375,38 +1296,24 @@ fn template_counter(name: &str) -> String {
 /// This creates a native Rust project with Cargo.toml instead of .blinc DSL files.
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
-    validate_rust_project_name(name)?;
-    validate_org_name(org)?;
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
     let blinc_path = std::env::var("BLINC_PATH").unwrap_or_else(|_| {
-        std::env::current_exe()
-            .ok()
-            .as_deref()
-            .and_then(find_blinc_workspace_from)
-            .or_else(|| find_blinc_workspace_from(Path::new(env!("CARGO_MANIFEST_DIR"))))
+        // Try to find the blinc workspace relative to the CLI binary
+        let exe_path = std::env::current_exe().unwrap_or_default();
+        exe_path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "../../..".to_string())
     });
-    let blinc_root = Path::new(&blinc_path);
-    let blinc_app_path = dependency_path_literal(blinc_root, "crates/blinc_app");
-    let blinc_core_path = dependency_path_literal(blinc_root, "crates/blinc_core");
-    let blinc_layout_path = dependency_path_literal(blinc_root, "crates/blinc_layout");
-    let blinc_platform_android_path =
-        dependency_path_literal(blinc_root, "extensions/blinc_platform_android");
-    let blinc_platform_ios_path =
-        dependency_path_literal(blinc_root, "extensions/blinc_platform_ios");
-    let blinc_platform_desktop_path =
-        dependency_path_literal(blinc_root, "extensions/blinc_platform_desktop");
 
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("platforms/android/app/src/main/kotlin/com/blinc"))?;
     fs::create_dir_all(path.join("platforms/ios/BlincApp"))?;
-
-    // Create .blincproj for release and updater workflows
-    let project = BlincProject::new(name).with_all_platforms(name, org);
-    fs::write(path.join(".blincproj"), project.to_toml()?)?;
 
     // Create Cargo.toml
     fs::write(
@@ -1415,7 +1322,7 @@ pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
             r#"[package]
 name = "{package_name}"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "{package_name}"
@@ -1428,23 +1335,23 @@ path = "src/main.rs"
 required-features = ["desktop"]
 
 [dependencies]
-blinc_app = {{ path = {blinc_app_path} }}
-blinc_core = {{ path = {blinc_core_path} }}
-blinc_layout = {{ path = {blinc_layout_path} }}
+blinc_app = {{ path = "{blinc_path}/crates/blinc_app" }}
+blinc_core = {{ path = "{blinc_path}/crates/blinc_core" }}
+blinc_layout = {{ path = "{blinc_path}/crates/blinc_layout" }}
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
-blinc_platform_android = {{ path = {blinc_platform_android_path} }}
+blinc_platform_android = {{ path = "{blinc_path}/extensions/blinc_platform_android" }}
 android-activity = {{ version = "0.6", features = ["native-activity"] }}
 log = "0.4"
 android_logger = "0.14"
 
 [target.'cfg(target_os = "ios")'.dependencies]
-blinc_platform_ios = {{ path = {blinc_platform_ios_path} }}
+blinc_platform_ios = {{ path = "{blinc_path}/extensions/blinc_platform_ios" }}
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
-blinc_platform_desktop = {{ path = {blinc_platform_desktop_path} }}
+blinc_platform_desktop = {{ path = "{blinc_path}/extensions/blinc_platform_desktop" }}
 
 [features]
 default = ["desktop"]
@@ -1484,16 +1391,8 @@ use blinc_app::prelude::*;
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod automation;
-
 /// Counter button with stateful hover/press states
-fn counter_button(
-    id: &'static str,
-    label: &str,
-    count: State<i32>,
-    delta: i32,
-) -> impl ElementBuilder {{
+fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {{
     let label = label.to_string();
 
     let count = count.clone();
@@ -1507,7 +1406,6 @@ fn counter_button(
             }};
 
             div()
-                .id(id)
                 .w(80.0)
                 .h(50.0)
                 .rounded(8.0)
@@ -1527,7 +1425,7 @@ fn counter_display(count: State<i32>) -> impl ElementBuilder {{
     stateful::<NoState>()
         .deps([count.signal_id()])
         .on_state(move |_ctx| {{
-            div().id("counter.value").child(
+            div().child(
                 text(format!("Count: {{}}", count.get()))
                     .size(48.0)
                     .color(Color::rgba(0.4, 0.8, 1.0, 1.0)),
@@ -1548,8 +1446,7 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
         .justify_center()
         .gap(20.0)
         .child(
-            text("Welcome to {name}")
-                .id("app.title")
+            text("{name}")
                 .size(32.0)
                 .color(Color::WHITE),
         )
@@ -1558,8 +1455,8 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
             div()
                 .flex_row()
                 .gap(16.0)
-                .child(counter_button("counter.decrement", "-", count.clone(), -1))
-                .child(counter_button("counter.increment", "+", count.clone(), 1)),
+                .child(counter_button("-", count.clone(), -1))
+                .child(counter_button("+", count.clone(), 1)),
         )
 }}
 
@@ -1572,14 +1469,6 @@ fn main() -> Result<()> {{
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
-    ThemeState::init_default();
-
-    if let Some(failed) = automation::run_generated_automation()? {{
-        if failed {{
-            std::process::exit(2);
-        }}
-        return Ok(());
-    }}
 
     let config = WindowConfig {{
         title: "{name}".to_string(),
@@ -1599,7 +1488,7 @@ fn main() -> Result<()> {{
 use android_activity::AndroidApp;
 
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {{
     use android_logger::Config;
     use log::LevelFilter;
@@ -1626,249 +1515,6 @@ fn main() {{}}
 fn main() {{}}
 "#
         ),
-    )?;
-
-    fs::write(
-        path.join("src/automation.rs"),
-        r#"#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use blinc_app::prelude::*;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use blinc_app::{
-    BlincError, HeadlessRunConfig, HeadlessScenario, Playbook, ReportStatus,
-    run_desktop_harness_playbook, run_desktop_harness_scenario, run_headless_playbook,
-    run_headless_scenario,
-};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::path::Path;
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn next_automation_value<I>(
-    args: &mut std::iter::Peekable<I>,
-    flag: &str,
-) -> Result<String>
-where
-    I: Iterator<Item = String>,
-{
-    if args.peek().map_or(true, |next| next.starts_with("--")) {
-        let msg = match flag {
-            "--scenario" => "--scenario requires a file path",
-            "--playbook" => "--playbook requires a file path",
-            "--report" => "--report requires a file path",
-            _ => "flag requires a file path",
-        };
-        return Err(BlincError::Other(msg.to_string()));
-    }
-
-    Ok(args.next().expect("peeked value should exist"))
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutomationMode {
-    Headless,
-    DesktopHarness,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-enum AutomationArtifact {
-    Scenario(HeadlessScenario),
-    Playbook(Playbook),
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-struct ParsedAutomationArgs {
-    mode: Option<AutomationMode>,
-    artifact: Option<AutomationArtifact>,
-    report: Option<String>,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn run_generated_automation() -> Result<Option<bool>> {
-    let automation = parse_automation_args()?;
-    let Some(mode) = automation.mode else {
-        return Ok(None);
-    };
-    let artifact = automation.artifact.ok_or_else(|| {
-        BlincError::Other("automation requires --scenario or --playbook".to_string())
-    })?;
-    let failed = run_automation_and_report_failure(mode, artifact, automation.report.as_deref())?;
-    Ok(Some(failed))
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub fn run_generated_automation() -> blinc_app::prelude::Result<Option<bool>> {
-    Ok(None)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn parse_automation_args() -> Result<ParsedAutomationArgs> {
-    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
-    let has_automation_flag = raw_args.iter().any(|arg| is_automation_flag(arg));
-    if !has_automation_flag {
-        return Ok(ParsedAutomationArgs {
-            mode: None,
-            artifact: None,
-            report: None,
-        });
-    }
-
-    let mut mode: Option<AutomationMode> = None;
-    let mut scenario: Option<String> = None;
-    let mut playbook: Option<String> = None;
-    let mut report: Option<String> = None;
-
-    let mut args = raw_args.into_iter().peekable();
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--headless" => {
-                if matches!(mode, Some(AutomationMode::DesktopHarness)) {
-                    return Err(BlincError::Other(
-                        "automation accepts either --headless or --desktop-harness, not both"
-                            .to_string(),
-                    ));
-                }
-                mode = Some(AutomationMode::Headless);
-            }
-            "--desktop-harness" => {
-                if matches!(mode, Some(AutomationMode::Headless)) {
-                    return Err(BlincError::Other(
-                        "automation accepts either --headless or --desktop-harness, not both"
-                            .to_string(),
-                    ));
-                }
-                mode = Some(AutomationMode::DesktopHarness);
-            }
-            "--scenario" => {
-                scenario = Some(next_automation_value(&mut args, "--scenario")?);
-            }
-            _ if arg.starts_with("--scenario=") => {
-                scenario = Some(arg["--scenario=".len()..].to_string());
-            }
-            "--playbook" => {
-                playbook = Some(next_automation_value(&mut args, "--playbook")?);
-            }
-            _ if arg.starts_with("--playbook=") => {
-                playbook = Some(arg["--playbook=".len()..].to_string());
-            }
-            "--report" => {
-                report = Some(next_automation_value(&mut args, "--report")?);
-            }
-            _ if arg.starts_with("--report=") => {
-                report = Some(arg["--report=".len()..].to_string());
-            }
-            _ if arg.starts_with("--") => {
-                // Allow app-specific flags or cargo-injected options to coexist
-                // with automation mode selection in generated projects.
-            }
-            _ => {}
-        }
-    }
-
-    if scenario.is_some() && playbook.is_some() {
-        return Err(BlincError::Other(
-            "automation accepts either --scenario or --playbook, not both".to_string(),
-        ));
-    }
-
-    let artifact_base = automation_artifact_base_dir()?;
-    let artifact = match (scenario, playbook) {
-        (Some(path), None) => {
-            let mut scenario = HeadlessScenario::from_path(Path::new(&path))?;
-            scenario.resolve_embedded_paths(&artifact_base);
-            Some(AutomationArtifact::Scenario(scenario))
-        }
-        (None, Some(path)) => {
-            let mut playbook = Playbook::from_path(Path::new(&path))?;
-            playbook.resolve_embedded_paths(&artifact_base);
-            Some(AutomationArtifact::Playbook(playbook))
-        }
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("validated mutually exclusive automation inputs"),
-    };
-
-    if artifact.is_none() && (mode.is_some() || report.is_some()) {
-        return Err(BlincError::Other(
-            "automation requires --scenario or --playbook".to_string(),
-        ));
-    }
-
-    let mode = artifact
-        .as_ref()
-        .map(|_| mode.unwrap_or(AutomationMode::Headless));
-
-    Ok(ParsedAutomationArgs {
-        mode,
-        artifact,
-        report,
-    })
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn is_automation_flag(arg: &str) -> bool {
-    matches!(
-        arg,
-        "--headless" | "--desktop-harness" | "--scenario" | "--playbook" | "--report"
-    ) || arg.starts_with("--scenario=")
-        || arg.starts_with("--playbook=")
-        || arg.starts_with("--report=")
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn automation_artifact_base_dir() -> Result<std::path::PathBuf> {
-    if let Some(invocation_cwd) = std::env::var_os("BLINC_AUTOMATION_INVOCATION_CWD") {
-        return Ok(std::path::PathBuf::from(invocation_cwd));
-    }
-    std::env::current_dir().map_err(|err| BlincError::Other(err.to_string()))
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn run_automation_and_report_failure(
-    mode: AutomationMode,
-    artifact: AutomationArtifact,
-    report_path: Option<&str>,
-) -> Result<bool> {
-    let runtime_cfg = HeadlessRunConfig {
-        width: 400,
-        height: 600,
-        max_frames: 120,
-        tick_ms: 16,
-        probe_every_frames: 4,
-    };
-    let outcome = match (mode, artifact) {
-        (AutomationMode::Headless, AutomationArtifact::Scenario(scenario)) => {
-            run_headless_scenario(runtime_cfg, &scenario, |ctx| crate::app_ui(ctx))?
-        }
-        (AutomationMode::Headless, AutomationArtifact::Playbook(playbook)) => {
-            run_headless_playbook(runtime_cfg, &playbook, |ctx| crate::app_ui(ctx))?
-        }
-        (AutomationMode::DesktopHarness, AutomationArtifact::Scenario(scenario)) => {
-            run_desktop_harness_scenario(runtime_cfg, &scenario, |ctx| crate::app_ui(ctx))?
-        }
-        (AutomationMode::DesktopHarness, AutomationArtifact::Playbook(playbook)) => {
-            run_desktop_harness_playbook(runtime_cfg, &playbook, |ctx| crate::app_ui(ctx))?
-        }
-    };
-
-    let report = &outcome.report;
-    if let Some(path) = report_path {
-        let report_path = Path::new(path);
-        if let Some(parent) = report_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|err| BlincError::Other(err.to_string()))?;
-            }
-        }
-        let mut file = std::fs::File::create(report_path)
-            .map_err(|err| BlincError::Other(err.to_string()))?;
-        report.write_to_writer(&mut file)?;
-    } else {
-        report.write_to_writer(&mut std::io::stdout())?;
-    }
-
-    Ok(matches!(report.status, ReportStatus::Failed))
-}
-"#,
     )?;
 
     // Create blinc.toml
@@ -1952,7 +1598,6 @@ cargo lipo --release
 
 ```
 {name}/
-├── .blincproj          # Project and updater configuration
 ├── Cargo.toml           # Rust project configuration
 ├── blinc.toml           # Blinc toolchain configuration
 ├── src/
@@ -1961,31 +1606,6 @@ cargo lipo --release
     ├── android/         # Android Gradle project
     └── ios/             # iOS Swift files
 ```
-
-## Updater
-
-Add updater settings under `[updates]` in `.blincproj` when you want signed desktop or Android release metadata.
-
-- macOS desktop self-update is the current reference path in the shared updater flow.
-- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
-- Android private/development distribution is supported through APK handoff.
-- iOS uses App Store/TestFlight distribution and is excluded from in-app updater support.
-
-Generate release metadata with:
-
-```bash
-blinc release manifest . \
-  --platform macos \
-  --arch universal \
-  --artifact-path dist/{package_name}.zip \
-  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
-  --public-key-output dist/public-key.txt \
-  --url https://example.com/releases/{package_name}.zip \
-  --output dist/release-manifest.json \
-  --published-at 2026-03-07T00:00:00Z
-```
-
-Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#
         ),
     )?;
@@ -2018,47 +1638,6 @@ Cargo.lock
 .DS_Store
 "#,
     )?;
-
-    Ok(())
-}
-
-fn validate_rust_project_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("Project name cannot be empty");
-    }
-
-    let is_valid = name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '));
-    if !is_valid {
-        bail!(
-            "Invalid project name '{}'. Use only ASCII letters, digits, spaces, '-' or '_'",
-            name
-        );
-    }
-
-    Ok(())
-}
-
-pub(crate) fn validate_org_name(org: &str) -> Result<()> {
-    if org.is_empty() {
-        bail!("Organization name cannot be empty");
-    }
-
-    let is_valid = org.split('.').all(|segment| {
-        let mut chars = segment.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-
-        first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    });
-    if !is_valid {
-        bail!(
-            "Invalid organization name '{}'. Use dot-separated segments that start with ASCII letters and then contain only ASCII letters, digits, or '_'",
-            org
-        );
-    }
 
     Ok(())
 }
@@ -2195,10 +1774,6 @@ tasks.named("preBuild") {{
 
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <application
         android:allowBackup="true"
@@ -2227,19 +1802,13 @@ tasks.named("preBuild") {{
     )?;
 
     // MainActivity.kt
-    let app_package_path = format!(
-        "app/src/main/kotlin/{}/{}",
-        org.replace('.', "/"),
-        package_name
-    );
-    let app_kotlin_path = android_path.join(app_package_path);
-    fs::create_dir_all(&app_kotlin_path)?;
+    let kotlin_path = android_path.join("app/src/main/kotlin/com/blinc");
+    fs::create_dir_all(&kotlin_path)?;
     fs::write(
-        app_kotlin_path.join("MainActivity.kt"),
+        kotlin_path.join("MainActivity.kt"),
         format!(
             r#"package {org}.{package_name}
 
-import com.blinc.BlincNativeBridge
 import android.app.NativeActivity
 import android.os.Bundle
 
@@ -2251,36 +1820,11 @@ class MainActivity : NativeActivity() {{
     }}
 
     override fun onCreate(savedInstanceState: Bundle?) {{
-        BlincNativeBridge.setForegroundActivity(this)
-        BlincNativeBridge.registerDefaults(applicationContext)
         super.onCreate(savedInstanceState)
-    }}
-
-    override fun onResume() {{
-        super.onResume()
-        BlincNativeBridge.setForegroundActivity(this)
-    }}
-
-    override fun onPause() {{
-        BlincNativeBridge.setForegroundActivity(null)
-        super.onPause()
-    }}
-
-    override fun onDestroy() {{
-        BlincNativeBridge.setForegroundActivity(null)
-        super.onDestroy()
     }}
 }}
 "#
         ),
-    )?;
-
-    // BlincNativeBridge.kt
-    let bridge_kotlin_path = android_path.join("app/src/main/kotlin/com/blinc");
-    fs::create_dir_all(&bridge_kotlin_path)?;
-    fs::write(
-        bridge_kotlin_path.join("BlincNativeBridge.kt"),
-        ANDROID_NATIVE_BRIDGE_TEMPLATE,
     )?;
 
     // gradle.properties
@@ -2318,8 +1862,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        BlincNativeBridge.shared.registerDefaults()
-        BlincNativeBridge.shared.connectToRust()
         window = UIWindow(frame: UIScreen.main.bounds)
         window?.rootViewController = BlincViewController()
         window?.makeKeyAndVisible()
@@ -2327,12 +1869,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 "#,
-    )?;
-
-    // BlincNativeBridge.swift
-    fs::write(
-        app_path.join("BlincNativeBridge.swift"),
-        IOS_NATIVE_BRIDGE_TEMPLATE,
     )?;
 
     // BlincMetalView.swift
@@ -2623,12 +2159,6 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
     <true/>
     <key>UIStatusBarHidden</key>
     <true/>
-    <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Blinc uses location to provide GPS-based sensor features.</string>
-    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>Blinc may use location in the background for active sensor sessions.</string>
-    <key>NSMotionUsageDescription</key>
-    <string>Blinc uses motion sensors to collect accelerometer and gyroscope data.</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
@@ -2660,7 +2190,6 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A1000005 /* Metal.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000005; }};
 		A1000006 /* MetalKit.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000006; }};
 		A1000007 /* QuartzCore.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000007; }};
-		A1000008 /* BlincNativeBridge.swift in Sources */ = {{isa = PBXBuildFile; fileRef = A2000010; }};
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -2673,7 +2202,6 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A2000007 /* QuartzCore.framework */ = {{isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; }};
 		A2000008 /* Info.plist */ = {{isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; }};
 		A2000009 /* Blinc-Bridging-Header.h */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Blinc-Bridging-Header.h"; sourceTree = "<group>"; }};
-		A2000010 /* BlincNativeBridge.swift */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlincNativeBridge.swift; sourceTree = "<group>"; }};
 		A3000001 /* BlincApp.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BlincApp.app; sourceTree = BUILT_PRODUCTS_DIR; }};
 /* End PBXFileReference section */
 
@@ -2694,7 +2222,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		}};
 		A5000002 /* BlincApp */ = {{
 			isa = PBXGroup;
-			children = (A2000001, A2000002, A2000003, A2000010, A2000008, A2000009);
+			children = (A2000001, A2000002, A2000003, A2000008, A2000009);
 			path = BlincApp;
 			sourceTree = "<group>";
 		}};
@@ -2751,7 +2279,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A6000002 /* Sources */ = {{
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A1000001, A1000002, A1000003, A1000008);
+			files = (A1000001, A1000002, A1000003);
 			runOnlyForDeploymentPostprocessing = 0;
 		}};
 /* End PBXSourcesBuildPhase section */
@@ -2919,7 +2447,6 @@ cd "$SCRIPT_DIR/../.."
 LIB_NAME="lib{package_name}.a"
 TARGET_ARM64="aarch64-apple-ios"
 TARGET_SIM_ARM64="aarch64-apple-ios-sim"
-TARGET_SIM_X86="x86_64-apple-ios"
 
 BUILD_MODE="${{1:-debug}}"
 CARGO_FLAGS=""
@@ -2940,9 +2467,6 @@ fi
 if ! rustup target list --installed | grep -q "$TARGET_SIM_ARM64"; then
     rustup target add "$TARGET_SIM_ARM64"
 fi
-if ! rustup target list --installed | grep -q "$TARGET_SIM_X86"; then
-    rustup target add "$TARGET_SIM_X86"
-fi
 
 # Build for device and simulator
 echo "Building for device ($TARGET_ARM64)..."
@@ -2951,22 +2475,11 @@ cargo build --features ios $CARGO_FLAGS --target "$TARGET_ARM64"
 echo "Building for simulator ($TARGET_SIM_ARM64)..."
 cargo build --features ios $CARGO_FLAGS --target "$TARGET_SIM_ARM64"
 
-echo "Building for simulator ($TARGET_SIM_X86)..."
-cargo build --features ios $CARGO_FLAGS --target "$TARGET_SIM_X86"
-
 # Copy libraries
 LIBS_DIR="$SCRIPT_DIR/libs"
 mkdir -p "$LIBS_DIR/device" "$LIBS_DIR/simulator"
 cp "target/$TARGET_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/device/"
-cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.arm64"
-cp "target/$TARGET_SIM_X86/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
-
-echo "Creating universal simulator library..."
-lipo -create \
-    "$LIBS_DIR/simulator/$LIB_NAME.arm64" \
-    "$LIBS_DIR/simulator/$LIB_NAME.x86_64" \
-    -output "$LIBS_DIR/simulator/$LIB_NAME"
-rm -f "$LIBS_DIR/simulator/$LIB_NAME.arm64" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
+cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/"
 
 echo ""
 echo "Build complete! Libraries at:"
@@ -3006,983 +2519,10 @@ open BlincApp.xcodeproj
 
 - Xcode 15+
 - iOS 15+ deployment target
-- Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`
+- Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`
 "#
         ),
     )?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn rust_template_contains_headless_diagnostics_branch() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_headless_{nonce}"));
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let main_rs =
-            fs::read_to_string(root.join("src/main.rs")).expect("generated main.rs should exist");
-        let automation_rs = fs::read_to_string(root.join("src/automation.rs"))
-            .expect("generated automation.rs should exist");
-
-        assert!(
-            automation_rs.contains("--headless"),
-            "generated automation module should parse --headless flag"
-        );
-        assert!(
-            automation_rs.contains("parse_automation_args"),
-            "generated automation module should include automation argument parsing"
-        );
-        assert!(
-            automation_rs.contains("is_automation_flag"),
-            "generated automation module should only activate automation parsing when automation flags are present"
-        );
-        assert!(
-            automation_rs.contains("run_headless_scenario"),
-            "generated automation module should wire the automation session runner"
-        );
-        assert!(
-            automation_rs.contains("run_desktop_harness_playbook"),
-            "generated automation module should bridge desktop harness playbook execution"
-        );
-        assert!(
-            automation_rs.contains("fn next_automation_value"),
-            "generated automation module should avoid borrowing args through a capturing closure"
-        );
-        assert!(
-            automation_rs.contains("--playbook"),
-            "generated automation module should parse playbook automation arguments"
-        );
-        assert!(
-            automation_rs.contains("--desktop-harness"),
-            "generated automation module should parse desktop harness mode"
-        );
-        assert!(
-            main_rs.contains("ThemeState::init_default()"),
-            "generated template should initialize theme state before automation"
-        );
-        assert!(
-            main_rs.contains("counter_button(\"counter.increment\""),
-            "generated template should expose stable ids for automation"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn dependency_path_literal_escapes_windows_style_roots_for_toml() {
-        let cargo_toml_path =
-            dependency_path_literal(Path::new(r#"D:\a\Blinc\Blinc"#), "crates/blinc_app");
-        assert!(
-            cargo_toml_path.starts_with(r#""D:\\a\\Blinc\\Blinc"#),
-            "dependency path should escape windows-style roots: {cargo_toml_path}"
-        );
-        assert!(
-            cargo_toml_path.ends_with(r#"crates/blinc_app""#)
-                || cargo_toml_path.ends_with(r#"crates\\blinc_app""#),
-            "dependency path should preserve joined suffix inside TOML string: {cargo_toml_path}"
-        );
-    }
-
-    #[test]
-    fn rust_template_includes_mobile_native_bridge_scaffold() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_bridge_{nonce}"));
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let android_manifest =
-            fs::read_to_string(root.join("platforms/android/app/src/main/AndroidManifest.xml"))
-                .expect("generated AndroidManifest.xml should exist");
-        assert!(
-            android_manifest.contains("android.permission.ACCESS_FINE_LOCATION"),
-            "generated Android manifest should include location permission"
-        );
-        assert!(
-            android_manifest.contains("android.permission.ACTIVITY_RECOGNITION"),
-            "generated Android manifest should include motion permission"
-        );
-
-        let main_activity = fs::read_to_string(
-            root.join("platforms/android/app/src/main/kotlin/com/example/demoapp/MainActivity.kt"),
-        )
-        .expect("generated MainActivity.kt should exist");
-        assert!(
-            main_activity.contains("BlincNativeBridge.registerDefaults"),
-            "generated MainActivity should initialize native bridge defaults"
-        );
-
-        let android_bridge = fs::read_to_string(
-            root.join("platforms/android/app/src/main/kotlin/com/blinc/BlincNativeBridge.kt"),
-        )
-        .expect("generated BlincNativeBridge.kt should exist");
-        assert!(
-            android_bridge.contains("registerString(\"sensor\", \"supported_kinds\")"),
-            "generated Android bridge should expose sensor.supported_kinds"
-        );
-
-        let app_delegate =
-            fs::read_to_string(root.join("platforms/ios/BlincApp/AppDelegate.swift"))
-                .expect("generated AppDelegate.swift should exist");
-        assert!(
-            app_delegate.contains("BlincNativeBridge.shared.connectToRust()"),
-            "generated AppDelegate should connect iOS native bridge"
-        );
-
-        let ios_plist = fs::read_to_string(root.join("platforms/ios/BlincApp/Info.plist"))
-            .expect("generated iOS Info.plist should exist");
-        assert!(
-            ios_plist.contains("NSMotionUsageDescription"),
-            "generated iOS Info.plist should include motion usage description"
-        );
-
-        let ios_bridge =
-            fs::read_to_string(root.join("platforms/ios/BlincApp/BlincNativeBridge.swift"))
-                .expect("generated BlincNativeBridge.swift should exist");
-        assert!(
-            ios_bridge.contains("registerString(namespace: \"sensor\", name: \"supported_kinds\")"),
-            "generated iOS bridge should expose sensor.supported_kinds"
-        );
-
-        let xcodeproj =
-            fs::read_to_string(root.join("platforms/ios/BlincApp.xcodeproj/project.pbxproj"))
-                .expect("generated Xcode project should exist");
-        assert!(
-            xcodeproj.contains("BlincNativeBridge.swift in Sources"),
-            "generated Xcode project should compile BlincNativeBridge.swift"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_compiles_for_desktop_headless() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_headless_compile_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let status = Command::new("cargo")
-            .arg("check")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .status()
-            .expect("generated project should be checked");
-
-        assert!(
-            status.success(),
-            "generated rust project should compile for desktop headless mode"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_runs_real_headless_click_scenario() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_headless_run_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let scenario_path = root.join("scenario.json");
-        fs::write(
-            &scenario_path,
-            r#"{
-  "steps": [
-    {"type":"click","id":"counter.increment"},
-    {"type":"assert_text_contains","id":"counter.value","value":"Count: 1"}
-  ]
-}"#,
-        )
-        .expect("scenario fixture should be written");
-
-        let report_path = root.join("report.json");
-        let status = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--headless")
-            .arg("--scenario")
-            .arg(&scenario_path)
-            .arg("--report")
-            .arg(&report_path)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&root)
-            .status()
-            .expect("generated project should run headless scenario");
-
-        assert!(
-            status.success(),
-            "generated app should pass real click scenario"
-        );
-
-        let report = fs::read_to_string(&report_path).expect("report should be written");
-        let report: serde_json::Value =
-            serde_json::from_str(&report).expect("report should be valid json");
-        assert_eq!(
-            report.get("status").and_then(|status| status.as_str()),
-            Some("passed"),
-            "expected passing report"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_runs_playbook_without_explicit_headless_flag() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_playbook_run_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let playbook_path = root.join("playbook.yaml");
-        fs::write(
-            &playbook_path,
-            r#"
-initial_state: idle
-states: [updated]
-transitions:
-  - from: idle
-    event: increment
-    to: updated
-    steps:
-      - type: click
-        id: counter.increment
-      - type: assert_text_contains
-        id: counter.value
-        value: "Count: 1"
-"#,
-        )
-        .expect("playbook fixture should be written");
-
-        let report_path = root.join("playbook-report.json");
-        let status = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg(format!("--playbook={}", playbook_path.display()))
-            .arg(format!("--report={}", report_path.display()))
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&root)
-            .status()
-            .expect("generated project should run playbook automation");
-
-        assert!(
-            status.success(),
-            "generated app should pass playbook automation"
-        );
-
-        let report = fs::read_to_string(&report_path).expect("playbook report should be written");
-        let report: serde_json::Value =
-            serde_json::from_str(&report).expect("playbook report should be valid json");
-        assert_eq!(
-            report.get("status").and_then(|status| status.as_str()),
-            Some("passed"),
-            "expected passing playbook report"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_resolves_relative_automation_paths_from_process_cwd() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let workspace = std::env::temp_dir().join(format!("blinc_cli_relative_paths_{nonce}"));
-        let root = workspace.join("DemoApp");
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let playbook_path = workspace.join("login.yaml");
-        fs::write(
-            &playbook_path,
-            r#"
-initial_state: idle
-states: [updated]
-transitions:
-  - from: idle
-    event: increment
-    to: updated
-    steps:
-      - type: click
-        id: counter.increment
-      - type: assert_text_contains
-        id: counter.value
-        value: "Count: 1"
-"#,
-        )
-        .expect("playbook fixture should be written");
-
-        let report_rel = Path::new("reports/playbook-report.json");
-        let status = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--playbook")
-            .arg("login.yaml")
-            .arg("--report")
-            .arg(report_rel)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&workspace)
-            .status()
-            .expect("generated project should run playbook automation from caller cwd");
-
-        assert!(
-            status.success(),
-            "generated app should pass playbook automation with caller-relative paths"
-        );
-
-        let report_path = workspace.join(report_rel);
-        let report = fs::read_to_string(&report_path).expect("playbook report should be written");
-        let report: serde_json::Value =
-            serde_json::from_str(&report).expect("playbook report should be valid json");
-        assert_eq!(
-            report.get("status").and_then(|status| status.as_str()),
-            Some("passed"),
-            "expected passing playbook report"
-        );
-
-        let _ = fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    fn generated_rust_template_desktop_harness_writes_relative_snapshot_and_trace_artifacts() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let workspace = std::env::temp_dir().join(format!("blinc_cli_desktop_harness_{nonce}"));
-        let root = workspace.join("DemoApp");
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let scenario_path = workspace.join("scenario.json");
-        fs::write(
-            &scenario_path,
-            r#"{
-  "steps": [
-    {"type":"click","id":"counter.increment"},
-    {"type":"snapshot","path":"artifacts/tree.json"},
-    {"type":"export_trace","path":"artifacts/trace.json"},
-    {"type":"assert_text_contains","id":"counter.value","value":"Count: 1"}
-  ]
-}"#,
-        )
-        .expect("scenario fixture should be written");
-
-        let report_rel = Path::new("reports/desktop-report.json");
-        let status = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--desktop-harness")
-            .arg("--scenario")
-            .arg("scenario.json")
-            .arg("--report")
-            .arg(report_rel)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&workspace)
-            .status()
-            .expect("generated project should run desktop harness automation");
-
-        assert!(
-            status.success(),
-            "generated app should pass desktop harness automation"
-        );
-
-        let report_path = workspace.join(report_rel);
-        let report = fs::read_to_string(&report_path).expect("desktop harness report should exist");
-        let report: serde_json::Value =
-            serde_json::from_str(&report).expect("report should be valid json");
-        assert_eq!(
-            report.get("status").and_then(|status| status.as_str()),
-            Some("passed"),
-            "expected passing desktop harness report"
-        );
-
-        let snapshot_path = workspace.join("artifacts/tree.json");
-        let snapshot =
-            fs::read_to_string(&snapshot_path).expect("snapshot artifact should be written");
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&snapshot).expect("snapshot should be valid json");
-        assert!(
-            snapshot
-                .get("root_id")
-                .and_then(|root| root.as_str())
-                .is_some_and(|root| !root.is_empty()),
-            "expected a non-empty root id in the snapshot"
-        );
-        assert!(
-            snapshot
-                .get("elements")
-                .and_then(|elements| elements.as_object())
-                .is_some_and(|elements| elements.contains_key("counter.value")),
-            "expected counter.value to appear in the snapshot"
-        );
-
-        let trace_path = workspace.join("artifacts/trace.json");
-        let trace = fs::read_to_string(&trace_path).expect("trace artifact should be written");
-        let trace: serde_json::Value =
-            serde_json::from_str(&trace).expect("trace should be valid json");
-        assert!(
-            trace
-                .get("trace_entries")
-                .and_then(|entries| entries.as_array())
-                .is_some_and(|entries| !entries.is_empty()),
-            "expected trace export to include trace entries"
-        );
-
-        let _ = fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    fn generated_rust_template_ignores_unknown_non_automation_flags() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_unknown_flag_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-        fs::write(root.join("scenario.json"), r#"{"steps":[]}"#)
-            .expect("scenario fixture should be written");
-
-        let output = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--headless")
-            .arg("--scenario")
-            .arg(root.join("scenario.json"))
-            .arg("--app-flag")
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&root)
-            .output()
-            .expect("generated project should ignore non-automation flags");
-
-        assert!(
-            output.status.success(),
-            "generated app should ignore unknown non-automation flags: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_requires_artifact_for_report_flag() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_report_only_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let output = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--report")
-            .arg(root.join("report.json"))
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&root)
-            .output()
-            .expect("generated project should reject report-only automation runs");
-
-        assert!(
-            !output.status.success(),
-            "generated app should fail when report path is provided without an artifact"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("automation requires --scenario or --playbook"),
-            "expected missing artifact error in stderr: {stderr}"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_rejects_conflicting_automation_modes() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_conflicting_modes_{nonce}"));
-        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-        fs::write(root.join("scenario.json"), r#"{"steps":[]}"#)
-            .expect("scenario fixture should be written");
-
-        let output = Command::new("cargo")
-            .arg("run")
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--bin")
-            .arg("demoapp_desktop")
-            .arg("--features")
-            .arg("desktop")
-            .arg("--")
-            .arg("--headless")
-            .arg("--desktop-harness")
-            .arg("--scenario")
-            .arg(root.join("scenario.json"))
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .current_dir(&root)
-            .output()
-            .expect("generated project should reject conflicting automation modes");
-
-        assert!(
-            !output.status.success(),
-            "generated app should fail when both automation mode flags are provided"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("automation accepts either --headless or --desktop-harness, not both"),
-            "expected conflicting mode error in stderr: {stderr}"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_rust_template_avoids_overbroad_automation_prefix_matching() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_exact_flag_match_{nonce}"));
-
-        create_rust_project(&root, "DemoApp", "com.example")
-            .expect("rust project template should be generated");
-
-        let main_rs = fs::read_to_string(root.join("src").join("main.rs"))
-            .expect("generated main.rs should be readable");
-        let automation_rs = fs::read_to_string(root.join("src").join("automation.rs"))
-            .expect("generated automation.rs should be readable");
-        assert!(
-            !main_rs.contains("starts_with(\"--head\")"),
-            "generated template should not hijack unrelated --head* flags"
-        );
-        assert!(
-            !main_rs.contains("starts_with(\"--desk\")"),
-            "generated template should not hijack unrelated --desk* flags"
-        );
-        assert!(
-            !main_rs.contains("starts_with(\"--play\")"),
-            "generated template should not hijack unrelated --play* flags"
-        );
-        assert!(
-            !main_rs.contains("starts_with(\"--scen\")"),
-            "generated template should not hijack unrelated --scen* flags"
-        );
-        assert!(
-            !main_rs.contains("starts_with(\"--report\")"),
-            "generated template should not hijack unrelated --report* flags"
-        );
-        assert!(
-            automation_rs.contains("fn is_automation_flag"),
-            "generated automation module should centralize exact automation flag detection"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn rust_project_rejects_unsafe_name_chars() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_{nonce}"));
-
-        let err = create_rust_project(
-            &root,
-            r#"BadName"; std::process::Command::new("calc").spawn().unwrap(); //"#,
-            "com.example",
-        )
-        .expect_err("unsafe rust template name should be rejected");
-
-        assert!(
-            err.to_string().contains("Invalid project name"),
-            "error should explain project name validation failure"
-        );
-        assert!(
-            !root.exists(),
-            "project directory should not be created when name is rejected"
-        );
-    }
-
-    #[test]
-    fn rust_project_rejects_unsafe_org_chars() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_{nonce}"));
-
-        let err = create_rust_project(
-            &root,
-            "DemoApp",
-            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
-        )
-        .expect_err("unsafe org name should be rejected");
-
-        assert!(
-            err.to_string().contains("Invalid organization name"),
-            "error should explain org name validation failure"
-        );
-        assert!(
-            !root.exists(),
-            "project directory should not be created when org is rejected"
-        );
-    }
-
-    #[test]
-    fn rust_project_rejects_android_invalid_org_segments() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_segment_{nonce}"));
-
-        let err = create_rust_project(&root, "DemoApp", "123.example")
-            .expect_err("android-invalid org segments should be rejected");
-
-        assert!(
-            err.to_string().contains("Invalid organization name"),
-            "error should explain org name validation failure"
-        );
-        assert!(
-            !root.exists(),
-            "project directory should not be created when org is rejected"
-        );
-    }
-
-    #[test]
-    fn non_rust_project_uses_org_for_platform_identifiers() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_org_ids_{nonce}"));
-
-        create_project(&root, "Demo App", "default", "io.blinc.dev")
-            .expect("non-rust project template should be generated");
-
-        let android_gradle =
-            fs::read_to_string(root.join("platforms/android/app/build.gradle.kts"))
-                .expect("generated Android Gradle file should exist");
-        assert!(
-            android_gradle.contains(r#"namespace = "io.blinc.dev.demo_app""#),
-            "generated Android namespace should use the provided org"
-        );
-        assert!(
-            android_gradle.contains(r#"applicationId = "io.blinc.dev.demo_app""#),
-            "generated Android applicationId should use the provided org"
-        );
-
-        let main_activity = fs::read_to_string(
-            root.join("platforms/android/app/src/main/java/io/blinc/dev/demo_app/MainActivity.kt"),
-        )
-        .expect("generated MainActivity.kt should exist under the org package path");
-        assert!(
-            main_activity.contains("package io.blinc.dev.demo_app"),
-            "generated MainActivity should use the provided org in its package declaration"
-        );
-
-        let ios_plist = fs::read_to_string(root.join("platforms/ios/Demo App/Info.plist"))
-            .expect("generated iOS Info.plist should exist");
-        assert!(
-            ios_plist.contains("<string>io.blinc.dev.demo_app</string>"),
-            "generated iOS bundle identifier should use the provided org"
-        );
-
-        let macos_plist = fs::read_to_string(root.join("platforms/macos/Info.plist"))
-            .expect("generated macOS Info.plist should exist");
-        assert!(
-            macos_plist.contains("<string>io.blinc.dev.demo_app</string>"),
-            "generated macOS bundle identifier should use the provided org"
-        );
-
-        let linux_metainfo = fs::read_to_string(root.join("platforms/linux/demo_app.metainfo.xml"))
-            .expect("generated AppStream metadata should exist");
-        assert!(
-            linux_metainfo.contains("<id>io.blinc.dev.demo_app</id>"),
-            "generated AppStream ID should use the provided org"
-        );
-        assert!(
-            linux_metainfo.contains(
-                "<launchable type=\"desktop-id\">io.blinc.dev.demo_app.desktop</launchable>"
-            ),
-            "generated AppStream launchable should point at the org-based desktop file"
-        );
-        assert!(
-            root.join("platforms/linux/io.blinc.dev.demo_app.desktop")
-                .exists(),
-            "generated Linux desktop entry filename should use the org-based identifier"
-        );
-
-        let linux_readme = fs::read_to_string(root.join("platforms/linux/README.md"))
-            .expect("generated Linux README should exist");
-        assert!(
-            linux_readme.contains("cp io.blinc.dev.demo_app.desktop ~/.local/share/applications/"),
-            "generated Linux README should document the org-based desktop entry filename"
-        );
-        assert!(
-            linux_readme
-                .contains("`io.blinc.dev.demo_app.desktop` - Desktop entry for app launchers"),
-            "generated Linux README file list should mention the org-based desktop entry filename"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn generated_project_includes_updater_config_and_release_manifest_guidance() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_updater_guidance_{nonce}"));
-
-        create_project(&root, "Demo App", "default", "io.blinc.dev")
-            .expect("non-rust project template should be generated");
-
-        let readme =
-            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
-        assert!(
-            readme.contains("[updates]"),
-            "generated README should show where updater config lives"
-        );
-        assert!(
-            readme.contains("macOS desktop self-update"),
-            "generated README should scope desktop updater guidance to the current macOS reference path"
-        );
-        assert!(
-            readme.contains("Android private/development distribution"),
-            "generated README should mention Android private updater support"
-        );
-        assert!(
-            readme.contains("iOS uses App Store/TestFlight"),
-            "generated README should explain iOS exclusion from in-app updates"
-        );
-        assert!(
-            readme.contains("Windows/Linux remain planned"),
-            "generated README should clarify that Windows and Linux are not shipped updater backends yet"
-        );
-        assert!(
-            readme.contains("blinc release manifest"),
-            "generated README should mention the user-callable release manifest entry point"
-        );
-        assert!(
-            readme.contains("blinc release manifest . \\"),
-            "generated README should use the positional source argument that the CLI actually exposes"
-        );
-        assert!(
-            !readme.contains("--source ."),
-            "generated README should not document a nonexistent --source flag"
-        );
-        assert!(
-            readme.contains("dist/demo_app.zip"),
-            "generated README should slug artifact filenames so example commands stay valid for names with spaces"
-        );
-        assert!(
-            readme.contains("https://example.com/releases/demo_app.zip"),
-            "generated README should slug artifact URLs so example commands stay valid for names with spaces"
-        );
-        assert!(
-            readme.contains("Reuse the same --published-at value"),
-            "generated README should explain how to append multiple artifacts to one release manifest"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn rust_project_readme_uses_positional_release_source_and_slugged_artifact_names() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_rust_updater_guidance_{nonce}"));
-
-        create_rust_project(&root, "Demo App", "io.blinc.dev")
-            .expect("rust project template should be generated");
-
-        let readme =
-            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
-        assert!(
-            readme.contains("blinc release manifest . \\"),
-            "rust README should use the positional source argument that the CLI actually exposes"
-        );
-        assert!(
-            !readme.contains("--source ."),
-            "rust README should not document a nonexistent --source flag"
-        );
-        assert!(
-            readme.contains("dist/demo_app.zip"),
-            "rust README should slug artifact filenames so example commands stay valid for names with spaces"
-        );
-        assert!(
-            readme.contains("https://example.com/releases/demo_app.zip"),
-            "rust README should slug artifact URLs so example commands stay valid for names with spaces"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn rust_project_scaffold_includes_blincproj_for_release_workflow() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_rust_release_config_{nonce}"));
-
-        create_rust_project(&root, "Demo App", "io.blinc.dev")
-            .expect("rust project template should be generated");
-
-        let project = BlincProject::load_from_dir(&root)
-            .expect("rust project scaffold should include a .blincproj for release commands");
-        assert_eq!(
-            project
-                .platforms
-                .macos
-                .as_ref()
-                .map(|macos| macos.bundle_id.as_str()),
-            Some("io.blinc.dev.demo_app"),
-            "rust scaffold should preserve canonical platform identities in .blincproj"
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn non_rust_project_rejects_unsafe_org_chars() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_{nonce}"));
-
-        let err = create_project(
-            &root,
-            "DemoApp",
-            "default",
-            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
-        )
-        .expect_err("unsafe org name should be rejected for non-rust projects");
-
-        assert!(
-            err.to_string().contains("Invalid organization name"),
-            "error should explain org name validation failure"
-        );
-        assert!(
-            !root.exists(),
-            "project directory should not be created when org is rejected"
-        );
-    }
-
-    #[test]
-    fn non_rust_project_rejects_android_invalid_org_segments() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_segment_{nonce}"));
-
-        let err = create_project(&root, "DemoApp", "default", "123.example")
-            .expect_err("android-invalid org segments should be rejected");
-
-        assert!(
-            err.to_string().contains("Invalid organization name"),
-            "error should explain org name validation failure"
-        );
-        assert!(
-            !root.exists(),
-            "project directory should not be created when org is rejected"
-        );
-    }
 }

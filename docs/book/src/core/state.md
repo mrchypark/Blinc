@@ -522,6 +522,313 @@ is_expanded.update(|v| !v);
 let signal_id = is_expanded.signal_id();
 ```
 
+Prefer the bare auto-keyed form when each call site holds one slot —
+`use_state` (for `State<T>`) and `use_fsm` (for `SharedState<S>`)
+both derive their keys from the caller's source location via
+`#[track_caller]`, so you don't have to invent + thread a string per
+slot. Keyed variants stay around for the cases auto-keying can't
+cover (loops, reusable factories instantiated multiple times from
+the same line).
+
+---
+
+## Reactive Property Bindings
+
+Stateful elements aren't the only way to make UI react to signals.
+Every Blinc element exposes a set of **reactive property setters** that
+accept either an eager value *or* a signal-bound reference at the same
+call site — when the signal changes, only that one property is updated.
+No rebuild, no `on_state` callback, no `.deps([...])`.
+
+This is the channel `.bg(&state)` / `.w(&computed)` / `.opacity(&signal)`
+travel through.
+
+### Signal vs State — what to reach for
+
+Two flavours of reactive value, both wired into the same property-binding
+registry. Pick by creation semantics, not capability — they support the
+same `.get / .set / .update` operations and both work in every reactive
+setter.
+
+| Type | Created via | Lifetime | When to reach for it |
+| --- | --- | --- | --- |
+| **`Signal<T>`** | `signal(initial)`, returned by `use_signal_keyed(...)` | Slotmap-keyed in the process-global graph | `Copy` — capture by value in closures without `.clone()`. Use anywhere; the primitive. |
+| **`State<T>`** | `use_state(initial)`, `use_state_keyed(k, init)` | Hook-keyed slot persisted across rebuilds | UI-component-local state where call-site keying matters. `Clone`. |
+
+Both can be passed to `.bg(...)` etc. interchangeably:
+
+```rust
+let count: Signal<i32> = signal(0);          // bare primitive
+let theme: State<Theme> = use_state(Theme::Dark);  // hook-keyed
+
+div().bg(&theme_color_for(theme)).rounded(&radius_for(count));
+```
+
+> **Migration note:** older code shows `State<T>` everywhere because
+> `Signal<T>` only got its rich API in this release. They're
+> interoperable — mix freely.
+
+### `Reactive<T>` and `IntoReactive<T>`
+
+Reactive setters take `impl IntoReactive<T>`. Four impls cover the
+common cases:
+
+| Pass in | Resolves to | What happens |
+| --- | --- | --- |
+| A value of `T` | `Reactive::Const(T)` | Direct write at build time — no subscription |
+| `&Signal<T>` or `Signal<T>` | `Reactive::Bound(state)` | Registers a subscription on the signal's id; fires on every `.set(...)` |
+| `&State<T>` or `State<T>` | `Reactive::Bound(state)` | Same as `Signal<T>` — same channel |
+| `&Computed<T>` or `Computed<T>` | `Reactive::Computed(c)` | Registers a subscription on the derived id; fires when *any* tracked dependency of the computed changes |
+
+The call site doesn't change — the type of the argument selects the
+behaviour:
+
+```rust
+use blinc_core::reactive::signal;            // bare reactive primitive
+use blinc_core::context_state::use_state;    // hook-keyed
+use blinc_layout::prelude::*;
+
+let bg = signal(Color::from_hex(0x1a1a1a));  // Copy
+let w  = use_state(120.0_f32);                // Clone
+
+div()
+    .bg(bg)         // Signal is Copy — pass by value
+    .w(&w)          // State needs reference (Clone, not Copy)
+    .rounded(8.0)   // eager — no subscription
+```
+
+There is no separate "bound" setter. The eager and bound forms share
+one method name, so you can swap a constant for a signal (or vice
+versa) by changing the argument alone.
+
+### Free functions: `signal()` / `computed()` / `derived()` / `effect()`
+
+Four free functions provide the bare reactive-primitive surface, all
+operating against the process-global reactive graph:
+
+```rust
+use blinc_core::reactive::{signal, computed, derived, effect};
+
+let count: Signal<i32> = signal(0);
+
+// Computed (alias: `derived`). Auto-tracks every signal read inside
+// the closure. Re-fires bindings when any tracked dep changes.
+let doubled = computed(move |g| g.get(count).unwrap_or(0) * 2);
+
+// Side effect — logging, IO, custom integrations.
+let _e = effect(move |g| {
+    println!("count = {}", g.get(count).unwrap_or(0));
+});
+
+// Drives both: bindings re-paint, effect re-prints.
+count.set(5);
+```
+
+`Signal<T>` is `Copy`, so closures capture by value without `.clone()`
+ceremony:
+
+```rust
+let n = signal(0_i32);
+let plus  = button("+").on_click(move |_| n.update(|v| v + 1));
+let minus = button("-").on_click(move |_| n.update(|v| v - 1));
+// Both closures captured `n` by copy — no boilerplate.
+```
+
+### Reactive-aware Div setters
+
+These all take `impl IntoReactive<T>` today:
+
+| Setter | `T` | Channel |
+| --- | --- | --- |
+| `.bg(value)` | `Color` | RenderProps (no relayout) |
+| `.opacity(value)` | `f32` | RenderProps |
+| `.rounded(value)` | `f32` | RenderProps |
+| `.border_color(value)` | `Color` | RenderProps |
+| `.shadow(value)` | `Shadow` | RenderProps |
+| `.transform(value)` | `Transform` | RenderProps |
+| `.scale(value)` | `f32` | RenderProps (composes with existing transform) |
+| `.rotate(value)` / `.rotate_deg(value)` | `f32` | RenderProps |
+| `.transform_width(value)` | `f32` (0..=1) | RenderProps — GPU scale-x, left-pivot. Use for `cn::progress`-style fill animations without relayout |
+| `.bind_transform_from(source, |v| Transform::…)` | any `T` | RenderProps — arbitrary mapper from a signal to a transform |
+| `.w(value)` / `.h(value)` | `f32` | taffy `Style` (triggers relayout) |
+| `.p(value)` | `f32` | taffy `Style` (relayout) |
+| `.gap(value)` | `f32` | taffy `Style` (relayout) |
+
+Visual-only updates skip `compute_layout` entirely — they just patch
+`RenderProps` and request a redraw. Layout-affecting updates patch the
+live `taffy::Style` and schedule one relayout next frame.
+
+### Computed (derived) values
+
+`use_computed(compute)` returns a `Computed<T>` that lazily evaluates
+the closure and auto-tracks every signal it reads. Pass it to a
+reactive setter just like a `State<T>`:
+
+```rust
+use blinc_core::context_state::{use_state, use_computed};
+
+let count = use_state(0_i32);
+let label_color = {
+    let count = count.clone();
+    use_computed(move |_g| {
+        if count.get() > 10 { Color::RED } else { Color::WHITE }
+    })
+};
+
+div()
+    .child(text("Count").color(&label_color))
+    .on_click(move |_| count.update(|n| n + 1))
+```
+
+When `count.set(...)` fires, the registry walks every derived that
+depends on it (here: `label_color`), marks it dirty, and re-fires
+every property binding subscribed to that derived. Only the `text`'s
+colour is patched — no rebuild.
+
+`Computed<T>` exposes `.get()` for ad-hoc reads, but the common case
+is to hand it straight to a setter and let the registry drive it.
+
+### Reactive bindings vs `.deps()` + `on_state`
+
+Both routes "make UI react to a signal". They aren't equivalent —
+pick by what you're updating:
+
+| Use… | When |
+| --- | --- |
+| Reactive setter (`.bg(&state)`, `.w(&state)`, …) | Patching a *single* property on a known element. Cheapest path — no callback, no rebuild |
+| `.deps([…])` + `on_state` | The signal change needs to **restructure** the subtree (different children, different conditional branches) or read multiple signals to produce a Div |
+
+A 1-to-1 mapping (`signal → one property`) belongs in a reactive
+setter. A `1-to-many` or "rebuild this whole region" relationship
+belongs in `on_state`.
+
+### Lifecycle
+
+Reactive bindings register against the `LayoutNodeId` that owns them.
+When `remove_subtree_nodes` drops the node — structural rebuild,
+unmount, conditional removal — `PropertyBindingRegistry::unregister_node`
+evicts every binding for that node so stale subscribers can't fire.
+Cleanup is automatic; you never call `.unsubscribe()`.
+
+---
+
+## Persistent Stateful Handles (`SharedState<S>`)
+
+Blinc has two distinct persistent-state abstractions and the names
+get confusing without context — picking the right one comes down
+to **what you're storing**:
+
+| Abstraction | Returns | Use for | Constructors |
+| --- | --- | --- | --- |
+| **`State<T>`** | A signal-backed slot with `.get()` / `.set()` / `.update()` and a `signal_id()` for `.deps([…])` | Fine-grained reactive values — counters, flags, form fields, anything one place writes and another reads via signals | `use_state(initial)` (bare, `#[track_caller]`), `use_state_keyed(key, init)` |
+| **`SharedState<S>`** | An `Arc<Mutex<StatefulInner<S>>>` — the handle a `Stateful<S>` widget hangs its FSM off of | Stateful UI elements with discrete states (hover / press / drag / custom state machines), shared across call sites or driven from external events | `use_fsm(initial)` (bare, `#[track_caller]`), `use_fsm_keyed(key, initial)` |
+
+> **TL;DR:** `use_state` returns `State<T>` (a signal). `use_fsm`
+> returns `SharedState<S>` (an FSM handle). They are not interchangeable.
+> If you reach for one and the type-checker rejects it, you almost
+> certainly want the other.
+
+When you build a `Stateful<S>` widget outside an `on_state` closure —
+typically because you want to share its FSM with multiple call sites
+or drive it from external events — you need a `SharedState<S>`
+handle that survives UI rebuilds. Two factory functions cover this:
+
+```rust
+use blinc_layout::prelude::*;
+use blinc_layout::stateful::{ButtonState, use_fsm, use_fsm_keyed};
+
+// Bare — keyed by the source location of THIS call via `#[track_caller]`.
+// One slot per source line. Don't use inside a loop.
+let modal_btn   = use_fsm(ButtonState::Idle);
+let toast_btn   = use_fsm(ButtonState::Idle);
+let dialog_btn  = use_fsm(ButtonState::Idle);
+
+// Explicit — keyed by anything `Hash` (string, integer, tuple,
+// InstanceKey, ...). Use this for loops, list items, or reusable
+// component factories called multiple times from the same line.
+for entry in items.iter() {
+    let entry_btn = use_fsm_keyed(entry.id, ButtonState::Idle);
+    // …
+}
+```
+
+The same `Hash` key plus the same `S` always returns the same
+`Arc<Mutex<StatefulInner<S>>>`, so state survives subtree rebuilds —
+the slot lives in the process-wide `BlincContextState` reactive
+graph, not in the layout tree.
+
+### `#[track_caller]` and widget wrappers
+
+`#[track_caller]` is forwarding, not generating. If a widget factory
+is tagged `#[track_caller]` and calls `use_fsm` internally,
+`Location::caller()` returns the **user's** call site, not the
+factory's body. Two distinct call sites give two distinct slots —
+which is what you want for the common case:
+
+```rust
+#[track_caller]
+fn my_button(label: &str) -> impl ElementBuilder {
+    // Forwarded — `use_fsm` sees the caller's source line.
+    let handle = use_fsm(ButtonState::Idle);
+    stateful_from_handle(handle).on_state(/* … */)
+}
+
+fn settings_page() -> impl ElementBuilder {
+    div()
+        .child(my_button("Save"))    // line 42 → unique slot
+        .child(my_button("Cancel"))  // line 43 → unique slot
+}
+```
+
+The loop case is the trap. `#[track_caller]` still forwards the
+caller's location, but every iteration of a loop calls from the
+same line, so every iteration collides on the same slot:
+
+```rust
+// 🚫 BUG — all 5 buttons share one ButtonState handle:
+for i in 0..5 {
+    col = col.child(my_button("Item"));  // line 47, every iteration
+}
+
+// ✅ Pass an explicit per-instance key:
+for i in 0..5 {
+    col = col.child(my_button_keyed(i, "Item"));
+}
+
+#[track_caller]
+fn my_button_keyed(id: u32, label: &str) -> impl ElementBuilder {
+    let handle = use_fsm_keyed(id, ButtonState::Idle);
+    stateful_from_handle(handle).on_state(/* … */)
+}
+```
+
+### Mental model
+
+| Scenario | API | Key |
+| --- | --- | --- |
+| One widget per source line | `use_fsm(initial)` | `(file, line, column)` via `#[track_caller]` |
+| Loop body / `.map()` / repeated factory call | `use_fsm_keyed(k, initial)` | Per-iteration data: index, id, tuple, `InstanceKey` |
+| Different widget types from the same line | `use_fsm(initial)` works | Key is also typed on `SharedState<S>`, so two calls with different `S` from one line still get distinct slots |
+
+The same split exists for plain reactive cells (`State<T>`):
+
+| State type | Bare auto-keyed | Explicit key |
+| --- | --- | --- |
+| `State<T>` (basic reactive value) | `use_state(initial)` | `use_state_keyed(key, init)` |
+| `SharedState<S>` (FSM handle) | `use_fsm(initial)` | `use_fsm_keyed(key, initial)` |
+
+### Why this works across rebuilds
+
+A subtree rebuild replaces layout nodes, but `LayoutNodeId`s aren't
+the identity stateful state hangs off of — that lives in the
+process-wide hooks store, keyed by `(call_site, S)` (or
+`(explicit_key, S)`). Rebuilds tear down and re-mint layout nodes
+but the source location of `use_fsm` doesn't change, so the
+same slot is found on the next call. Combined with `StableNodeId`s
+(which make event routing survive rebuilds), Stateful widgets keep
+their internal FSM state, scoped signals, and registered springs /
+keyframes across every rebuild.
+
 ---
 
 ## Best Practices
@@ -541,3 +848,5 @@ let signal_id = is_expanded.signal_id();
 7. **Custom states for complex flows** - Define your own when built-in types don't fit.
 
 8. **Use `.deps()` for external dependencies** - When `on_state` needs to react to signal changes.
+
+9. **Prefer the bare auto-keyed variant** — `use_state(initial)` for `State<T>`, `use_fsm(initial)` for `SharedState<S>`. Reach for the `_keyed` variants only when one source line produces multiple instances (loops, reusable factories).

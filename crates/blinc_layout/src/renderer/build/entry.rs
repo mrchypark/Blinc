@@ -31,12 +31,16 @@ use crate::tree::LayoutTree;
 use super::super::{RenderTree, UpdateResult};
 
 impl RenderTree {
-    /// Build a render tree from an element builder
+    /// Build a render tree from an element builder.
+    ///
+    /// `build_element` runs the three-phase walk
+    /// (layout-build → mint stable ids → collect render props) so
+    /// callers don't need to call `mint_stable_ids_walk` /
+    /// `auto_fill_animation_stable_keys` separately.
     pub fn from_element<E: ElementBuilder>(element: &E) -> Self {
         let mut tree = Self::new();
-        // Compute tree hash for change detection
         tree.tree_hash = Some(DivHash::compute_element_tree(element));
-        tree.root = Some(tree.build_element(element));
+        tree.build_element(element);
         tree
     }
 
@@ -53,9 +57,8 @@ impl RenderTree {
         registry.clear();
         // Set shared registry BEFORE building so IDs are registered correctly
         tree.element_registry = registry;
-        // Compute tree hash for change detection
         tree.tree_hash = Some(DivHash::compute_element_tree(element));
-        tree.root = Some(tree.build_element(element));
+        tree.build_element(element);
         tree
     }
 
@@ -78,9 +81,18 @@ impl RenderTree {
         // For now, do a full rebuild. Future optimization: use diff for incremental updates
         self.tree_hash = Some(new_hash);
 
-        // Clear existing data that will be repopulated during rebuild
+        // Clear existing data that will be repopulated during rebuild.
+        //
+        // NOT cleared anymore:
+        // - `handler_registry` is now keyed by `StableNodeId`. The
+        //   new build overwrites entries at the same stable id with
+        //   fresh closures (so the registry is never empty at a
+        //   key that survived the rebuild), and
+        //   `sweep_stale_handlers` at the end of `build_element`
+        //   evicts entries whose stable id didn't survive. This
+        //   replaces the destructive wipe that used to churn
+        //   closures on every rebuild.
         self.render_nodes.clear();
-        self.handler_registry = crate::event_handler::HandlerRegistry::new();
         self.element_registry.clear();
         // Clear scroll_refs HashMap (node_id keyed) - it will be repopulated during rebuild
         // but active_scroll_refs persists for process_pending_scroll_refs
@@ -89,9 +101,13 @@ impl RenderTree {
         // Preserve node_states, scroll_offsets, scroll_physics, motion_bindings, active_scroll_refs
         // as these should survive rebuilds
 
-        // Rebuild the layout tree
+        // Rebuild the layout tree. `build_element` runs the three-
+        // phase walk (layout build → mint stable ids → collect
+        // render props), so handlers registered during collect see
+        // their stable ids already and the survival maps stay
+        // coherent.
         self.layout_tree = LayoutTree::new();
-        self.root = Some(self.build_element(element));
+        self.build_element(element);
 
         true
     }
@@ -149,7 +165,10 @@ impl RenderTree {
         // Determine update strategy based on change category
         if changes.children {
             // Children changed - rebuild affected subtrees in place
-            // Walk tree and rebuild nodes with changed children
+            // Walk tree and rebuild nodes with changed children.
+            // `rebuild_children_in_place` runs its own mint pass
+            // between layout-build and collect, so we don't need to
+            // mint again here.
             self.rebuild_changed_subtrees(element, root_id);
             // Also update props for nodes that didn't get rebuilt
             self.update_render_props_in_place(element, root_id);

@@ -9,38 +9,17 @@ Platform abstraction layer for Blinc UI.
 
 ## Overview
 
-`blinc_platform` defines the shared traits and data types used by desktop and
-mobile runtimes. Platform-specific implementations are provided by separate
-crates, and mobile support currently exposes bridge-oriented capability helpers
-in addition to the common abstractions.
+`blinc_platform` defines the traits and types for cross-platform windowing, input handling, and application lifecycle. Platform-specific implementations are provided by separate crates.
 
 ## Features
 
 - **Platform Trait**: Unified API for all platforms
-- **Window Management**: Shared window/config types
-- **Event Loop**: Shared event and callback types
+- **Window Management**: Create, configure, and manage windows
+- **Event Loop**: Handle platform events and callbacks
 - **Input Events**: Mouse, keyboard, touch input
 - **Asset Loading**: Platform-agnostic asset access
-- **Platform Services**: Permissions, Clipboard, Microphone permission, BLE scan runtime
-- **Sensor Runtime**: Unified sensor API now available at `blinc_platform::sensors`
-
-## Platform Services
-
-`blinc_platform` also exposes mobile capability services as thin wrappers around the native bridge:
-
-- `permissions`: unified permission query/request helpers
-- `clipboard`: copy/paste/clear/has-content
-- `microphone`: permission-only helper (`status`, `request`)
-- `ble`: scan configuration, start/stop, status, and result draining
-- `sensors`: migrated typed API previously provided by `blinc_sensors`
 
 ## Traits
-
-## Notes
-
-- Desktop implementations are the most complete consumers of these traits today.
-- Mobile crates also use `blinc_platform` for shared event types and capability
-  wrappers even where a full trait implementation is still evolving.
 
 ### Platform
 

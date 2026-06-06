@@ -13,13 +13,11 @@ Visual debugger application for Blinc UI recordings.
 
 ## Features
 
-- **Element Tree**: Hierarchical view of recorded element trees with selection
-- **UI Preview**: Snapshot preview with cursor/bounds/zoom controls
-- **Inspector Panel**: Selected element properties, locator context, and assertion context
-- **Command Panel**: Recorded automation command stream
-- **Evidence Panel**: Assertions and trace artifacts
-- **Event Timeline**: Play/pause/step/seek/speed controls for recorded sessions and trace markers
-- **Server Import**: Load recording export from a running debug server (`--connect`)
+- **Element Tree**: Hierarchical view of UI elements with diff highlighting
+- **UI Preview**: Visual preview with debug overlays
+- **Inspector Panel**: Detailed element properties and styles
+- **Event Timeline**: Playback controls for recorded events
+- **State Viewer**: Track reactive state changes
 
 ## Installation
 
@@ -36,20 +34,8 @@ cargo build -p blinc_debugger --release
 ## Usage
 
 ```bash
-# Open a recording file (positional)
+# Open a recording file
 blinc-debugger recording.json
-
-# Open a recording file (flag)
-blinc-debugger --file recording.json
-
-# Connect to a running debug server (default app socket mapping)
-blinc-debugger --connect blinc_app
-
-# Connect to an explicit Unix socket path
-blinc-debugger --connect unix:/tmp/blinc/blinc_app.sock
-
-# Connect to a TCP debug server
-blinc-debugger --connect tcp:127.0.0.1:7331
 
 # Or launch and open via UI
 blinc-debugger
@@ -91,11 +77,10 @@ blinc-debugger
 
 ### UI Preview
 
-- Zoom control
-- Cursor overlay
-- Bounds overlay
+- Zoom and pan
+- Debug overlays (bounds, padding, margins)
 - Element highlighting on selection
-- Snapshot metadata (size/element count)
+- Snapshot comparison (before/after)
 
 ### Inspector Panel
 
@@ -109,7 +94,18 @@ blinc-debugger
 
 - Play/pause/step through events
 - Jump to specific timestamp
-- Change playback speed
+- Filter by event type
+- Event details on hover
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Space` | Play/Pause |
+| `←` / `→` | Step backward/forward |
+| `Cmd/Ctrl + O` | Open recording |
+| `Cmd/Ctrl + F` | Search elements |
+| `Escape` | Deselect |
 
 ## Recording Format
 
@@ -117,25 +113,15 @@ The debugger reads JSON files created by `blinc_recorder`:
 
 ```json
 {
-  "config": {
-    "app_name": "my_app"
-  },
+  "version": "1.0",
   "events": [...],
   "snapshots": [...],
-  "trace_entries": [...],
-  "stats": {
-    "total_events": 123,
-    "total_snapshots": 45
+  "metadata": {
+    "app_name": "My App",
+    "recorded_at": "2024-01-01T00:00:00Z"
   }
 }
 ```
-
-`trace_entries` carry command, locator, assertion, and artifact metadata emitted by `blinc_app` automation runs. This lets the debugger correlate:
-
-- the command that was issued
-- which element or locator it resolved to
-- which assertion failed
-- which runtime mode or exported artifact was involved
 
 ## License
 

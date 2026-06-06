@@ -68,8 +68,9 @@ pub use layer::{
     UiNode, Vec2, Vec3,
 };
 pub use reactive::{
-    Derived, DerivedId, DirtyFlag, Effect, EffectId, ReactiveGraph, SharedReactiveGraph, Signal,
-    SignalId, State, StatefulDepsCallback,
+    Computed, Derived, DerivedId, DirtyFlag, Effect, EffectId, ReactiveGraph, SharedReactiveGraph,
+    Signal, SignalId, State, StatefulDepsCallback, computed, derived, effect, global_dirty_flag,
+    global_graph, set_stateful_deps_notifier, signal,
 };
 pub use runtime::BlincReactiveRuntime;
 pub use value::{
@@ -80,13 +81,15 @@ pub use value::{
 // Re-export context types at crate level for convenience
 pub use context::{BlincContext, BlincContextExt};
 pub use context_state::{
-    query, query_motion, request_rebuild, use_signal_keyed, use_state_keyed, AnyElementRegistry,
-    BlincContextState, Bounds, BoundsCallback, ContextResourceOverride, FocusCallback, HookState,
-    MotionAnimationState, MotionStateCallback, ProgrammaticElementEvent, ProgrammaticEventCallback,
-    QueryCallback, RecordedEventAny, RecorderEventCallback, RecorderSnapshotCallback,
-    RecorderUpdateCallback, ScrollBehaviorHint, ScrollBlockHint, ScrollCallback, ScrollInlineHint,
-    ScrollIntoViewOptions, SharedHookState, StateKey, TreeSnapshotAny, UpdateCategory,
+    AnyElementRegistry, BlincContextState, Bounds, BoundsCallback, FocusCallback, HookState,
+    MotionAnimationState, MotionStateCallback, QueryCallback, RecordedEventAny,
+    RecorderEventCallback, RecorderSnapshotCallback, RecorderUpdateCallback, ScrollCallback,
+    SharedHookState, StateKey, TreeSnapshotAny, UpdateCategory, query, query_motion,
+    request_rebuild, use_signal_keyed, use_state_keyed,
 };
+
+/// Short alias for [`BlincContextState`] — the global state singleton.
+pub use context_state::BlincContextState as Context;
 
 // Re-export flow DAG types
 pub use flow::{
@@ -97,13 +100,12 @@ pub use flow::{
 
 // Re-export store types
 pub use store::{
-    clear_all_stores, create_store, create_store_with, get_store_state, kv_delete, kv_get, kv_set,
-    remove_store, set_store_state, update_store_state, KVStore, Store, SubscriptionHandle,
+    KVStore, Store, SubscriptionHandle, clear_all_stores, create_store, create_store_with,
+    get_store_state, kv_delete, kv_get, kv_set, remove_store, set_store_state, update_store_state,
 };
 
 // Re-export native bridge types
 pub use native_bridge::{
-    native_call, native_register, set_platform_adapter, FromNativeValue, IntoNativeArgs,
-    NativeBridgeError, NativeBridgeState, NativeHandler, NativeResult, NativeValue,
-    PlatformAdapter,
+    FromNativeValue, IntoNativeArgs, NativeBridgeError, NativeBridgeState, NativeHandler,
+    NativeResult, NativeValue, PlatformAdapter, native_call, native_register, set_platform_adapter,
 };

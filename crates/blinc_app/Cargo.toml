@@ -18,7 +18,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.5.1" }
-blinc_layout = { path = "../blinc_layout", version = "0.5.1", features = ["recorder"] }
+blinc_layout = { path = "../blinc_layout", version = "0.5.1" }
 blinc_gpu = { path = "../blinc_gpu", version = "0.5.1", default-features = false }
 blinc_svg = { path = "../blinc_svg", version = "0.5.1" }
 blinc_text = { path = "../blinc_text", version = "0.5.1" }
@@ -28,7 +28,17 @@ blinc_animation = { path = "../blinc_animation", version = "0.5.1" }
 blinc_macros = { path = "../blinc_macros", version = "0.5.1" }
 blinc_router = { path = "../blinc_router", version = "0.5.1" }
 blinc_theme = { path = "../blinc_theme", version = "0.5.1" }
-blinc_recorder = { path = "../blinc_recorder", version = "0.5.1" }
+
+# Slotmap — needed to convert `LayoutNodeId` (a slotmap key) to a `u64`
+# routing handle that the GPU side (which doesn't share blinc_layout's
+# slotmap version) can use as a HashMap key for composite-layer
+# scratch batches + textures.
+slotmap = { workspace = true }
+
+# Byte-level access to `GpuPrimitive` slices for the composite-layer
+# texture dirty-tracking hash. `GpuPrimitive` and `aux_data` are
+# already `bytemuck::Pod` upstream; we only need `cast_slice` here.
+bytemuck = { workspace = true }
 
 # GPU
 wgpu.workspace = true
@@ -59,7 +69,6 @@ lru = { workspace = true }
 # Serialization (window state persistence)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml.workspace = true
 
 # File dialogs (desktop only)
 rfd = { version = "0.15", optional = true }
@@ -101,6 +110,25 @@ notify = { workspace = true, optional = true }
 # Desktop platform - exclude mobile/embedded targets
 [target.'cfg(not(any(target_os = "android", target_os = "ios", target_os = "fuchsia")))'.dependencies]
 blinc_platform_desktop = { path = "../../extensions/blinc_platform_desktop", version = "0.5.1", optional = true }
+
+# Linux-only experimental Wayland frame-callback gate. Both deps are
+# already in the transitive tree via winit's smithay-client-toolkit;
+# declaring them here just gives us direct access without bumping
+# the resolver. Version matches what winit 0.30 pulls (~0.31.11 /
+# ~0.3.11 at the time of writing).
+#
+# IMPORTANT: do not add `features = ["client_system"]` on
+# `wayland-backend`. winit uses the default `dlopen` path to load
+# `libwayland-client.so.0` at runtime via `wayland-sys`; enabling
+# `client_system` switches the crate to link-against-libwayland at
+# build time, which feature-unifies into winit and disables its
+# dlopen loader — symptom: `Failed to create event loop: The
+# wayland library could not be loaded` at startup. The
+# `from_foreign_display` constructor we use to share winit's
+# connection works fine with the default loader.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 blinc_platform_android = { path = "../../extensions/blinc_platform_android", version = "0.5.1", optional = true }
@@ -215,6 +243,19 @@ hotkeys = ["global-hotkey"]
 # release builds carry zero overhead even when this feature is
 # on. See `docs/book/src/advanced/hot-reload.md` for the workflow.
 hot-reload = ["subsecond", "tungstenite", "dioxus-cli-config", "notify"]
+# EXPERIMENTAL: hand-rolled Wayland `wl_surface::frame()` gate
+# (Linux only). Mirrors GPUI's pattern — Blinc registers its own
+# frame callbacks via `wayland-client` and only calls
+# `Surface::get_current_texture()` after the compositor delivers
+# `wl_callback::Done`. winit 0.30 implements similar gating via
+# `pre_present_notify`, but some Mesa + Wayland compositors don't
+# deliver Done to winit's internal queue reliably (calloop
+# "non-existence source" WARNs hint at this). When this feature is
+# on, Blinc takes over the gating; `pre_present_notify` is skipped
+# to avoid winit racing our queue. Default off; opt in via
+# `--features wayland-frame-gate`. See module docs in
+# `crates/blinc_app/src/wayland_frame_gate.rs`.
+wayland-frame-gate = ["wayland-client", "wayland-backend"]
 # Umbrella for users who want every desktop convenience surface
 # enabled — matches the pre-split default behaviour.
 windowed-full = ["windowed", "dialogs", "tray", "notifications", "hotkeys"]

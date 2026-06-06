@@ -56,6 +56,11 @@ struct Primitive {
     clip_bounds: vec4<f32>,
     // Clip corner radii (for rounded rect) or (radius_x, radius_y, 0, 0) for ellipse
     clip_radius: vec4<f32>,
+    // Clip corner shape (superellipse n per corner) for the rounded
+    // rect clip — n=1.0 = round (default), 2.0 = squircle, 0.0 = bevel,
+    // -1.0 = scoop. Lets overflow:clip on a squircle parent follow
+    // the same curve as the parent fill instead of a circular cut.
+    clip_corner_shape: vec4<f32>,
     // Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0) in user space
     gradient_params: vec4<f32>,
     // Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - for rotated SDF evaluation
@@ -828,7 +833,7 @@ fn shadow_rounded_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, corner_
 //   clip_radius = shape-specific data
 // The shader applies BOTH the rect scissor AND the shape clip.
 // clip_fade = (top, right, bottom, left) overflow fade distances in pixels
-fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
+fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_corner_shape: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
     var alpha: f32 = 1.0;
 
     if clip_type != 0u {
@@ -837,7 +842,7 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
             case 1u /* CLIP_RECT */: {
                 let clip_origin = clip_bounds.xy;
                 let clip_size = clip_bounds.zw;
-                let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+                let clip_d = sd_shaped_rect(p, clip_origin, clip_size, clip_radius, clip_corner_shape);
                 alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
             }
             case 2u /* CLIP_CIRCLE */: {
@@ -859,12 +864,9 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
                 alpha = scissor_alpha * shape_alpha;
             }
             case 4u /* CLIP_POLYGON */: {
+                // Scissor-only; polygon shape test deferred. See sdf_core.wgsl.
                 let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
-                let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
-                let vertex_count = u32(clip_radius.z);
-                let aux_offset = u32(clip_radius.w);
-                let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
-                alpha = scissor_alpha * shape_alpha;
+                alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
             }
             default: {}
         }
@@ -1057,8 +1059,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Early type filter — discard primitives handled by other split pipelines
     if prim_type != 8u { discard; }
 
-    // Early clip test - discard if completely outside clip region (screen space)
-    let clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, clip_type, prim.clip_fade);
+    // Early clip test - discard if completely outside clip region (screen space).
+    // Polygon shape test deferred until sp is known — see sdf_core.wgsl.
+    var clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, prim.clip_corner_shape, clip_type, prim.clip_fade);
     if clip_alpha < 0.001 {
         discard;
     }
@@ -1085,6 +1088,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let inv_c = -la.z * inv_det;
         let inv_d = la.x * inv_det;
         sp = vec2<f32>(inv_a * rel.x + inv_c * rel.y, inv_b * rel.x + inv_d * rel.y) + center;
+    }
+
+    // CLIP_POLYGON shape test in element-local coords. See sdf_core.wgsl.
+    if clip_type == 4u {
+        let vertex_count = u32(prim.clip_radius.z);
+        let aux_offset = u32(prim.clip_radius.w);
+        let local_p = sp - prim.bounds.xy;
+        let shape_alpha = calculate_polygon_clip_alpha(local_p, vertex_count, aux_offset);
+        clip_alpha = clip_alpha * shape_alpha;
+        if clip_alpha < 0.001 {
+            discard;
+        }
     }
 
     var result = vec4<f32>(0.0);

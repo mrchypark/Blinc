@@ -37,8 +37,8 @@
 //!     .spring(SpringConfig::wobbly())
 //! ```
 
-use blinc_animation::{get_scheduler, AnimatedValue, SpringConfig};
-use blinc_core::{Color, State};
+use blinc_animation::{AnimatedValue, SchedulerHandle, SpringConfig, get_scheduler};
+use blinc_core::{Color, State, Transform};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::RenderProps;
 use blinc_layout::motion::SharedAnimatedValue;
@@ -86,11 +86,6 @@ impl SwitchSize {
             SwitchSize::Large => 24.0,
         }
     }
-
-    /// Get the thumb travel distance for a given track inset.
-    fn thumb_travel(&self, inset: f32) -> f32 {
-        self.track_width() - self.thumb_size() - (inset * 2.0)
-    }
 }
 
 /// Switch component
@@ -122,24 +117,36 @@ impl Switch {
         let track_width = config.size.track_width();
         let track_height = config.size.track_height();
         let thumb_size = config.size.thumb_size();
-        let padding = theme.components().compact.switch_inset;
-        let thumb_travel = config.size.thumb_travel(padding);
+        let padding = 2.0; // Padding from track edge
+        let thumb_travel = track_width - thumb_size - (padding * 2.0);
         let radius = track_height / 2.0; // Fully rounded track
 
         // Get colors
         let on_bg = config
             .on_color
             .unwrap_or_else(|| theme.color(ColorToken::Primary));
-        let off_bg = config
-            .off_color
-            .unwrap_or_else(|| theme.color(ColorToken::Border));
+        // BorderSecondary is a solid pale gray (matches the HID `uni-switch`
+        // reference). `Border` is alpha-based (~10% in light mode) and would
+        // be nearly invisible against the canvas — and disappear entirely
+        // once `--disabled` stacks opacity on top.
+        //
+        // When disabled, switch to `InputBgDisabled` so the track matches
+        // the disabled-button / disabled-select palette. Same tone the user
+        // confirmed reads correctly across the disabled surface family.
+        let off_bg = config.off_color.unwrap_or_else(|| {
+            if config.disabled {
+                theme.color(ColorToken::InputBgDisabled)
+            } else {
+                theme.color(ColorToken::BorderSecondary)
+            }
+        });
         let thumb_color = config
             .thumb_color
             .unwrap_or_else(|| theme.color(ColorToken::TextInverse));
 
         let disabled = config.disabled;
         let on_change = config.on_change.clone();
-        let _on_state = config.on_state.clone();
+        let on_state = config.on_state.clone();
         let on_state_for_click = config.on_state.clone();
         let thumb_anim = config.thumb_anim.clone();
         let thumb_anim_for_click = config.thumb_anim.clone();
@@ -147,13 +154,19 @@ impl Switch {
         let color_anim_for_click = config.color_anim.clone();
 
         // Build background layers outside of on_state so motion bindings are properly registered
-        // Off layer is always visible as the base
-        let off_layer = div()
+        // Off layer is always visible as the base. When disabled, a thin
+        // BorderSecondary outline gives the whole track a defined silhouette
+        // — matches the disabled-button treatment so the whole disabled
+        // surface family reads consistently.
+        let mut off_layer = div()
             .class("cn-switch-track")
             .absolute()
             .inset(0.0)
             .rounded(radius)
             .bg(off_bg);
+        if disabled {
+            off_layer = off_layer.border(1.0, theme.color(ColorToken::BorderSecondary));
+        }
 
         // On layer with animated opacity
         // The motion container must be absolutely positioned and sized to cover the track
@@ -171,13 +184,24 @@ impl Switch {
             .inset(0.0)
             .child(motion().opacity(color_anim).child(on_track_div));
 
-        // Thumb with animated position
-        let thumb_element = div()
+        // Thumb with animated position. A subtle shadow gives the white
+        // thumb definition against the pale track — matches the HID
+        // `uni-switch__thumb` reference and is the main visual cue that
+        // distinguishes an interactive (off / on) switch from a disabled
+        // one. Disabled drops the shadow but adds a thin BorderSecondary
+        // outline so the knob still has a clear silhouette (matches the
+        // disabled-button treatment).
+        let mut thumb_element = div()
             .class("cn-switch-thumb")
             .w(thumb_size)
             .h(thumb_size)
             .rounded(thumb_size / 2.0)
             .bg(thumb_color);
+        if !disabled {
+            thumb_element = thumb_element.shadow_sm();
+        } else {
+            thumb_element = thumb_element.border(1.0, theme.color(ColorToken::BorderSecondary));
+        }
 
         let animated_thumb = motion().translate_x(thumb_anim).child(thumb_element);
 
@@ -198,7 +222,10 @@ impl Switch {
             .child(animated_thumb);
 
         if disabled {
-            switch = switch.class("cn-switch--disabled").opacity(0.5);
+            // No opacity dim — the off-state colors are already correct
+            // for a disabled appearance. The lost thumb shadow above is
+            // what differentiates disabled from interactive-off.
+            switch = switch.class("cn-switch--disabled");
         }
 
         // Add click handler to toggle the state
@@ -242,7 +269,11 @@ impl Switch {
                 .items_center()
                 .cursor_pointer()
                 .child(switch)
-                .child(text(label_text).size(14.0).color(label_color))
+                .child(
+                    text(label_text)
+                        .size(theme.typography().text_sm)
+                        .color(label_color),
+                )
         } else {
             // Wrap single switch in a div for consistent behavior
             div().child(switch)
@@ -310,10 +341,8 @@ struct SwitchConfig {
 impl SwitchConfig {
     fn new(on_state: State<bool>) -> Self {
         let size = SwitchSize::default();
-        let padding = ThemeState::try_get()
-            .map(|theme| theme.components().compact.switch_inset)
-            .unwrap_or(2.0);
-        let thumb_travel = size.thumb_travel(padding);
+        let padding = 2.0;
+        let thumb_travel = size.track_width() - size.thumb_size() - (padding * 2.0);
         let is_on = on_state.get();
         let initial_x = if is_on { thumb_travel } else { 0.0 };
         let initial_color_t = if is_on { 1.0 } else { 0.0 };
@@ -515,8 +544,9 @@ mod tests {
     #[test]
     fn test_thumb_travel() {
         let size = SwitchSize::Medium;
-
-        assert_eq!(size.thumb_travel(2.0), 20.0);
-        assert_eq!(size.thumb_travel(3.0), 18.0);
+        let padding = 2.0;
+        let travel = size.track_width() - size.thumb_size() - (padding * 2.0);
+        // Travel should be: 44 - 20 - 4 = 20
+        assert_eq!(travel, 20.0);
     }
 }

@@ -28,11 +28,11 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use blinc_layout::InstanceKey;
 use blinc_layout::div::{Div, ElementBuilder, ElementTypeId};
 use blinc_layout::element::CursorStyle;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful_with_key, ButtonState};
-use blinc_layout::InstanceKey;
+use blinc_layout::stateful::{ButtonState, stateful_with_key};
 use blinc_theme::{ColorToken, ThemeState};
 
 /// Default separator SVG (chevron right)
@@ -141,7 +141,7 @@ impl Breadcrumb {
     fn from_builder(builder: &BreadcrumbBuilder) -> Self {
         let theme = ThemeState::get();
         let text_primary = theme.color(ColorToken::TextPrimary);
-        let _text_secondary = theme.color(ColorToken::TextSecondary);
+        let text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
 
         let font_size = builder.size.font_size();
@@ -199,11 +199,10 @@ impl Breadcrumb {
                         item_div = item_div.child(
                             div().self_center().child(
                                 text(&label)
-                                    .class("cn-breadcrumb-label")
-                                    .class("cn-truncate")
                                     .size(font_size)
                                     .color(text_color)
-                                    .no_cursor(),
+                                    .no_cursor()
+                                    .no_wrap(),
                             ),
                         );
 
@@ -238,11 +237,10 @@ impl Breadcrumb {
                 item_div = item_div.child(
                     div().self_center().child(
                         text(&item.label)
-                            .class("cn-breadcrumb-label")
-                            .class("cn-truncate")
                             .size(font_size)
                             .color(text_primary)
-                            .medium(),
+                            .medium()
+                            .no_wrap(),
                     ),
                 );
 
@@ -259,10 +257,10 @@ impl Breadcrumb {
                     ),
                     BreadcrumbSeparator::Slash => div()
                         .items_center()
-                        .child(text("/").size(font_size).color(text_tertiary)),
+                        .child(text("/").size(font_size).color(text_tertiary).no_wrap()),
                     BreadcrumbSeparator::Text(s) => div()
                         .items_center()
-                        .child(text(s).size(font_size).color(text_tertiary)),
+                        .child(text(s).size(font_size).color(text_tertiary).no_wrap()),
                     BreadcrumbSeparator::Svg(svg_str) => div()
                         .items_center()
                         .child(svg(svg_str).size(icon_size, icon_size).color(text_tertiary)),

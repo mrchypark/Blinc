@@ -31,40 +31,34 @@ pub mod replay;
 pub mod server;
 pub mod session;
 pub mod testing;
-pub mod trace;
 
 pub use capture::{
-    ChangeCategory, CustomEvent, ElementDiff, ElementSemanticInfo, ElementSnapshot,
-    FocusChangeEvent, HoverEvent, Key, KeyEvent, Modifiers, MouseButton, MouseEvent,
-    MouseMoveEvent, Point, PropertyChange, RecordedEvent, RecordingClock, Rect, ScrollEvent,
-    TextInputEvent, Timestamp, TimestampedEvent, TreeDiff, TreeSnapshot, ViewModelStateEntry,
-    VisualProps, WindowResizeEvent,
+    ChangeCategory, CustomEvent, ElementDiff, ElementSnapshot, FocusChangeEvent, HoverEvent, Key,
+    KeyEvent, Modifiers, MouseButton, MouseEvent, MouseMoveEvent, Point, PropertyChange,
+    RecordedEvent, RecordingClock, Rect, ScrollEvent, TextInputEvent, Timestamp, TimestampedEvent,
+    TreeDiff, TreeSnapshot, VisualProps, WindowResizeEvent,
 };
 pub use replay::{
     EventSimulator, FrameUpdate, ReplayConfig, ReplayPlayer, ReplayState, SimulatedInput,
     VirtualClock,
 };
 pub use server::{
-    start_local_server, start_local_server_named, ClientCommand, DebugServer, DebugServerConfig,
-    ServerHandle, ServerMessage,
+    ClientCommand, DebugServer, DebugServerConfig, ServerHandle, ServerMessage, start_local_server,
+    start_local_server_named,
 };
 pub use session::{
     RecordingConfig, RecordingExport, RecordingSession, SessionState, SessionStats,
     SharedRecordingSession,
 };
 pub use testing::{
-    compare_frames, CapturedFrame, FrameSequence, HeadlessConfig, HeadlessContext,
-    RegressionResult, ScreenshotExporter, TestConfig, TestRunner,
-};
-pub use trace::{
-    TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceEntry, TraceEntryKind,
-    TraceLocatorResolution,
+    CapturedFrame, FrameSequence, HeadlessConfig, HeadlessContext, RegressionResult,
+    ScreenshotExporter, TestConfig, TestRunner, compare_frames,
 };
 
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-// Thread-local storage for the current recorder session.
+/// Thread-local storage for the current recorder session.
 std::thread_local! {
     static RECORDER: RwLock<Option<Arc<SharedRecordingSession>>> = const { RwLock::new(None) };
 }
@@ -77,8 +71,6 @@ pub fn install_recorder(session: Arc<SharedRecordingSession>) {
     RECORDER.with(|r| {
         *r.write() = Some(session);
     });
-    // If context state already exists, wire hooks immediately.
-    install_hooks();
 }
 
 /// Remove the recorder session from the current thread.
@@ -231,7 +223,6 @@ macro_rules! enable_debug_recording {
                 $crate::RecordingConfig::debug(),
             ));
             $crate::install_recorder(session.clone());
-            $crate::install_hooks();
             session.start();
             session
         }
@@ -246,7 +237,6 @@ macro_rules! enable_debug_recording {
     ($config:expr) => {{
         let session = std::sync::Arc::new($crate::SharedRecordingSession::new($config));
         $crate::install_recorder(session.clone());
-        $crate::install_hooks();
         session.start();
         session
     }};

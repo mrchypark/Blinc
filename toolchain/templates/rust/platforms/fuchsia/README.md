@@ -1,28 +1,10 @@
 # Fuchsia Platform Template
 
-This directory contains the deferred Fuchsia template surface for Blinc applications.
+This directory contains templates for building Blinc applications on Fuchsia OS.
 
-For the repo-wide support contract, see
-[`docs/native-readiness.md`](../../../../../docs/native-readiness.md).
-
-## Support Status
-
-Fuchsia is currently `unsupported in-tree`.
-
-- Tier 1: not shipped
-- Tier 2: not shipped
-- Tier 3: not shipped
-
-The files in this directory are kept as scaffolding for future work and for external
-experiments that wire Blinc into a full Fuchsia tree. They should not be treated as
-an officially supported local development path today.
-
-## Reference Workflow
+## Quick Start
 
 ```bash
-# This workflow is currently deferred. The commands below document the intended
-# shape of a future or external integration, not a supported local setup.
-
 # 1. Run the complete setup (SDK + emulator + verification)
 ./scripts/setup-fuchsia-all.sh
 
@@ -57,14 +39,11 @@ fuchsia/
 | `setup-fuchsia-emulator.sh` | Emulator setup |
 | `verify-fuchsia-tools.sh` | Verify installation |
 
-## Deferred Build Workflows
+## Build Workflows
 
-These workflows are design scaffolding, not a support guarantee for the current repo.
+### Option 1: Cargo + Manual Packaging (Recommended for Blinc)
 
-### Option 1: Cargo + Manual Packaging (Reference Only)
-
-This documents one possible external workflow shape for Rust-first Fuchsia
-experiments. It is not a supported in-tree path in the current repository:
+This is the simplest workflow for Rust-first development:
 
 ```bash
 # Build

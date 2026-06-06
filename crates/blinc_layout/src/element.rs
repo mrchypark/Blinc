@@ -997,6 +997,15 @@ pub struct RenderProps {
     pub border_radius_explicit: bool,
     /// Corner shape (superellipse n parameter per corner). Default is ROUND (n=1.0).
     pub corner_shape: CornerShape,
+    /// When `true`, the active theme's [`ShapeTokens`](blinc_theme::ShapeTokens)
+    /// must NOT substitute a squircle exponent onto this element's
+    /// corners even if `corner_shape.is_round()`. Used by floating
+    /// overlay widgets (popovers, dropdown panels, select menus,
+    /// combobox lists) that want their chrome to match the surrounding
+    /// UI's circular corners rather than picking up the theme's
+    /// squircle aesthetic. Default `false`: the paint walker is free
+    /// to substitute per the theme.
+    pub corner_shape_locked: bool,
     /// Border color (None = no border) - used for uniform borders
     pub border_color: Option<Color>,
     /// Border width in pixels - used for uniform borders
@@ -1015,8 +1024,8 @@ pub struct RenderProps {
     pub material: Option<Material>,
     /// Node ID for looking up children
     pub node_id: Option<LayoutNodeId>,
-    /// Drop shadow applied to this element
-    pub shadow: Option<Shadow>,
+    /// Drop shadow stack (empty = none, 1 = single, 2-3 = compound layered shadows)
+    pub shadow: Vec<Shadow>,
     /// Transform applied to this element (translate, scale, rotate)
     pub transform: Option<Transform>,
     /// Opacity (0.0 = transparent, 1.0 = opaque)
@@ -1043,6 +1052,17 @@ pub struct RenderProps {
     /// Whether this is a Stack layer that increments z_layer for proper z-ordering
     /// When true, entering this node increments the DrawContext's z_layer
     pub is_stack_layer: bool,
+    /// Whether this node is the root of an overlay panel (`overlay_stack` layer
+    /// or `toast_tray` layer) that should be routed to the dynamic batch so
+    /// the panel's SDF lands in `composite_frame`'s overlay pass — AFTER the
+    /// static cache (and the static SVG dispatch) is blitted.
+    ///
+    /// Distinct from `is_stack_layer` because the generic `Stack` widget
+    /// (used by e.g. `cn::avatar` for layering a status dot over the avatar
+    /// circle) sets `is_stack_layer: true` for z-counter bumping but is NOT
+    /// an overlay — routing those to the dynamic batch broke the avatar's
+    /// inner SDF / image rendering.
+    pub is_overlay_root: bool,
     /// Cursor style when hovering over this element (None = inherit from parent)
     pub cursor: Option<CursorStyle>,
     /// Whether this element is transparent to hit-testing (pointer-events: none)
@@ -1182,6 +1202,7 @@ impl Default for RenderProps {
             border_radius: CornerRadius::default(),
             border_radius_explicit: false,
             corner_shape: CornerShape::default(),
+            corner_shape_locked: false,
             border_color: None,
             border_width: 0.0,
             border_sides: BorderSides::default(),
@@ -1191,7 +1212,7 @@ impl Default for RenderProps {
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             opacity: 1.0,
             clips_content: false,
@@ -1202,6 +1223,7 @@ impl Default for RenderProps {
             motion_is_suspended: false,
             motion_on_ready_callback: None,
             is_stack_layer: false,
+            is_overlay_root: false,
             cursor: None,
             pointer_events_none: false,
             is_fixed: false,
@@ -1323,9 +1345,15 @@ impl RenderProps {
         }
     }
 
-    /// Set drop shadow
+    /// Set drop shadow (replaces any existing layers).
     pub fn with_shadow(mut self, shadow: Shadow) -> Self {
-        self.shadow = Some(shadow);
+        self.shadow = vec![shadow];
+        self
+    }
+
+    /// Set a compound drop shadow stack.
+    pub fn with_shadow_stack(mut self, shadows: Vec<Shadow>) -> Self {
+        self.shadow = shadows;
         self
     }
 
@@ -1386,8 +1414,8 @@ impl RenderProps {
         }
         // node_id is not merged - keep the original
         // Override shadow if set
-        if other.shadow.is_some() {
-            self.shadow = other.shadow;
+        if !other.shadow.is_empty() {
+            self.shadow = other.shadow.clone();
         }
         // Override transform if set
         if other.transform.is_some() {
@@ -1404,6 +1432,23 @@ impl RenderProps {
         // Override motion if set
         if other.motion.is_some() {
             self.motion = other.motion.clone();
+        }
+        // Override outline if set. Without this the Stateful state-callback's
+        // queue_prop_update path wipes outline_* back to defaults on every
+        // state transition (the callback rebuilds the inner Div with the
+        // outline set, but merge_from doesn't carry it over), which both
+        // dropped the focus ring entirely on focus and — worse — broke
+        // transition replay on the second focus, because the in-flight
+        // CSS transition's interpolated value gets overwritten with the
+        // default (None) on every callback fire.
+        if other.outline_color.is_some() {
+            self.outline_color = other.outline_color;
+        }
+        if other.outline_width > 0.0 {
+            self.outline_width = other.outline_width;
+        }
+        if other.outline_offset != 0.0 {
+            self.outline_offset = other.outline_offset;
         }
     }
 }
@@ -1449,8 +1494,8 @@ pub struct DynRenderProps {
     pub material: Option<Material>,
     /// Node ID for looking up children
     pub node_id: Option<LayoutNodeId>,
-    /// Drop shadow (typically static)
-    pub shadow: Option<Shadow>,
+    /// Drop shadow stack (typically static, 1-3 layers)
+    pub shadow: Vec<Shadow>,
     /// Transform (can be animated)
     pub transform: Option<Transform>,
     /// Opacity (can be static, signal, or spring animated)
@@ -1470,7 +1515,7 @@ impl Default for DynRenderProps {
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             opacity: DynFloat::Static(1.0),
             clips_content: false,
@@ -1496,7 +1541,7 @@ impl DynRenderProps {
             layer: self.layer,
             material: self.material.clone(),
             node_id: self.node_id,
-            shadow: self.shadow,
+            shadow: self.shadow.clone(),
             transform: self.transform.clone(),
             opacity: self.opacity.get(ctx),
             clips_content: self.clips_content,
@@ -1580,8 +1625,8 @@ pub struct ResolvedRenderProps {
     pub material: Option<Material>,
     /// Node ID
     pub node_id: Option<LayoutNodeId>,
-    /// Drop shadow
-    pub shadow: Option<Shadow>,
+    /// Drop shadow stack
+    pub shadow: Vec<Shadow>,
     /// Transform
     pub transform: Option<Transform>,
     /// Opacity (resolved)
@@ -1601,7 +1646,7 @@ impl Default for ResolvedRenderProps {
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
-            shadow: None,
+            shadow: Vec::new(),
             transform: None,
             opacity: 1.0,
             clips_content: false,

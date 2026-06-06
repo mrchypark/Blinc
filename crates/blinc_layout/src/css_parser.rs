@@ -59,15 +59,15 @@ use blinc_core::{
 };
 use blinc_theme::{ColorToken, ThemeState};
 use nom::{
+    Finish, IResult,
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_until, take_while1},
     character::complete::{char, multispace1},
     combinator::{cut, opt, value},
-    error::{context, ParseError as NomParseError, VerboseError, VerboseErrorKind},
+    error::{ParseError as NomParseError, VerboseError, VerboseErrorKind, context},
     multi::many0,
     number::complete::float,
     sequence::{delimited, preceded, tuple},
-    Finish, IResult,
 };
 use tracing::debug;
 
@@ -1001,8 +1001,10 @@ impl CssKeyframes {
             props.outline_offset = Some(offset);
         }
 
-        // Shadow
-        if let Some(shadow) = &style.shadow {
+        // Shadow — keyframe interpolates the FIRST layer only. Multi-layer
+        // animations replace the stack on each tick; sub-layer lerping
+        // would need a Vec<Shadow> in KeyframeProperties (follow-up).
+        if let Some(shadow) = style.shadow.first() {
             props.shadow_params =
                 Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
             props.shadow_color = Some([
@@ -1236,7 +1238,7 @@ impl Default for CssAnimation {
 }
 
 /// Animation timing function
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum AnimationTiming {
     Linear,
     #[default]
@@ -1244,17 +1246,24 @@ pub enum AnimationTiming {
     EaseIn,
     EaseOut,
     EaseInOut,
+    /// Literal `cubic-bezier(x1, y1, x2, y2)` — used when `var(--ease-X)`
+    /// resolves to a custom curve (e.g. theme-supplied semantic easings
+    /// like `--ease-state`, `--ease-spring`, `--ease-sheet`).
+    CubicBezier(f32, f32, f32, f32),
 }
+
+impl Eq for AnimationTiming {}
 
 impl AnimationTiming {
     fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        let trimmed = s.trim().to_lowercase();
+        match trimmed.as_str() {
             "linear" => Some(AnimationTiming::Linear),
             "ease" => Some(AnimationTiming::Ease),
             "ease-in" => Some(AnimationTiming::EaseIn),
             "ease-out" => Some(AnimationTiming::EaseOut),
             "ease-in-out" => Some(AnimationTiming::EaseInOut),
-            _ => None,
+            _ => parse_cubic_bezier(&trimmed),
         }
     }
 
@@ -1273,7 +1282,27 @@ impl AnimationTiming {
             AnimationTiming::EaseIn => Easing::CubicBezier(0.42, 0.0, 1.0, 1.0),
             AnimationTiming::EaseOut => Easing::CubicBezier(0.0, 0.0, 0.58, 1.0),
             AnimationTiming::EaseInOut => Easing::CubicBezier(0.42, 0.0, 0.58, 1.0),
+            AnimationTiming::CubicBezier(a, b, c, d) => Easing::CubicBezier(*a, *b, *c, *d),
         }
+    }
+}
+
+/// Parse a literal `cubic-bezier(x1, y1, x2, y2)` string into an
+/// `AnimationTiming::CubicBezier`. Returns `None` if the input isn't
+/// a well-formed cubic-bezier function call.
+fn parse_cubic_bezier(s: &str) -> Option<AnimationTiming> {
+    let inner = s.strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
+    let parts: Vec<f32> = inner
+        .split(',')
+        .map(|p| p.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if parts.len() == 4 {
+        Some(AnimationTiming::CubicBezier(
+            parts[0], parts[1], parts[2], parts[3],
+        ))
+    } else {
+        None
     }
 }
 
@@ -1350,6 +1379,16 @@ pub struct Stylesheet {
     keyframes: HashMap<String, CssKeyframes>,
     /// Flow DAGs defined with @flow
     flows: HashMap<String, FlowGraph>,
+    /// Identifiers (ids without `#`, classes without `.`) that appear in
+    /// a compound containing `:hover`. Computed at parse time by
+    /// [`Self::index_hover_participants`]; consulted by the windowed
+    /// runner to gate `invalidate_render_cache` on POINTER_ENTER /
+    /// POINTER_LEAVE events. Pre-fix every hover-changing pointer move
+    /// invalidated the compositor's static cache regardless of whether
+    /// the entering / leaving element had any `:hover` styling, which
+    /// made mouse-over-non-hoverable-content drop the fast path on
+    /// every frame.
+    hover_participants: std::collections::HashSet<String>,
 }
 
 impl Stylesheet {
@@ -1405,6 +1444,7 @@ impl Stylesheet {
                 }
                 stylesheet.complex_rules = parsed.complex_rules;
                 stylesheet.index_class_styles();
+                stylesheet.index_hover_participants();
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1482,6 +1522,7 @@ impl Stylesheet {
                 }
                 stylesheet.complex_rules = parsed.complex_rules;
                 stylesheet.index_class_styles();
+                stylesheet.index_hover_participants();
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1563,8 +1604,17 @@ impl Stylesheet {
         state: ElementState,
         style: ElementStyle,
     ) {
-        let key = format!("{}:{}", id.into(), state);
+        let id_str: String = id.into();
+        let key = format!("{}:{}", id_str, state);
         self.styles.insert(key, style);
+        // Keep the hover-participants index live with programmatic
+        // inserts — without this, a runtime-added `#id:hover` style
+        // wouldn't register as a hover-invalidation target and the
+        // first pointer-enter on the element would silently skip the
+        // cache invalidation we need.
+        if state == ElementState::Hover {
+            self.hover_participants.insert(id_str);
+        }
     }
 
     /// Get a style by element ID (without the # prefix)
@@ -1762,6 +1812,71 @@ impl Stylesheet {
         results
     }
 
+    /// Build the [`Self::hover_participants`] set so the windowed runner
+    /// can cheaply decide whether a POINTER_ENTER / POINTER_LEAVE event
+    /// needs to invalidate the compositor cache.
+    ///
+    /// Records every id and class that appears in a compound selector
+    /// containing `State(Hover)` — that is, any rule whose evaluation
+    /// depends on the hover state of that identifier. Walks all three
+    /// rule stores so simple `#id:hover` rules in `styles`, simple
+    /// `.class:hover` rules in `class_styles`, and complex multi-segment
+    /// selectors in `complex_rules` are all covered. Identifiers stripped
+    /// of the leading `#`/`.` so they match what the registry returns.
+    fn index_hover_participants(&mut self) {
+        self.hover_participants.clear();
+
+        // Simple `#id:hover` rules are stored in `styles` with the
+        // composite key `"id:hover"`. Match by suffix and pull out
+        // the id half.
+        for key in self.styles.keys() {
+            if let Some(id) = key.strip_suffix(":hover") {
+                self.hover_participants.insert(id.to_string());
+            }
+        }
+        // Simple `.class:hover` rules are stored in `class_styles` the
+        // same way.
+        for key in self.class_styles.keys() {
+            if let Some(class) = key.strip_suffix(":hover") {
+                self.hover_participants.insert(class.to_string());
+            }
+        }
+        // Complex rules: for each compound containing `State(Hover)`,
+        // record every id / class in that compound. The hover applies
+        // to that segment's identifier, so any pointer-enter / leave
+        // on that element triggers the rule's evaluation.
+        for (selector, _) in &self.complex_rules {
+            for (compound, _) in &selector.segments {
+                let has_hover = compound
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, SelectorPart::State(ElementState::Hover)));
+                if !has_hover {
+                    continue;
+                }
+                for part in &compound.parts {
+                    match part {
+                        SelectorPart::Id(id) => {
+                            self.hover_participants.insert(id.clone());
+                        }
+                        SelectorPart::Class(class) => {
+                            self.hover_participants.insert(class.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Does an element with this id / class identifier participate in
+    /// any `:hover` styling? Cheap HashSet lookup against a set
+    /// precomputed at parse time (see the internal
+    /// `index_hover_participants` helper).
+    pub fn participates_in_hover(&self, ident: &str) -> bool {
+        self.hover_participants.contains(ident)
+    }
+
     /// Index simple class selectors from complex_rules into class_styles for O(1) lookup.
     ///
     /// A "simple class selector" is a ComplexSelector with exactly one segment
@@ -1814,6 +1929,12 @@ impl Stylesheet {
         for (key, style) in other.class_styles {
             self.class_styles.insert(key, style);
         }
+        // Re-index now that simple + class + complex stores have the
+        // merged content. `other.hover_participants` is dropped — the
+        // re-index walks the merged stores directly so we don't have
+        // to reason about whether an `id:hover` key in one stylesheet
+        // got cascade-overridden by an `id` key in the other.
+        self.index_hover_participants();
     }
 
     /// Load and parse a `.css` file from disk
@@ -2223,7 +2344,7 @@ fn identifier<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str,
 }
 
 /// Parse an ID selector: #identifier or #identifier:state
-fn id_selector(input: &str) -> ParseResult<'_, CssSelector> {
+fn id_selector(input: &str) -> ParseResult<CssSelector> {
     context("ID selector", |input| {
         let (input, _) = char('#')(input)?;
         let (input, id) = cut(identifier)(input)?;
@@ -2574,7 +2695,7 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
 }
 
 /// Parse a property name (including CSS custom properties like --var-name)
-fn property_name(input: &str) -> ParseResult<'_, &str> {
+fn property_name(input: &str) -> ParseResult<&str> {
     context(
         "property name",
         take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_'),
@@ -2582,14 +2703,14 @@ fn property_name(input: &str) -> ParseResult<'_, &str> {
 }
 
 /// Parse a CSS variable name: --identifier
-fn variable_name(input: &str) -> ParseResult<'_, &str> {
+fn variable_name(input: &str) -> ParseResult<&str> {
     let (input, _) = tag("--")(input)?;
     let (input, name) = identifier(input)?;
     Ok((input, name))
 }
 
 /// Parse a property value (everything until ; or })
-fn property_value(input: &str) -> ParseResult<'_, &str> {
+fn property_value(input: &str) -> ParseResult<&str> {
     let (input, value) = context(
         "property value",
         take_while1(|c: char| c != ';' && c != '}'),
@@ -2598,7 +2719,7 @@ fn property_value(input: &str) -> ParseResult<'_, &str> {
 }
 
 /// Parse a single property declaration: name: value;
-fn property_declaration(input: &str) -> ParseResult<'_, (&str, &str)> {
+fn property_declaration(input: &str) -> ParseResult<(&str, &str)> {
     let (input, _) = ws(input)?;
     let (input, name) = context("property name", property_name)(input)?;
     let (input, _) = ws(input)?;
@@ -2611,7 +2732,7 @@ fn property_declaration(input: &str) -> ParseResult<'_, (&str, &str)> {
 }
 
 /// Parse a rule block: { property: value; ... }
-fn rule_block(input: &str) -> ParseResult<'_, Vec<(&str, &str)>> {
+fn rule_block(input: &str) -> ParseResult<Vec<(&str, &str)>> {
     let (input, _) = ws::<VerboseError<&str>>(input)?;
     let (input, _) = context("opening brace", char('{'))(input)?;
     let (input, _) = ws::<VerboseError<&str>>(input)?;
@@ -2622,7 +2743,7 @@ fn rule_block(input: &str) -> ParseResult<'_, Vec<(&str, &str)>> {
 }
 
 /// Parse a :root block for CSS variables
-fn root_block(input: &str) -> ParseResult<'_, Vec<(String, String)>> {
+fn root_block(input: &str) -> ParseResult<Vec<(String, String)>> {
     let (input, _) = ws(input)?;
     let (input, _) = tag(":root")(input)?;
     let (input, _) = ws(input)?;
@@ -2738,7 +2859,7 @@ where
 }
 
 /// Parse keyframe position(s): `from`, `to`, `50%`, or `0%, 100%`
-fn keyframe_positions(input: &str) -> ParseResult<'_, Vec<f32>> {
+fn keyframe_positions(input: &str) -> ParseResult<Vec<f32>> {
     let (input, first) = keyframe_position(input)?;
     let (input, rest) = many0(|i| {
         let (i, _) = ws(i)?;
@@ -2753,7 +2874,7 @@ fn keyframe_positions(input: &str) -> ParseResult<'_, Vec<f32>> {
 }
 
 /// Parse a single keyframe position: `from`, `to`, or percentage like `50%`
-fn keyframe_position(input: &str) -> ParseResult<'_, f32> {
+fn keyframe_position(input: &str) -> ParseResult<f32> {
     alt((
         // `from` = 0%
         value(0.0, tag_no_case("from")),
@@ -2775,7 +2896,7 @@ enum CssBlock {
 }
 
 /// Parse a complete rule: #id { ... } or #id:state { ... }
-fn css_rule(input: &str) -> ParseResult<'_, (String, ElementStyle)> {
+fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
     let (input, _) = ws(input)?;
     let (input, selector) = context("CSS rule selector", id_selector)(input)?;
     let (input, _) = ws(input)?;
@@ -2792,7 +2913,7 @@ fn css_rule(input: &str) -> ParseResult<'_, (String, ElementStyle)> {
 
 /// Parse an entire stylesheet
 #[allow(dead_code)]
-fn parse_stylesheet(input: &str) -> ParseResult<'_, Vec<(String, ElementStyle)>> {
+fn parse_stylesheet(input: &str) -> ParseResult<Vec<(String, ElementStyle)>> {
     let (input, _) = ws(input)?;
     let (input, rules) = many0(css_rule)(input)?;
     let (input, _) = ws(input)?;
@@ -4745,8 +4866,8 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             }
         }
         "box-shadow" => {
-            if let Some(shadow) = parse_shadow(value) {
-                style.shadow = Some(shadow);
+            if let Some(shadow_stack) = parse_shadow_stack(value) {
+                style.shadow = shadow_stack;
             }
         }
         "text-shadow" => {
@@ -5912,8 +6033,8 @@ fn apply_property_with_errors(
             }
         }
         "box-shadow" => {
-            if let Some(shadow) = parse_shadow(value) {
-                style.shadow = Some(shadow);
+            if let Some(stack) = parse_shadow_stack(value) {
+                style.shadow = stack;
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -7230,24 +7351,48 @@ fn parse_theme_radius<'a, E: NomParseError<&'a str>>(
 }
 
 fn parse_shadow(value: &str) -> Option<Shadow> {
-    // Check for "none"
-    if value.trim().eq_ignore_ascii_case("none") {
-        return Some(Shadow::new(0.0, 0.0, 0.0, Color::TRANSPARENT));
+    // Returns just the first layer for callers (e.g. `text-shadow`) that
+    // still take a single `Shadow`. Use `parse_shadow_stack` for
+    // multi-layer box-shadow.
+    parse_shadow_stack(value).and_then(|s| s.into_iter().next())
+}
+
+/// Parse a CSS shadow value into a stack of layers.
+///
+/// Handles:
+/// - `none` → single transparent shadow,
+/// - `theme(shadow-*)` → the theme's full layer stack,
+/// - one or more comma-separated explicit shadows.
+fn parse_shadow_stack(value: &str) -> Option<Vec<Shadow>> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Some(vec![Shadow::new(0.0, 0.0, 0.0, Color::TRANSPARENT)]);
     }
 
-    // Try theme() function first
-    if let Ok((_, shadow)) = parse_theme_shadow::<nom::error::Error<&str>>(value) {
-        return Some(shadow);
+    // Try theme() function first — preserves multi-layer compound shadow.
+    if let Ok((_, stack)) = parse_theme_shadow::<nom::error::Error<&str>>(trimmed) {
+        return Some(stack);
     }
 
-    // Try parsing explicit shadow: offset-x offset-y blur color
-    parse_explicit_shadow(value)
+    // Comma-separated explicit shadows.
+    let parts = split_commas_respecting_parens(trimmed);
+    let mut layers = Vec::with_capacity(parts.len().max(1));
+    for part in parts {
+        if let Some(layer) = parse_explicit_shadow(part.trim()) {
+            layers.push(layer);
+        }
+    }
+    if layers.is_empty() {
+        None
+    } else {
+        Some(layers)
+    }
 }
 
 /// Parse theme(shadow-*) tokens
 fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
     input: &'a str,
-) -> IResult<&'a str, Shadow, E> {
+) -> IResult<&'a str, Vec<Shadow>, E> {
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("theme")(input)?;
     let (input, _) = ws(input)?;
@@ -7257,14 +7402,14 @@ fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
     let token_name = token_name.trim();
     let shadows = ThemeState::get().shadows();
 
-    let shadow: blinc_core::Shadow = match token_name.to_lowercase().replace('_', "-").as_str() {
-        "shadow-sm" => shadows.shadow_sm.clone().into(),
-        "shadow-default" => shadows.shadow_default.clone().into(),
-        "shadow-md" => shadows.shadow_md.clone().into(),
-        "shadow-lg" => shadows.shadow_lg.clone().into(),
-        "shadow-xl" => shadows.shadow_xl.clone().into(),
-        "shadow-2xl" => shadows.shadow_2xl.clone().into(),
-        "shadow-none" => shadows.shadow_none.clone().into(),
+    let stack: &[blinc_theme::Shadow] = match token_name.to_lowercase().replace('_', "-").as_str() {
+        "shadow-sm" => &shadows.shadow_sm,
+        "shadow-default" => &shadows.shadow_default,
+        "shadow-md" => &shadows.shadow_md,
+        "shadow-lg" => &shadows.shadow_lg,
+        "shadow-xl" => &shadows.shadow_xl,
+        "shadow-2xl" => &shadows.shadow_2xl,
+        "shadow-none" => &shadows.shadow_none,
         _ => {
             debug!(token = token_name, "Unknown theme shadow token");
             return Err(nom::Err::Error(E::from_error_kind(
@@ -7274,7 +7419,40 @@ fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
         }
     };
 
-    Ok((input, shadow))
+    let stack: Vec<Shadow> = stack.iter().map(Shadow::from).collect();
+    Ok((input, stack))
+}
+
+/// Split a CSS list on commas while keeping parenthesised groups
+/// (e.g. `rgba(0, 0, 0, 0.5)`) intact.
+fn split_commas_respecting_parens(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth: i32 = 0;
+    for c in input.chars() {
+        match c {
+            '(' => {
+                paren_depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                paren_depth = (paren_depth - 1).max(0);
+                current.push(c);
+            }
+            ',' if paren_depth == 0 => {
+                if !current.trim().is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 /// Split a CSS value by whitespace while keeping parenthesized groups intact.
@@ -7819,10 +7997,14 @@ fn parse_render_layer<'a, E: NomParseError<&'a str>>(
 /// - `animation: fade-in 300ms ease-out 0ms infinite`
 /// - `animation: slide-in 0.5s ease-in-out 0s 1 normal forwards`
 fn parse_animation(value: &str) -> Option<CssAnimation> {
-    let parts: Vec<&str> = value.split_whitespace().collect();
-    if parts.is_empty() {
+    // Use `split_whitespace_respecting_parens` so a `cubic-bezier(a, b,
+    // c, d)` (from `var(--ease-state)` resolution) survives as a single
+    // token instead of getting chopped on the commas.
+    let owned_parts = split_whitespace_respecting_parens(value);
+    if owned_parts.is_empty() {
         return None;
     }
+    let parts: Vec<&str> = owned_parts.iter().map(|s| s.as_str()).collect();
 
     let mut anim = CssAnimation::default();
     let mut duration_set = false;
@@ -7922,8 +8104,15 @@ fn parse_transition(value: &str) -> Option<CssTransitionSet> {
     }
 
     let mut transitions = Vec::new();
-    for segment in value.split(',') {
-        if let Some(t) = parse_single_transition(segment.trim()) {
+    // Paren-respecting split — `cubic-bezier(a, b, c, d)` in a
+    // comma-separated transition list (from `var(--ease-X)`
+    // resolution) must survive as a single segment.
+    for segment in split_commas_respecting_parens(value) {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(t) = parse_single_transition(trimmed) {
             transitions.push(t);
         } else {
             return None;
@@ -7939,10 +8128,14 @@ fn parse_transition(value: &str) -> Option<CssTransitionSet> {
 
 /// Parse a single transition: `property duration [timing] [delay]`
 fn parse_single_transition(value: &str) -> Option<CssTransition> {
-    let parts: Vec<&str> = value.split_whitespace().collect();
-    if parts.is_empty() {
+    // Use `split_whitespace_respecting_parens` so a `cubic-bezier(a, b,
+    // c, d)` (from `var(--ease-X)` resolution) survives as a single
+    // token instead of getting chopped on the commas.
+    let owned_parts = split_whitespace_respecting_parens(value);
+    if owned_parts.is_empty() {
         return None;
     }
+    let parts: Vec<&str> = owned_parts.iter().map(|s| s.as_str()).collect();
 
     let mut property = String::new();
     let mut duration_ms = 0u32;
@@ -8085,11 +8278,7 @@ fn parse_backdrop_filter_functions(value: &str) -> Option<GlassMaterial> {
         }
     }
 
-    if found_any {
-        Some(glass)
-    } else {
-        None
-    }
+    if found_any { Some(glass) } else { None }
 }
 
 /// Parse `liquid-glass(...)` CSS function.
@@ -8351,11 +8540,7 @@ fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
         }
     }
 
-    if found_any {
-        Some(filter)
-    } else {
-        None
-    }
+    if found_any { Some(filter) } else { None }
 }
 
 /// Parse a time value (e.g., "300ms", "0.5s", "1s")
@@ -9172,7 +9357,7 @@ fn default_position(index: usize, total: usize) -> f32 {
 }
 
 /// Fill in missing/default positions with even distribution
-fn distribute_stop_positions(_stops: &mut [GradientStop]) {
+fn distribute_stop_positions(stops: &mut [GradientStop]) {
     // The positions are already set during parsing
     // This function could be enhanced to handle "auto" positions
     // For now, we rely on default_position during parsing
@@ -10610,7 +10795,7 @@ mod tests {
         // The variable stores the raw value "theme(shadow-md)"
         // which gets resolved when applied to the style
         let style = result.stylesheet.get("card").unwrap();
-        assert!(style.shadow.is_some());
+        assert!(!style.shadow.is_empty());
     }
 
     #[test]
@@ -10735,18 +10920,26 @@ mod tests {
         assert_eq!(base.opacity, Some(1.0));
 
         // Check all states exist
-        assert!(result
-            .stylesheet
-            .contains_with_state("button", ElementState::Hover));
-        assert!(result
-            .stylesheet
-            .contains_with_state("button", ElementState::Active));
-        assert!(result
-            .stylesheet
-            .contains_with_state("button", ElementState::Focus));
-        assert!(result
-            .stylesheet
-            .contains_with_state("button", ElementState::Disabled));
+        assert!(
+            result
+                .stylesheet
+                .contains_with_state("button", ElementState::Hover)
+        );
+        assert!(
+            result
+                .stylesheet
+                .contains_with_state("button", ElementState::Active)
+        );
+        assert!(
+            result
+                .stylesheet
+                .contains_with_state("button", ElementState::Focus)
+        );
+        assert!(
+            result
+                .stylesheet
+                .contains_with_state("button", ElementState::Disabled)
+        );
 
         // Verify state styles
         let hover = result
@@ -11118,9 +11311,11 @@ mod tests {
 
         // Rules should also be parsed
         assert!(result.stylesheet.contains("card"));
-        assert!(result
-            .stylesheet
-            .contains_with_state("card", ElementState::Hover));
+        assert!(
+            result
+                .stylesheet
+                .contains_with_state("card", ElementState::Hover)
+        );
     }
 
     // =========================================================================
@@ -11715,7 +11910,7 @@ mod tests {
         let result = Stylesheet::parse_with_errors(css);
 
         let style = result.stylesheet.get("card").unwrap();
-        if let Some(shadow) = &style.shadow {
+        if let Some(shadow) = style.shadow.first() {
             // 1sp = 4px, 2sp = 8px, 4sp = 16px
             assert_eq!(shadow.offset_x, 4.0);
             assert_eq!(shadow.offset_y, 8.0);
@@ -12339,6 +12534,130 @@ mod tests {
                 assert!(matches!(left.as_ref(), FlowExpr::Add(_, _)));
             }
             _ => panic!("expected Mul, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn participates_in_hover_recognizes_simple_id_class_and_complex() {
+        let css = r#"
+            #button:hover { background: red; }
+            .card:hover { opacity: 0.8; }
+            #parent:hover > .child { color: blue; }
+            #plain { background: blue; }
+            .untouched { color: white; }
+        "#;
+        let sheet = Stylesheet::parse(css).unwrap();
+
+        assert!(sheet.participates_in_hover("button"));
+        assert!(sheet.participates_in_hover("card"));
+        // `#parent:hover > .child` — the hover is on #parent, so
+        // #parent is a participant; .child is not (its segment has
+        // no :hover).
+        assert!(sheet.participates_in_hover("parent"));
+        assert!(!sheet.participates_in_hover("child"));
+        assert!(!sheet.participates_in_hover("plain"));
+        assert!(!sheet.participates_in_hover("untouched"));
+    }
+
+    #[test]
+    fn insert_with_state_updates_hover_participants() {
+        let mut sheet = Stylesheet::new();
+        assert!(!sheet.participates_in_hover("dynamic"));
+        sheet.insert_with_state("dynamic", ElementState::Hover, ElementStyle::default());
+        assert!(sheet.participates_in_hover("dynamic"));
+        // A non-hover state insertion shouldn't register the
+        // identifier as a hover participant.
+        sheet.insert_with_state("active-only", ElementState::Active, ElementStyle::default());
+        assert!(!sheet.participates_in_hover("active-only"));
+    }
+
+    #[test]
+    fn animation_picks_up_cubic_bezier_from_var_ease() {
+        // Regression: `animation: name dur var(--ease-state);` must
+        // resolve the var to its cubic-bezier literal AND survive
+        // whitespace-tokenisation in parse_animation. Without paren-
+        // aware splitting the cubic-bezier args get chopped into
+        // separate tokens and the timing falls back to the default
+        // `Ease`, defeating the whole semantic-easing wiring.
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "ease-state".to_string(),
+            "cubic-bezier(0.25, 0.10, 0.25, 1.0)".to_string(),
+        );
+        vars.insert("duration-fast".to_string(), "180ms".to_string());
+
+        let css = "#foo { animation: foo-enter var(--duration-fast) var(--ease-state); }";
+        let sheet = Stylesheet::parse_with_variables(css, &vars).expect("parse");
+        let style = sheet.get("foo").expect("rule");
+        let anim = style.animation.as_ref().expect("animation set");
+        assert_eq!(anim.name, "foo-enter");
+        assert_eq!(anim.duration_ms, 180);
+        match anim.timing {
+            AnimationTiming::CubicBezier(a, b, c, d) => {
+                assert!((a - 0.25).abs() < 1e-3 && (b - 0.10).abs() < 1e-3);
+                assert!((c - 0.25).abs() < 1e-3 && (d - 1.0).abs() < 1e-3);
+            }
+            other => panic!("expected CubicBezier, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn class_animation_picks_up_cubic_bezier_from_var_ease() {
+        // Same as `animation_picks_up_cubic_bezier_from_var_ease`
+        // but for a class selector and chained next to other
+        // properties — the shape cn_styles actually uses.
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "ease-spring".to_string(),
+            "cubic-bezier(0.34, 1.3, 0.64, 1)".to_string(),
+        );
+        vars.insert("duration-normal".to_string(), "240ms".to_string());
+
+        let css = r#"
+            .cn-popover-content {
+                background: white;
+                padding: 16px;
+                animation: cn-popover-enter var(--duration-normal) var(--ease-spring);
+                transform-origin: top center;
+            }
+        "#;
+        let sheet = Stylesheet::parse_with_variables(css, &vars).expect("parse");
+        let style = sheet
+            .get_class("cn-popover-content")
+            .expect("no class style registered");
+        let anim = style
+            .animation
+            .as_ref()
+            .expect("animation set on .cn-popover-content");
+        assert_eq!(anim.name, "cn-popover-enter");
+        assert_eq!(anim.duration_ms, 240);
+        match anim.timing {
+            AnimationTiming::CubicBezier(a, b, c, d) => {
+                assert!((a - 0.34).abs() < 1e-3 && (b - 1.3).abs() < 1e-3);
+                assert!((c - 0.64).abs() < 1e-3 && (d - 1.0).abs() < 1e-3);
+            }
+            other => panic!("expected CubicBezier, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transition_picks_up_cubic_bezier_from_var_ease() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "ease-state".to_string(),
+            "cubic-bezier(0.25, 0.10, 0.25, 1.0)".to_string(),
+        );
+        vars.insert("duration-fast".to_string(), "150ms".to_string());
+
+        let css = "#foo { transition: background var(--duration-fast) var(--ease-state), \
+                   border-color var(--duration-fast) var(--ease-state); }";
+        let sheet = Stylesheet::parse_with_variables(css, &vars).expect("parse");
+        let style = sheet.get("foo").expect("rule");
+        let trans = style.transition.as_ref().expect("transitions set");
+        assert_eq!(trans.transitions.len(), 2);
+        for t in &trans.transitions {
+            assert_eq!(t.duration_ms, 150);
+            assert!(matches!(t.timing, AnimationTiming::CubicBezier(_, _, _, _)));
         }
     }
 }

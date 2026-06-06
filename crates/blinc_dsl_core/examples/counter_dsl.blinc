@@ -1,0 +1,41 @@
+fsm CounterFsm {
+    context {
+        count: i32 = 0
+    }
+    state Idle
+    state Counting
+    initial Idle
+    on Idle.Increment     -> Counting { ctx.count += 1 }
+    on Counting.Increment -> Counting { ctx.count += 1 }
+    on Counting.Reset     -> Idle     { ctx.count = 0 }
+    on Idle.Reset         -> Idle
+}
+
+component Counter {
+    style {
+        .counter-card    { background: #1e293b; border-radius: 16px; padding: 28px; gap: 16px; color: #ffffff }
+        .counter-row     { gap: 16px }
+        .counter-cta     { background: #3b82f6; border-radius: 10px; padding: 14px }
+        .counter-reset   { background: #ef4444; border-radius: 10px; padding: 14px }
+        .counter-cta *, .counter-reset * { pointer-events: none }
+    }
+    @stateful @fsm([CounterFsm]) view {
+        Div(class = "counter-card") {
+            Text(f"Count: {CounterFsm.count.get()}")
+            Div(class = "counter-row") {
+                Div(class = "counter-cta", on_click = || {
+                    CounterFsm.trigger("Increment")
+                }) {
+                    Text("+1")
+                }
+                Div(class = "counter-reset", on_click = || {
+                    CounterFsm.trigger("Reset")
+                }) {
+                    Text("Reset")
+                }
+            }
+        }
+    }
+}
+
+view { Counter() }

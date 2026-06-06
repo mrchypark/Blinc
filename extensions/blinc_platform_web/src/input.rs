@@ -257,7 +257,6 @@ pub fn keyboard_event(key: Key, state: KeyState, modifiers: Modifiers) -> InputE
         key,
         state,
         modifiers,
-        text: None,
     })
 }
 
@@ -427,7 +426,6 @@ mod tests {
                 key,
                 state,
                 modifiers,
-                ..
             }) => {
                 assert_eq!(key, Key::Enter);
                 assert_eq!(state, KeyState::Pressed);

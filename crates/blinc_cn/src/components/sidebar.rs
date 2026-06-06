@@ -38,13 +38,13 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use blinc_core::State;
+use blinc_layout::InstanceKey;
 use blinc_layout::div::{Div, ElementBuilder, ElementTypeId};
 use blinc_layout::element::CursorStyle;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful_with_key, ButtonState, NoState};
+use blinc_layout::stateful::{ButtonState, NoState, stateful_with_key};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_layout::visual_animation::VisualAnimationConfig;
-use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, ThemeState};
 
 /// Chevron left icon (collapse)
@@ -110,10 +110,6 @@ impl Sidebar {
         let text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let primary = theme.color(ColorToken::Primary);
-        let item_gap = theme.spacing().space_2;
-        let item_px = theme.spacing().space_3;
-        let item_py = theme.spacing().space_2;
-        let section_pad_y = theme.spacing().space_1_5;
 
         let key = builder.key.get().to_string();
         let sections = builder.sections.clone();
@@ -175,9 +171,9 @@ impl Sidebar {
                                     .w_fit()
                                     .flex_row()
                                     .items_center()
-                                    .gap(item_gap)
-                                    .px(item_px)
-                                    .py(item_py)
+                                    .gap(3.0)
+                                    .px(3.0)
+                                    .py(2.0)
                                     .bg(bg)
                                     .cursor(CursorStyle::Pointer)
                                     .animate_bounds(
@@ -213,7 +209,7 @@ impl Sidebar {
                     .h_full()
                     .w_fit()
                     .overflow_clip() // Critical for animation clipping
-                    .py(section_pad_y)
+                    .py(2.0)
                     .animate_bounds(
                         VisualAnimationConfig::all()
                             .with_key(&layout_anim_key)
@@ -245,9 +241,9 @@ impl Sidebar {
                                     .snappy(),
                             )
                             .when(!is_collapsed, |d| {
-                                d.px(item_px).py(item_py).child(
+                                d.px(3.0).py(2.0).child(
                                     text(title.to_uppercase())
-                                        .size(11.0)
+                                        .size(theme.typography().text_xs)
                                         .color(text_tertiary)
                                         .weight(FontWeight::SemiBold)
                                         .no_cursor()
@@ -289,7 +285,16 @@ impl Sidebar {
                         let item_anim_key = format!("{}_anim", item_key);
                         let mut item_element = div()
                             .class("cn-sidebar-item")
-                            .w_fit()
+                            // `w_full` so the hover / active bg stretches
+                            // across the full sidebar width. With `w_fit`
+                            // the bg only painted as wide as the item's
+                            // own content — so short labels like "Inbox"
+                            // got a noticeably narrower highlight than
+                            // long ones like "Dashboard". The parent
+                            // `items_container` is `w_fit` and resolves
+                            // its own width from the widest sibling, so
+                            // every item now matches that one width.
+                            .w_full()
                             .h_fit()
                             .flex_row()
                             .items_center()
@@ -309,7 +314,12 @@ impl Sidebar {
                                         .child(svg(&item_icon).size(18.0, 18.0).color(icon_color)),
                                 )
                                 .child(
-                                    div().child(text(&item_label).size(14.0).no_cursor().no_wrap()),
+                                    div().child(
+                                        text(&item_label)
+                                            .size(theme.typography().text_sm)
+                                            .no_cursor()
+                                            .no_wrap(),
+                                    ),
                                 )
                             })
                             .when(is_collapsed, |d| {

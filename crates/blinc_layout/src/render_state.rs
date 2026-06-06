@@ -308,12 +308,20 @@ impl ActiveCssAnimation {
 /// The background thread ticks all animations at 120fps via a tick callback.
 /// The main thread inserts/removes animations and reads `current_properties`
 /// to apply animated values to render props.
+///
+/// Keyed by `StableNodeId` (Phase 5 of the layout-id stability
+/// refactor — see `project_stable_node_id_design`). Animations
+/// survive rebuilds: a `Stateful` re-running its `on_state`, a
+/// route swap, or any other rebuild trigger overwrites the entry
+/// at the same stable id with fresh state. Previously
+/// `LayoutNodeId`-keyed, which forced animations to restart on
+/// every rebuild.
 #[derive(Default)]
 pub struct CssAnimationStore {
     /// Active CSS keyframe animations (from stylesheet `animation:` property)
-    pub animations: HashMap<LayoutNodeId, ActiveCssAnimation>,
+    pub animations: HashMap<crate::tree::StableNodeId, ActiveCssAnimation>,
     /// Active CSS transitions (from stylesheet `transition:` property)
-    pub transitions: HashMap<LayoutNodeId, ActiveCssAnimation>,
+    pub transitions: HashMap<crate::tree::StableNodeId, ActiveCssAnimation>,
 }
 
 impl CssAnimationStore {
@@ -333,9 +341,21 @@ impl CssAnimationStore {
     /// chain die when the user isn't looking at the moving parts;
     /// when they scroll back, `tick(dt_ms)` catches up by elapsed
     /// time so the visible state is still correct.
-    pub fn has_visible_active(&self, painted: &std::collections::HashSet<LayoutNodeId>) -> bool {
-        self.animations.keys().any(|n| painted.contains(n))
-            || self.transitions.keys().any(|n| painted.contains(n))
+    pub fn has_visible_active(
+        &self,
+        painted: &std::collections::HashSet<crate::tree::StableNodeId>,
+    ) -> bool {
+        // Match `has_active_animations` / `has_active_transitions`:
+        // gate on the `is_playing` flag so completed entries kept
+        // in the map for same-target restart suppression don't
+        // pin the windowed redraw chain forever.
+        self.animations
+            .iter()
+            .any(|(n, a)| a.is_playing && painted.contains(n))
+            || self
+                .transitions
+                .iter()
+                .any(|(n, t)| t.is_playing && painted.contains(n))
     }
 
     /// Whether any visible animation or transition is currently
@@ -352,7 +372,7 @@ impl CssAnimationStore {
     /// tolerate the cap fine.
     pub fn has_visible_vsync_class(
         &self,
-        painted: &std::collections::HashSet<LayoutNodeId>,
+        painted: &std::collections::HashSet<crate::tree::StableNodeId>,
     ) -> bool {
         self.animations
             .iter()
@@ -407,9 +427,20 @@ impl CssAnimationStore {
         self.animations.values().any(|a| a.is_playing)
     }
 
-    /// Check if there are any active CSS transitions
+    /// Check if there are any *playing* CSS transitions.
+    ///
+    /// Completed transitions intentionally stay in `self.transitions`
+    /// so the same-target guard in `detect_and_start_transitions`
+    /// can match against them (avoids endless restart loops on
+    /// repeat hover styles). Checking `!is_empty()` here would mean
+    /// the redraw / cache-invalidation chain fires forever after
+    /// the first transition completes — observed in
+    /// `image_css_demo`: hovering a `mask-image` transition pinned
+    /// CPU at ~100 % indefinitely after the cursor moved away.
+    /// Match `has_active_animations` and gate on the `is_playing`
+    /// flag instead.
     pub fn has_active_transitions(&self) -> bool {
-        !self.transitions.is_empty()
+        self.transitions.values().any(|t| t.is_playing)
     }
 }
 
@@ -660,6 +691,19 @@ pub struct RenderState {
     /// Shared motion state for query API access
     /// Updated after each tick to expose motion states to components
     shared_motion_states: Option<SharedMotionStates>,
+
+    /// Monotonic counter bumped whenever `stable_motions` is mutated
+    /// (insert, remove, tick that changed state, exit start, etc.).
+    /// `sync_shared_motion_states` compares against
+    /// `last_synced_motion_generation` and skips the work when the
+    /// counter hasn't advanced — at idle cn_demo this is the common
+    /// case (motions all in `Visible`) and the bg thread was paying
+    /// hundreds of String clones + HashMap inserts per second to
+    /// re-sync identical state.
+    pub(crate) motion_generation: u64,
+    /// Last value of `motion_generation` written through to
+    /// `shared_motion_states`. Skip sync when equal.
+    pub(crate) last_synced_motion_generation: std::cell::Cell<u64>,
 }
 
 impl RenderState {
@@ -683,7 +727,18 @@ impl RenderState {
             viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
             viewport_set: false,
             shared_motion_states: None,
+            motion_generation: 0,
+            last_synced_motion_generation: std::cell::Cell::new(0),
         }
+    }
+
+    /// Bump the motion generation counter. Public methods that
+    /// mutate `stable_motions` (insert, state-change, remove, clear)
+    /// call this so `sync_shared_motion_states` can skip the write
+    /// when nothing has changed. Cheap (one wrapping_add).
+    #[inline]
+    pub fn bump_motion_generation(&mut self) {
+        self.motion_generation = self.motion_generation.wrapping_add(1);
     }
 
     /// Set the shared motion states for query API access
@@ -698,6 +753,19 @@ impl RenderState {
     /// Call this after tick() to update the shared motion states for query API.
     pub fn sync_shared_motion_states(&self) {
         if let Some(ref shared) = self.shared_motion_states {
+            // Skip when nothing has changed since the last sync.
+            // `motion_generation` advances on any mutation of
+            // `stable_motions` — insert / remove / state transition
+            // inside a tick / explicit exit / replay. At idle every
+            // motion sits in `Visible` and the generation doesn't
+            // move, so the bg-thread path was burning ~50 String
+            // clones + 50 HashMap inserts per frame against the
+            // shared `RwLock` for no observable change. Per-frame
+            // gate matches the same pattern we use elsewhere
+            // (state_fingerprint for stylesheet apply).
+            if self.last_synced_motion_generation.get() == self.motion_generation {
+                return;
+            }
             let mut states = shared.write().unwrap();
             states.clear();
             for (key, motion) in &self.stable_motions {
@@ -715,6 +783,8 @@ impl RenderState {
                 };
                 states.insert(key.clone(), state);
             }
+            self.last_synced_motion_generation
+                .set(self.motion_generation);
         }
     }
 
@@ -727,12 +797,26 @@ impl RenderState {
     ///
     /// Returns true if any animations are active (need another frame)
     pub fn tick(&mut self, current_time_ms: u64) -> bool {
-        // Calculate delta time
-        let dt_ms = if let Some(last_time) = self.last_tick_time {
+        // Calculate delta time. `elapsed_ms()` is ms-resolution and macOS
+        // winit can deliver back-to-back Frame events at microsecond cadence
+        // (memory note: "winit on macOS delivers `request_redraw`'d frames
+        // back-to-back at microsecond cadence"). When the clock hasn't
+        // advanced between consecutive ticks the raw delta is 0, motion
+        // progress doesn't advance, and the FSM gets stuck mid-animation
+        // until something pushes the wall clock forward — exactly the
+        // "animation freezes near the end until I move my mouse" symptom.
+        //
+        // Floor `dt_ms` at 1 ms so a tick that observed *any* time advance
+        // (real or coalesced into the same millisecond bucket) still moves
+        // the FSM forward. The cap-paced wake_at scheduler already
+        // guarantees no more than one frame per cap interval in steady
+        // state; this floor is just for the sub-ms storm.
+        let raw_dt_ms = if let Some(last_time) = self.last_tick_time {
             (current_time_ms.saturating_sub(last_time)) as f32
         } else {
             16.0 // Assume ~60fps for first frame
         };
+        let dt_ms = raw_dt_ms.max(1.0);
         self.last_tick_time = Some(current_time_ms);
 
         // Tick the animation scheduler
@@ -788,6 +872,13 @@ impl RenderState {
                 }
             }
         } // Drop scheduler lock
+
+        // Mirror the stable-motion redraw-self-perpetuate guard for node-based
+        // motions — same FSM-poll race could otherwise leave a node-bound
+        // enter / exit animation stalled until the next external input.
+        if motion_active {
+            crate::stateful::request_redraw();
+        }
 
         // Tick stable-keyed motions (for overlays)
         self.tick_stable_motions(dt_ms);
@@ -967,7 +1058,7 @@ impl RenderState {
 
         // Remove existing springs if any
         if let Some(old_ids) = old_springs {
-            let scheduler = self.animations.lock().unwrap();
+            let mut scheduler = self.animations.lock().unwrap();
             for id in old_ids {
                 scheduler.remove_spring(id);
             }
@@ -975,7 +1066,7 @@ impl RenderState {
 
         // Create springs for r, g, b, a
         let springs = {
-            let scheduler = self.animations.lock().unwrap();
+            let mut scheduler = self.animations.lock().unwrap();
             [
                 {
                     let mut s = Spring::new(config, current.r);
@@ -1016,7 +1107,7 @@ impl RenderState {
 
         // Remove any active animation
         if let Some(old_ids) = old_springs {
-            let scheduler = self.animations.lock().unwrap();
+            let mut scheduler = self.animations.lock().unwrap();
             for id in old_ids {
                 scheduler.remove_spring(id);
             }
@@ -1143,7 +1234,33 @@ impl RenderState {
     /// Start an enter motion animation for a node
     ///
     /// This is called when a node with motion config first appears in the tree.
+    ///
+    /// **No-op if the node already has an active motion in flight.**
+    /// `initialize_motion_animations` runs after every layout pass (full
+    /// rebuild + every subtree rebuild + every Stateful refresh), so a
+    /// node carrying motion config gets this method invoked many times
+    /// per its lifetime. Without the existing-state guard, every frame
+    /// reset the FSM back to `Entering { progress: 0.0 }` and the
+    /// animation could never advance — visible as a transient-motion
+    /// page that stays at `scale=0, opacity=0` forever (GH #39
+    /// follow-up). Mirrors the same guard `start_stable_motion` has on
+    /// `Suspended | Waiting | Entering | Visible`.
     pub fn start_enter_motion(&mut self, node_id: LayoutNodeId, config: MotionAnimation) {
+        if let Some(state) = self.node_states.get(&node_id) {
+            if let Some(ref motion) = state.motion {
+                match motion.state {
+                    MotionState::Suspended
+                    | MotionState::Waiting { .. }
+                    | MotionState::Entering { .. }
+                    | MotionState::Visible
+                    | MotionState::Exiting { .. } => return,
+                    MotionState::Removed => {
+                        // Allow restart after a completed exit.
+                    }
+                }
+            }
+        }
+
         let state = self.get_or_create(node_id);
 
         // Determine initial state based on delay
@@ -1193,13 +1310,21 @@ impl RenderState {
         }
     }
 
-    /// Get the current motion values for a node
+    /// Get the current motion values for a node.
     ///
-    /// Returns the interpolated keyframe values if the node has an active motion.
+    /// Completed motions keep their final values so rendering can still read
+    /// them; use [`Self::is_motion_active`] to decide whether a redraw loop is
+    /// still needed.
     pub fn get_motion_values(&self, node_id: LayoutNodeId) -> Option<&MotionKeyframe> {
         self.get(node_id)
             .and_then(|s| s.motion.as_ref())
             .map(|m| &m.current)
+    }
+
+    /// Check if a node's motion is still animating.
+    pub fn is_motion_active(&self, node_id: LayoutNodeId) -> bool {
+        self.get(node_id)
+            .is_some_and(NodeRenderState::has_active_motion)
     }
 
     /// Check if a node's motion animation is complete and should be removed
@@ -1238,7 +1363,7 @@ impl RenderState {
     ///
     /// Motion exit is now triggered explicitly via `MotionHandle.exit()` /
     /// `start_stable_motion_exit()` instead of the old `is_exiting` flag.
-    pub fn start_stable_motion(&mut self, key: &str, config: MotionAnimation, _replay: bool) {
+    pub fn start_stable_motion(&mut self, key: &str, config: MotionAnimation, replay: bool) {
         // Mark this key as used this frame (for garbage collection)
         self.stable_motions_used.insert(key.to_string());
 
@@ -1567,9 +1692,20 @@ impl RenderState {
         }
     }
 
-    /// Get the current motion values for a stable-keyed animation
+    /// Get the current motion values for a stable-keyed animation.
+    ///
+    /// Completed motions keep their final values so rendering can still read
+    /// them; use [`Self::is_stable_motion_active`] to decide whether a redraw
+    /// loop is still needed.
     pub fn get_stable_motion_values(&self, key: &str) -> Option<&MotionKeyframe> {
         self.stable_motions.get(key).map(|m| &m.current)
+    }
+
+    /// Check if a stable-keyed motion is still animating.
+    pub fn is_stable_motion_active(&self, key: &str) -> bool {
+        self.stable_motions
+            .get(key)
+            .is_some_and(|m| !matches!(m.state, MotionState::Visible | MotionState::Removed))
     }
 
     /// Get the animation state for a stable-keyed motion
@@ -1657,6 +1793,36 @@ impl RenderState {
 
     /// Tick stable-keyed motions (called from tick())
     fn tick_stable_motions(&mut self, dt_ms: f32) {
+        // Bump the motion generation when any motion is mid-flight —
+        // its tick advances progress / can transition state, both of
+        // which need to flow to `shared_motion_states`. Cheap check
+        // before the iteration: if every motion is at a settled
+        // terminal state (Visible, Removed, Suspended), tick is a
+        // no-op and `sync_shared_motion_states` doesn't need to
+        // rewrite the shared store. The Settled-fast-path is the
+        // common case at idle.
+        let any_mid_flight = self.stable_motions.values().any(|m| {
+            !matches!(
+                m.state,
+                MotionState::Visible | MotionState::Removed | MotionState::Suspended
+            )
+        });
+        if any_mid_flight {
+            self.motion_generation = self.motion_generation.wrapping_add(1);
+            // Force the runner to fire another frame.
+            //
+            // The post-frame redraw chain in the windowed runner OR's
+            // `rs.has_active_motions()` into `any_redraw_signal`, which
+            // is supposed to flip `frame_dirty` + arm the next wake. In
+            // practice users saw stable-motion animations freeze
+            // mid-flight until a mouse-move kicked the loop — the
+            // chain's wake path raced the FSM-poll in a way that
+            // sometimes settled before the post-frame check observed
+            // it. Asserting `NEEDS_REDRAW` directly from the tick
+            // guarantees the next Frame gate cannot skip while *any*
+            // stable motion is still entering / exiting / waiting.
+            crate::stateful::request_redraw();
+        }
         for motion in self.stable_motions.values_mut() {
             Self::tick_single_motion(motion, dt_ms);
         }
@@ -1928,5 +2094,50 @@ mod tests {
         // Tick again
         state.tick(300);
         assert!(state.cursor_visible());
+    }
+
+    #[test]
+    fn test_completed_node_motion_is_not_active() {
+        let scheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let mut state = RenderState::new(scheduler);
+        let node_id = LayoutNodeId::default();
+        let config = MotionAnimation {
+            enter_from: Some(MotionKeyframe::new().opacity(0.0)),
+            enter_duration_ms: 50,
+            ..Default::default()
+        };
+
+        state.start_enter_motion(node_id, config);
+        assert!(state.is_motion_active(node_id));
+
+        state.tick(0);
+        state.tick(100);
+
+        assert!(!state.is_motion_active(node_id));
+        assert!(state.get_motion_values(node_id).is_some());
+    }
+
+    #[test]
+    fn test_completed_stable_motion_is_not_active() {
+        let scheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let mut state = RenderState::new(scheduler);
+        let config = MotionAnimation {
+            enter_from: Some(MotionKeyframe::new().opacity(0.0)),
+            enter_duration_ms: 50,
+            ..Default::default()
+        };
+
+        state.start_stable_motion("motion:navmenu_test", config, false);
+        assert!(state.is_stable_motion_active("motion:navmenu_test"));
+
+        state.tick(0);
+        state.tick(100);
+
+        assert!(!state.is_stable_motion_active("motion:navmenu_test"));
+        assert!(
+            state
+                .get_stable_motion_values("motion:navmenu_test")
+                .is_some()
+        );
     }
 }

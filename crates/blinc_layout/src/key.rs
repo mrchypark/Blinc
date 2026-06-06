@@ -151,16 +151,27 @@ impl Clone for InstanceKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
 
-    // InstanceKey uses global call counters that are reset as part of tests.
-    // Rust runs tests in parallel by default, so serialize these tests to avoid
-    // cross-test interference (e.g. another test resetting counters mid-loop).
-    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    /// Serialise every test that touches the process-global
+    /// `CALL_COUNTERS`. The map is shared across the whole test
+    /// binary, and any test that calls `reset_call_counters()` mid-
+    /// loop in a sibling test wipes out indices that test is in the
+    /// middle of generating — observed as
+    /// `test_unique_keys_in_loop` reporting `unique.len() == 4`
+    /// when expecting `5` (one index repeated because the counter
+    /// reset to 0 between iterations).
+    ///
+    /// Recover from poisoning so a panic in one test doesn't kill
+    /// the whole suite.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_unique_keys_in_loop() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock_for_test();
         reset_call_counters();
         let mut keys = Vec::new();
         for _ in 0..5 {
@@ -179,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_keys_stable_across_rebuilds() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock_for_test();
         // Helper function simulating a component that creates keys
         fn create_keys() -> (String, String) {
             let key1 = InstanceKey::new("test").get().to_string();
@@ -203,14 +214,12 @@ mod tests {
 
     #[test]
     fn test_explicit_key() {
-        let _guard = TEST_LOCK.lock().unwrap();
         let key = InstanceKey::explicit("my-custom-key");
         assert_eq!(key.get(), "my-custom-key");
     }
 
     #[test]
     fn test_derive() {
-        let _guard = TEST_LOCK.lock().unwrap();
         let key = InstanceKey::explicit("base");
         assert_eq!(key.derive("child"), "base_child");
         assert_eq!(key.derive("other"), "base_other");
@@ -218,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_key_stability() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock_for_test();
         reset_call_counters();
         let key = InstanceKey::new("test");
         let first = key.get().to_string();
@@ -228,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_clone_preserves_key() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock_for_test();
         reset_call_counters();
         let key = InstanceKey::new("test");
         let original = key.get().to_string();
@@ -238,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_different_source_locations_independent() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock_for_test();
         reset_call_counters();
 
         // Helper functions at different source locations

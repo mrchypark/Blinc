@@ -225,6 +225,25 @@ impl RenderTree {
             });
         }
 
+        // Resolve corner shape FIRST so the overflow:clip below can
+        // follow the same curve the parent's fill will use. Tolerate
+        // an uninitialised ThemeState (snapshot / GPU integration
+        // tests render through this path without calling
+        // `ThemeState::init_*` first). See basic.rs for the same
+        // fall-back rationale.
+        let (theme_shape_n, radius_full_n) = match blinc_theme::ThemeState::try_get() {
+            Some(theme) => (theme.shape(), theme.radii().radius_full),
+            None => (blinc_theme::ShapeTokens::default(), 9999.0),
+        };
+        let resolved_corner_shape_n = super::helpers::resolve_corner_shape(
+            render_node.props.corner_shape,
+            render_node.props.border_radius,
+            (bounds.width, bounds.height),
+            &theme_shape_n,
+            radius_full_n,
+            render_node.props.corner_shape_locked,
+        );
+
         // Push clip BEFORE rendering content if this element clips its children
         // Clip to content area (inset by border width so children don't render over border)
         // This matches CSS overflow:hidden behavior which clips to the padding box
@@ -275,7 +294,7 @@ impl RenderTree {
                 ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
             }
             let clip_shape = if inset_radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, inset_radius)
+                ClipShape::rounded_rect_shaped(clip_rect, inset_radius, resolved_corner_shape_n)
             } else {
                 ClipShape::rect(clip_rect)
             };
@@ -293,11 +312,9 @@ impl RenderTree {
         } else {
             render_node.props.layer
         };
-
-        // Corner shape setup — must be before draw_shadow so shadows match fill shape
-        let has_corner_shape_n = !render_node.props.corner_shape.is_round();
+        let has_corner_shape_n = !resolved_corner_shape_n.is_round();
         if has_corner_shape_n {
-            ctx.set_corner_shape(render_node.props.corner_shape.to_array());
+            ctx.set_corner_shape(resolved_corner_shape_n.to_array());
         }
 
         // Only render if this node matches the target layer
@@ -315,15 +332,16 @@ impl RenderTree {
                     brightness: glass.brightness,
                     noise: glass.noise,
                     border_thickness: glass.border_thickness,
-                    shadow: render_node.props.shadow,
+                    // GlassStyle still carries a single shadow.
+                    shadow: render_node.props.shadow.first().copied(),
                     simple: glass.simple,
                     depth: glass_depth,
                     border_color: render_node.props.border_color,
                 });
                 ctx.fill_rect(rect, radius, glass_brush);
             } else {
-                // For non-glass elements, draw shadow first (renders behind the element)
-                if let Some(ref shadow) = render_node.props.shadow {
+                // Draw the shadow stack back-to-front (ambient first, key on top).
+                for shadow in render_node.props.shadow.iter().rev() {
                     ctx.draw_shadow(rect, radius, *shadow);
                 }
 
