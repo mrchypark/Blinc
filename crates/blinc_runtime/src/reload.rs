@@ -118,68 +118,72 @@ mod tests {
     /// NOT the reload path — see module docs.
     #[test]
     fn clear_all_destructive_wipes_every_substrate() {
-        // Plant: fsm registry
-        fsm::with_fsm_registry_mut(|r| {
-            r.register(fsm::FsmDefinition {
-                name: arc("ReloadTestFsm"),
-                state_names: vec![arc("A")],
-                initial_code: 0,
-                ..Default::default()
+        signal::with_test_signal_lock(|| {
+            // Plant: fsm registry
+            fsm::with_fsm_registry_mut(|r| {
+                r.register(fsm::FsmDefinition {
+                    name: arc("ReloadTestFsm"),
+                    state_names: vec![arc("A")],
+                    initial_code: 0,
+                    ..Default::default()
+                });
             });
-        });
-        assert!(fsm::with_fsm_registry(|r| r
-            .id_of("ReloadTestFsm")
-            .is_some()));
+            assert!(fsm::with_fsm_registry(|r| r
+                .id_of("ReloadTestFsm")
+                .is_some()));
 
-        // Plant: guard dispatcher
-        struct NopDispatcher;
-        impl fsm::GuardDispatcher for NopDispatcher {
-            fn call_guard(&self, _symbol: &str) -> Option<bool> {
-                Some(false)
+            // Plant: guard dispatcher
+            struct NopDispatcher;
+            impl fsm::GuardDispatcher for NopDispatcher {
+                fn call_guard(&self, _symbol: &str) -> Option<bool> {
+                    Some(false)
+                }
             }
-        }
-        fsm::set_guard_dispatcher(Arc::new(NopDispatcher));
+            fsm::set_guard_dispatcher(Arc::new(NopDispatcher));
 
-        // Plant: component registry
-        component::with_component_registry_mut(|r| {
-            r.register(component::ComponentDefinition {
-                name: arc("ReloadTestComponent"),
-                view_symbol: arc("ReloadTestComponent$view"),
-                props: vec![],
+            // Plant: component registry
+            component::with_component_registry_mut(|r| {
+                r.register(component::ComponentDefinition {
+                    name: arc("ReloadTestComponent"),
+                    view_symbol: arc("ReloadTestComponent$view"),
+                    props: vec![],
+                });
             });
+            assert!(component::with_component_registry(|r| r
+                .id_of("ReloadTestComponent")
+                .is_some()));
+
+            // Plant: signal tables
+            signal::set_i32("reload_test_count", 7);
+            signal::set_f64("reload_test_progress", 0.5);
+            assert_eq!(signal::get_i32("reload_test_count"), Some(7));
+            assert_eq!(signal::get_f64("reload_test_progress"), Some(0.5));
+
+            clear_all_destructive();
+
+            assert!(
+                fsm::with_fsm_registry(|r| r.id_of("ReloadTestFsm").is_none()),
+                "fsm registry should be empty after clear"
+            );
+            assert!(
+                component::with_component_registry(|r| r.id_of("ReloadTestComponent").is_none()),
+                "component registry should be empty after clear"
+            );
+            assert_eq!(signal::get_i32("reload_test_count"), None);
+            assert_eq!(signal::get_f64("reload_test_progress"), None);
         });
-        assert!(component::with_component_registry(|r| r
-            .id_of("ReloadTestComponent")
-            .is_some()));
-
-        // Plant: signal tables
-        signal::set_i32("reload_test_count", 7);
-        signal::set_f64("reload_test_progress", 0.5);
-        assert_eq!(signal::get_i32("reload_test_count"), Some(7));
-        assert_eq!(signal::get_f64("reload_test_progress"), Some(0.5));
-
-        clear_all_destructive();
-
-        assert!(
-            fsm::with_fsm_registry(|r| r.id_of("ReloadTestFsm").is_none()),
-            "fsm registry should be empty after clear"
-        );
-        assert!(
-            component::with_component_registry(|r| r.id_of("ReloadTestComponent").is_none()),
-            "component registry should be empty after clear"
-        );
-        assert_eq!(signal::get_i32("reload_test_count"), None);
-        assert_eq!(signal::get_f64("reload_test_progress"), None);
     }
 
     /// `clear_all_destructive` is idempotent — second call
     /// sees the cleared state and does nothing harmful.
     #[test]
     fn clear_all_destructive_is_idempotent() {
-        clear_all_destructive();
-        clear_all_destructive();
-        assert!(fsm::with_fsm_registry(|r| r.is_empty()));
-        assert!(component::with_component_registry(|r| r.is_empty()));
+        signal::with_test_signal_lock(|| {
+            clear_all_destructive();
+            clear_all_destructive();
+            assert!(fsm::with_fsm_registry(|r| r.is_empty()));
+            assert!(component::with_component_registry(|r| r.is_empty()));
+        });
     }
 
     /// Re-publishing an FSM definition by the same name
@@ -193,29 +197,31 @@ mod tests {
     /// any handoff.
     #[test]
     fn fsm_register_replaces_by_name_without_rotating_id() {
-        clear_all_destructive();
+        signal::with_test_signal_lock(|| {
+            clear_all_destructive();
 
-        let first = fsm::with_fsm_registry_mut(|r| {
-            r.register(fsm::FsmDefinition {
-                name: arc("ReloadStableId"),
-                state_names: vec![arc("Idle"), arc("Loading")],
-                initial_code: 0,
-                ..Default::default()
-            })
+            let first = fsm::with_fsm_registry_mut(|r| {
+                r.register(fsm::FsmDefinition {
+                    name: arc("ReloadStableId"),
+                    state_names: vec![arc("Idle"), arc("Loading")],
+                    initial_code: 0,
+                    ..Default::default()
+                })
+            });
+
+            // Reload — re-register with a different state set.
+            let second = fsm::with_fsm_registry_mut(|r| {
+                r.register(fsm::FsmDefinition {
+                    name: arc("ReloadStableId"),
+                    state_names: vec![arc("Idle"), arc("Loading"), arc("Done")],
+                    initial_code: 0,
+                    ..Default::default()
+                })
+            });
+
+            assert_eq!(first, second, "FsmId stable across re-register by name");
+            let def = fsm::with_fsm_registry(|r| r.get(first).cloned()).unwrap();
+            assert_eq!(def.state_names.len(), 3, "definition reflects new shape");
         });
-
-        // Reload — re-register with a different state set.
-        let second = fsm::with_fsm_registry_mut(|r| {
-            r.register(fsm::FsmDefinition {
-                name: arc("ReloadStableId"),
-                state_names: vec![arc("Idle"), arc("Loading"), arc("Done")],
-                initial_code: 0,
-                ..Default::default()
-            })
-        });
-
-        assert_eq!(first, second, "FsmId stable across re-register by name");
-        let def = fsm::with_fsm_registry(|r| r.get(first).cloned()).unwrap();
-        assert_eq!(def.state_names.len(), 3, "definition reflects new shape");
     }
 }

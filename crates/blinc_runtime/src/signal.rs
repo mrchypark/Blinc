@@ -29,6 +29,9 @@ use blinc_core::reactive::{Signal, SignalId};
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
+#[cfg(test)]
+use std::sync::Mutex;
+
 /// Tag stored alongside each signal id so re-lookups for the same
 /// name detect type mismatches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +199,16 @@ pub fn clear_all() {
 }
 
 #[cfg(test)]
+pub(crate) fn with_test_signal_lock<T>(f: impl FnOnce() -> T) -> T {
+    static TEST_SIGNAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = TEST_SIGNAL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("signal test lock poisoned");
+    f()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -203,33 +216,39 @@ mod tests {
     /// storage.
     #[test]
     fn i32_round_trip_through_signal_primitive() {
-        clear_all();
-        assert_eq!(get_i32("count_test"), None);
-        set_i32("count_test", 42);
-        assert_eq!(get_i32("count_test"), Some(42));
-        set_i32("count_test", -7);
-        assert_eq!(get_i32("count_test"), Some(-7));
+        with_test_signal_lock(|| {
+            clear_all();
+            assert_eq!(get_i32("count_test"), None);
+            set_i32("count_test", 42);
+            assert_eq!(get_i32("count_test"), Some(42));
+            set_i32("count_test", -7);
+            assert_eq!(get_i32("count_test"), Some(-7));
+        });
     }
 
     #[test]
     fn typed_mismatch_returns_none() {
-        clear_all();
-        set_i32("conflict", 100);
-        // Reading as f64 misses — different SignalType in the map.
-        assert_eq!(get_f64("conflict"), None);
-        assert_eq!(get_str("conflict"), None);
-        assert_eq!(get_i32("conflict"), Some(100));
+        with_test_signal_lock(|| {
+            clear_all();
+            set_i32("conflict", 100);
+            // Reading as f64 misses — different SignalType in the map.
+            assert_eq!(get_f64("conflict"), None);
+            assert_eq!(get_str("conflict"), None);
+            assert_eq!(get_i32("conflict"), Some(100));
+        });
     }
 
     #[test]
     fn f64_and_str_round_trip() {
-        clear_all();
-        assert_eq!(get_f64_or_default("progress_t"), 0.0);
-        set_f64("progress_t", 0.75);
-        assert_eq!(get_f64("progress_t"), Some(0.75));
+        with_test_signal_lock(|| {
+            clear_all();
+            assert_eq!(get_f64_or_default("progress_t"), 0.0);
+            set_f64("progress_t", 0.75);
+            assert_eq!(get_f64("progress_t"), Some(0.75));
 
-        assert_eq!(get_str_or_default("title_t"), "");
-        set_str("title_t", "hello");
-        assert_eq!(get_str("title_t").as_deref(), Some("hello"));
+            assert_eq!(get_str_or_default("title_t"), "");
+            set_str("title_t", "hello");
+            assert_eq!(get_str("title_t").as_deref(), Some("hello"));
+        });
     }
 }
